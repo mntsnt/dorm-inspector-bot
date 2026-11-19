@@ -4,8 +4,13 @@ A Telegram bot in Python that manages a weekly cleaning schedule for 8 dorm mate
 """
 
 import asyncio
+import http.server
 import logging
+import os
+import socketserver
 import sys
+import threading
+import time
 
 from telegram import Update
 from telegram.ext import Application, ApplicationBuilder
@@ -29,6 +34,39 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.INFO)
 logger = logging.getLogger("DormInspectorBot")
+
+# ---------------------------------------------------------------------------
+# Lightweight HTTP Health Check Server (for Cloud Deployment / Readiness Probes)
+# ---------------------------------------------------------------------------
+class HealthCheckHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(b'{"status": "ok", "service": "dorm-inspector-bot"}\n')
+
+    def log_message(self, format, *args):
+        # Silence standard HTTP access logging to keep stdout clean
+        pass
+
+def start_health_server() -> None:
+    """Start a lightweight HTTP server on $PORT to satisfy cloud readiness probes."""
+    port_str = os.environ.get("PORT", "3000")
+    try:
+        port = int(port_str)
+    except ValueError:
+        port = 3000
+
+    class ReusableTCPServer(socketserver.TCPServer):
+        allow_reuse_address = True
+
+    try:
+        server = ReusableTCPServer(("0.0.0.0", port), HealthCheckHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        logger.info("Health check server listening on 0.0.0.0:%d", port)
+    except Exception as e:
+        logger.warning("Could not start health check server on port %d: %s", port, e)
 
 # ---------------------------------------------------------------------------
 # Startup Post-Init Hook
@@ -59,23 +97,27 @@ async def post_init(application: Application) -> None:
 # ---------------------------------------------------------------------------
 def main() -> None:
     """Validate environment and run the bot application."""
+    # 1. Start health check server immediately so container readiness probes succeed
+    start_health_server()
+
+    # 2. Check essential environment configuration
+    missing_vars = []
     if not config.BOT_TOKEN:
-        logger.critical(
-            "FATAL: BOT_TOKEN is missing! Please set BOT_TOKEN in your .env file or environment."
-        )
-        sys.exit(1)
-
+        missing_vars.append("BOT_TOKEN")
     if not config.GROUP_ID:
-        logger.critical(
-            "FATAL: GROUP_ID is missing! Please set GROUP_ID in your .env file."
-        )
-        sys.exit(1)
-
+        missing_vars.append("GROUP_ID")
     if not config.ADMIN_ID:
+        missing_vars.append("ADMIN_ID")
+
+    if missing_vars:
         logger.critical(
-            "FATAL: ADMIN_ID is missing! Please set ADMIN_ID in your .env file."
+            "FATAL: Missing required environment variable(s): %s! "
+            "Please configure them in your cloud platform dashboard or .env file.",
+            ", ".join(missing_vars),
         )
-        sys.exit(1)
+        logger.info("Health check server remains running to prevent container crash loops. Waiting for environment configuration...")
+        while True:
+            time.sleep(30)
 
     logger.info("Starting Dorm Inspector Bot with %d registered members...", len(config.MEMBERS))
 
