@@ -86,57 +86,63 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
 
     def test_rotation_schedule_and_cycling(self):
         """
-        Verify rotation starting next Monday, November 30, 2026:
-        - Nov 27 (Friday setup): week_number <= 0 (Duty not started yet)
-        - Week 1 (Nov 30 - Dec 04): Pair 1 (Bilisuma & Nahom) [Announced Mon Nov 30]
-        - Week 2 (Dec 07 - Dec 11): Pair 2 (Hassan & Mintesnot)
-        - Week 3 (Dec 14 - Dec 18): Pair 3 (Dawit & Zeftret)
-        - Week 4 (Dec 21 - Dec 25): Pair 4 (Ahmed & Yonatan)
-        - Week 5 (Dec 28 - Jan 01): Pair 1 (Bilisuma & Nahom) - cycles back!
+        Verify rotation starting next Monday, November 23, 2026:
+        - Before start (e.g. Thu Nov 19): week_number <= 0 (Duty not started yet)
+        - Week 1 (Nov 23 - Nov 27): Pair 1 (Bilisuma & Nahom) [Announced Mon Nov 23, Cleaners Fri Nov 27]
+        - Week 2 (Nov 30 - Dec 04): Pair 2 (Hassan & Mintesnot)
+        - Week 3 (Dec 07 - Dec 11): Pair 3 (Dawit & Zeftret)
+        - Week 4 (Dec 14 - Dec 18): Pair 4 (Ahmed & Yonatan)
+        - Week 5 (Dec 21 - Dec 25): Pair 1 (Bilisuma & Nahom) - cycles back!
         """
         start = config.START_DATE_OBJ
-        self.assertEqual(start, date(2026, 11, 27))
-        self.assertEqual(start.weekday(), 4, "2026-11-27 is a Friday")
-        self.assertEqual(config.START_BASE_MONDAY, date(2026, 11, 30))
+        self.assertEqual(start, date(2026, 11, 23))
+        self.assertEqual(start.weekday(), 0, "2026-11-23 is a Monday")
+        self.assertEqual(config.START_BASE_MONDAY, date(2026, 11, 23))
 
-        # Before start date: Friday Nov 27
-        w_before = config.get_week_info(start)
-        self.assertLessEqual(w_before.week_number, 0, "Friday Nov 27 is before duty starts")
+        # Before start date: Thursday Nov 19
+        w_before = config.get_week_info(date(2026, 11, 19))
+        self.assertLessEqual(w_before.week_number, 0, "Nov 19 is before duty starts")
 
-        # Week 1 (Monday Nov 30) - Announced Monday Nov 30 with Pair 1
-        w1 = config.get_week_info(date(2026, 11, 30))
+        # Week 1 (Monday Nov 23) - Announced Monday Nov 23 with Pair 1, cleaning Friday Nov 27
+        w1 = config.get_week_info(date(2026, 11, 23))
         self.assertEqual(w1.week_number, 1)
         self.assertEqual(w1.cleaner1.name, "Bilisuma")
         self.assertEqual(w1.cleaner2.name, "Nahom")
-        self.assertEqual(w1.week_start, "2026-11-30")
-        self.assertEqual(w1.friday_date, date(2026, 12, 4))
+        self.assertEqual(w1.week_start, "2026-11-23")
+        self.assertEqual(w1.friday_date, date(2026, 11, 27))
 
-        # Mid-week of week 1 (Wednesday Dec 2)
-        w1_wed = config.get_week_info(date(2026, 12, 2))
+        # Mid-week of week 1 (Wednesday Nov 25)
+        w1_wed = config.get_week_info(date(2026, 11, 25))
         self.assertEqual(w1_wed.week_number, 1)
         self.assertEqual(w1_wed.cleaner1.name, "Bilisuma")
 
-        # Week 2 (Monday Dec 7) - Swapped: Hassan & Mintesnot
-        w2 = config.get_week_info(date(2026, 12, 7))
+        # Friday of week 1 (Friday Nov 27) - cleaning day
+        w1_fri = config.get_week_info(date(2026, 11, 27))
+        self.assertEqual(w1_fri.week_number, 1)
+        self.assertEqual(w1_fri.friday_date, date(2026, 11, 27))
+
+        # Week 2 (Monday Nov 30) - Hassan & Mintesnot
+        w2 = config.get_week_info(date(2026, 11, 30))
         self.assertEqual(w2.week_number, 2)
         self.assertEqual(w2.cleaner1.name, "Hassan")
         self.assertEqual(w2.cleaner2.name, "Mintesnot")
-        self.assertEqual(w2.week_start, "2026-12-07")
+        self.assertEqual(w2.week_start, "2026-11-30")
+        self.assertEqual(w2.friday_date, date(2026, 12, 4))
 
-        # Week 3 (Monday Dec 14) - Swapped: Dawit & Zeftret
-        w3 = config.get_week_info(date(2026, 12, 14))
+        # Week 3 (Monday Dec 7) - Dawit & Zeftret
+        w3 = config.get_week_info(date(2026, 12, 7))
         self.assertEqual(w3.week_number, 3)
         self.assertEqual(w3.cleaner1.name, "Dawit")
         self.assertEqual(w3.cleaner2.name, "Zeftret")
 
-        # Week 4 (Monday Dec 21) - Last pair in cycle: Ahmed & Yonatan
-        w4 = config.get_week_info(date(2026, 12, 21))
+        # Week 4 (Monday Dec 14) - Last pair in cycle: Ahmed & Yonatan
+        w4 = config.get_week_info(date(2026, 12, 14))
         self.assertEqual(w4.week_number, 4)
         self.assertEqual(w4.cleaner1.name, "Ahmed")
         self.assertEqual(w4.cleaner2.name, "Yonatan")
 
-        # Week 5 (Monday Dec 28 - cycle back to pair 1)
-        w5 = config.get_week_info(date(2026, 12, 28))
+        # Week 5 (Monday Dec 21 - cycle back to pair 1)
+        w5 = config.get_week_info(date(2026, 12, 21))
         self.assertEqual(w5.week_number, 5)
         self.assertEqual(w5.cleaner1.name, "Bilisuma")
         self.assertEqual(w5.cleaner2.name, "Nahom")
@@ -263,16 +269,27 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
     def test_member_lookup_helpers(self):
         """Verify is_member, get_member, and get_member_by_name."""
         self.assertTrue(config.is_member(111111111))
+        self.assertTrue(config.is_member(1359460823), "Hasan's real Telegram ID")
         self.assertFalse(config.is_member(999999999))
 
         m = config.get_member(111111111)
         self.assertIsNotNone(m)
         self.assertEqual(m.name, "Bilisuma")
 
+        # Hasan by ID
+        m_hasan = config.get_member(1359460823)
+        self.assertIsNotNone(m_hasan)
+        self.assertEqual(m_hasan.name, "Hassan")
+
         # Case-insensitive name lookup
         m_name = config.get_member_by_name("bilisuma")
         self.assertIsNotNone(m_name)
         self.assertEqual(m_name.user_id, 111111111)
+
+        # Lookup with single 's' "Hasan" alias
+        m_hasan_alias = config.get_member_by_name("hasan")
+        self.assertIsNotNone(m_hasan_alias)
+        self.assertEqual(m_hasan_alias.user_id, 1359460823)
 
         m_name_upper = config.get_member_by_name("NAHOM")
         self.assertIsNotNone(m_name_upper)
@@ -292,6 +309,68 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         for d in (mon, tue, fri, sat, sun):
             calculated_mon = config.get_monday_of_week(d)
             self.assertEqual(calculated_mon, mon, f"Failed for {d.strftime('%A')}")
+
+    async def test_interactive_menu_keyboards_and_navigation(self):
+        """Verify interactive start buttons, back/forward navigation, and content generators."""
+        await db.init_db()
+        from handlers import commands
+
+        # 1. Main menu welcome text mentions the Nov 23 announcement and cleaners
+        menu_text = commands.get_main_menu_text("Nahom")
+        self.assertIn("Nahom", menu_text)
+        self.assertIn("Bilisuma & Nahom", menu_text)
+
+        # 2. Main menu inline keyboard has 6 functional buttons
+        main_kb = commands.get_main_menu_inline_keyboard()
+        button_callbacks = [btn.callback_data for row in main_kb.inline_keyboard for btn in row]
+        self.assertIn("menu_status", button_callbacks)
+        self.assertIn("menu_schedule", button_callbacks)
+        self.assertIn("menu_done", button_callbacks)
+        self.assertIn("menu_fines", button_callbacks)
+        self.assertIn("menu_history", button_callbacks)
+        self.assertIn("menu_help", button_callbacks)
+
+        # 3. Mobile reply keyboard has quick jump options
+        reply_kb = commands.get_reply_keyboard()
+        reply_texts = [btn.text if hasattr(btn, "text") else btn for row in reply_kb.keyboard for btn in row]
+        self.assertIn("📋 Status", reply_texts)
+        self.assertIn("📅 Schedule", reply_texts)
+        self.assertIn("💸 Fines", reply_texts)
+        self.assertIn("🏠 Main Menu", reply_texts)
+
+        # 4. Status view has Forward (Schedule) and Back (Menu)
+        status_text, status_kb = await commands.get_status_content(111111111)
+        status_callbacks = [btn.callback_data for row in status_kb.inline_keyboard for btn in row]
+        self.assertIn("menu_schedule", status_callbacks, "Forward to schedule")
+        self.assertIn("menu_home", status_callbacks, "Back to main menu")
+
+        # 5. Schedule view has Prev (Status), Next (Fines), and Back (Menu)
+        sched_text, sched_kb = commands.get_schedule_content()
+        sched_callbacks = [btn.callback_data for row in sched_kb.inline_keyboard for btn in row]
+        self.assertIn("menu_status", sched_callbacks, "Prev back to status")
+        self.assertIn("menu_fines", sched_callbacks, "Next forward to fines")
+        self.assertIn("menu_home", sched_callbacks, "Back to main menu")
+
+        # 6. Fines view has Prev (Schedule), Next (History), and Back (Menu)
+        fines_text, fines_kb = await commands.get_fines_content()
+        fines_callbacks = [btn.callback_data for row in fines_kb.inline_keyboard for btn in row]
+        self.assertIn("menu_schedule", fines_callbacks)
+        self.assertIn("menu_history", fines_callbacks)
+        self.assertIn("menu_home", fines_callbacks)
+
+        # 7. History view has Prev (Fines), Next (Help), and Back (Menu)
+        hist_text, hist_kb = await commands.get_history_content()
+        hist_callbacks = [btn.callback_data for row in hist_kb.inline_keyboard for btn in row]
+        self.assertIn("menu_fines", hist_callbacks)
+        self.assertIn("menu_help", hist_callbacks)
+        self.assertIn("menu_home", hist_callbacks)
+
+        # 8. Help view has Prev (History), Next (Status), and Back (Menu)
+        help_text, help_kb = commands.get_help_content()
+        help_callbacks = [btn.callback_data for row in help_kb.inline_keyboard for btn in row]
+        self.assertIn("menu_history", help_callbacks)
+        self.assertIn("menu_status", help_callbacks)
+        self.assertIn("menu_home", help_callbacks)
 
 if __name__ == "__main__":
     unittest.main()

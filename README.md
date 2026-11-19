@@ -6,7 +6,7 @@ An automated, robust Telegram bot in Python that manages a weekly dorm cleaning 
 
 ## 🌟 Key Features
 
-- **Fixed 4-Week Rotation:** Deterministically computed from `START_DATE` (e.g. `2026-11-27` Friday). A bot restart never changes the rotation order.
+- **Fixed 4-Week Rotation:** Deterministically computed from `START_DATE` (`2026-11-23` Monday). A bot restart never changes the rotation order.
 - **Weekly Schedule:** Runs Monday through Friday. Weekends (Saturday & Sunday) have no cleaning duties.
 - **Random Approver Selection:** Every Monday, an approver is chosen at random from the 6 members not cleaning that week.
 - **Photo Verification Workflow:** Cleaners submit photos via private DM, which are forwarded to the dorm group and sent to the approver with **Approve** / **Reject** buttons.
@@ -54,7 +54,7 @@ Members and pairs are defined in `members.json`. On startup, the bot validates t
     {"user_id": 1758752115, "name": "Nahom"},
     {"user_id": 1434634789, "name": "Dawit"},
     {"user_id": 6764559285, "name": "Zeftret"},
-    {"user_id": 555555555, "name": "Hassan"},
+    {"user_id": 1359460823, "name": "Hassan"},
     {"user_id": 6163528558, "name": "Mintesnot"},
     {"user_id": 1677783364, "name": "Ahmed"},
     {"user_id": 5625992953, "name": "Yonatan"}
@@ -69,11 +69,11 @@ Members and pairs are defined in `members.json`. On startup, the bot validates t
 ```
 
 ### 4-Week Rotation Cycle
-1. **Week 1 (Nov 30 – Dec 04):** Bilisuma & Nahom *(Announced Monday, Nov 30 at 08:00 AM)*
-2. **Week 2 (Dec 07 – Dec 11):** Hassan & Mintesnot
-3. **Week 3 (Dec 14 – Dec 18):** Dawit & Zeftret
-4. **Week 4 (Dec 21 – Dec 25):** Ahmed & Yonatan
-5. **Week 5 (Dec 28 – Jan 01):** Cycles back to Pair 1 (Bilisuma & Nahom)
+1. **Week 1 (Nov 23 – Nov 27):** Bilisuma & Nahom *(Announced Monday, Nov 23 at 08:00 AM | Cleaners & Check on Friday, Nov 27)*
+2. **Week 2 (Nov 30 – Dec 04):** Hassan & Mintesnot
+3. **Week 3 (Dec 07 – Dec 11):** Dawit & Zeftret
+4. **Week 4 (Dec 14 – Dec 18):** Ahmed & Yonatan
+5. **Week 5 (Dec 21 – Dec 25):** Cycles back to Pair 1 (Bilisuma & Nahom)
 
 ---
 
@@ -113,8 +113,8 @@ BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrsTUVwxyz
 GROUP_ID=-1001234567890
 ADMIN_ID=111111111
 
-# Rotation Start Date (e.g. 2026-11-27 Friday)
-START_DATE=2026-11-27
+# Rotation Start Date (e.g. 2026-11-23 Monday, Cleaners on Friday Nov 27)
+START_DATE=2026-11-23
 
 # Schedule configurations (Timezone: Africa/Addis_Ababa)
 ANNOUNCE_DAY=mon

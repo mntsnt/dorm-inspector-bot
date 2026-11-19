@@ -189,7 +189,7 @@ def get_monday_of_week(d: datetime.date) -> datetime.date:
     return d - datetime.timedelta(days=d.weekday())
 
 if not raw_start_date:
-    START_DATE_STR = "2026-11-27"  # Friday, November 27
+    START_DATE_STR = "2026-11-23"  # Monday, November 23 (Announcement Mon Nov 23, Cleaners on Fri Nov 27)
 else:
     START_DATE_STR = raw_start_date
 
@@ -200,12 +200,13 @@ except ValueError:
     sys.exit(f"CRITICAL ERROR: START_DATE must be in YYYY-MM-DD format, got: {START_DATE_STR}")
 
 # Determine the base Monday for weekly rotation calculations.
-# If START_DATE is not a Monday (e.g. Friday Nov 27), the first cleaning week
-# begins and is announced on the upcoming Monday (Nov 30).
+# If START_DATE is already a Monday (e.g. Monday Nov 23, 2026), that is the base Monday.
+# If a user provides a Friday (e.g. Friday Nov 27, 2026), base Monday is Monday of that same week (Nov 23)
+# so the announcement starts that Monday and cleaning occurs on Friday.
 if START_DATE_OBJ.weekday() == 0:
     START_BASE_MONDAY = START_DATE_OBJ
 else:
-    START_BASE_MONDAY = START_DATE_OBJ + datetime.timedelta(days=(7 - START_DATE_OBJ.weekday()))
+    START_BASE_MONDAY = get_monday_of_week(START_DATE_OBJ)
 
 ANNOUNCE_DAY = os.getenv("ANNOUNCE_DAY", "mon").strip().lower()
 ANNOUNCE_TIME_STR = os.getenv("ANNOUNCE_TIME", "08:00").strip()
@@ -314,5 +315,8 @@ def get_member(user_id: int) -> Optional[Member]:
     return MEMBERS_BY_ID.get(user_id)
 
 def get_member_by_name(name: str) -> Optional[Member]:
-    """Get Member object by name (case-insensitive)."""
-    return MEMBERS_BY_NAME.get(name.strip().lower())
+    """Get Member object by name (case-insensitive, supporting Hasan / Hassan aliases)."""
+    norm = name.strip().lower()
+    if norm in ("hasan", "hassen", "hasen"):
+        norm = "hassan"
+    return MEMBERS_BY_NAME.get(norm)
