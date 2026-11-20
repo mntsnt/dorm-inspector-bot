@@ -341,38 +341,30 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if chat.type == "private":
         reply_markup = get_reply_keyboard()
         if welcome_meme:
-            with open(welcome_meme, "rb") as photo:
-                await update.effective_message.reply_photo(
-                    photo=photo,
-                    caption=welcome_text,
-                    reply_markup=inline_markup,
-                    parse_mode=ParseMode.MARKDOWN
-                )
-        else:
-            await update.effective_message.reply_text(
-                welcome_text,
-                reply_markup=inline_markup,
-                parse_mode=ParseMode.MARKDOWN
-            )
+            try:
+                with open(welcome_meme, "rb") as photo:
+                    await update.effective_message.reply_photo(
+                        photo=photo,
+                        caption=f"Welcome, {member_name}!",
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+            except Exception as e:
+                logger.warning("Could not send welcome meme: %s", e)
+
+        await update.effective_message.reply_text(
+            welcome_text,
+            reply_markup=inline_markup,
+            parse_mode=ParseMode.MARKDOWN
+        )
         await update.effective_message.reply_text(
             "Buttons are also available below.",
             reply_markup=reply_markup
         )
     else:
-        if welcome_meme:
-            with open(welcome_meme, "rb") as photo:
-                await update.effective_message.reply_photo(
-                    photo=photo,
-                    caption=welcome_text,
-                    reply_markup=inline_markup,
-                    parse_mode=ParseMode.MARKDOWN
-                )
-        else:
-            await update.effective_message.reply_text(
-                welcome_text,
-                reply_markup=inline_markup,
-                parse_mode=ParseMode.MARKDOWN
-            )
+        await update.effective_message.reply_text(
+            f"Welcome, {member_name}! To check duty or fines privately, message me in DM.",
+            parse_mode=ParseMode.MARKDOWN
+        )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send help instructions with navigation buttons."""
@@ -457,7 +449,16 @@ async def menu_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
     elif action == "menu_schedule":
         text, keyboard = get_schedule_content()
     elif action == "menu_done":
-        text, keyboard = await get_done_content(user.id)
+        week_info = config.get_week_info()
+        week_record = await db.get_week(week_info.week_start)
+        c1_id = week_record["cleaner1_id"] if week_record else week_info.cleaner1.user_id
+        c2_id = week_record["cleaner2_id"] if week_record else week_info.cleaner2.user_id
+        if user.id in (c1_id, c2_id):
+            from handlers.cleaning import handle_cleaner_done
+            await handle_cleaner_done(update, context, user.id)
+            return
+        else:
+            text, keyboard = await get_done_content(user.id)
     elif action == "menu_fines":
         text, keyboard = await get_fines_content()
     elif action == "menu_history":
@@ -497,8 +498,16 @@ async def reply_keyboard_text_handler(update: Update, context: ContextTypes.DEFA
         await schedule_command(update, context)
     elif "clean" in text_lower or "submit" in text_lower:
         member_id = user.id
-        resp_text, keyboard = await get_done_content(member_id)
-        await msg.reply_text(resp_text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+        week_info = config.get_week_info()
+        week_record = await db.get_week(week_info.week_start)
+        c1_id = week_record["cleaner1_id"] if week_record else week_info.cleaner1.user_id
+        c2_id = week_record["cleaner2_id"] if week_record else week_info.cleaner2.user_id
+        if member_id in (c1_id, c2_id):
+            from handlers.cleaning import handle_cleaner_done
+            await handle_cleaner_done(update, context, member_id)
+        else:
+            resp_text, keyboard = await get_done_content(member_id)
+            await msg.reply_text(resp_text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
     elif "fine" in text_lower:
         await fines_command(update, context)
     elif "history" in text_lower:
