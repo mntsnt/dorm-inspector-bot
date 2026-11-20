@@ -421,3 +421,16 @@ def _get_user_unpaid_total_sync(user_id: int) -> int:
 
 async def get_user_unpaid_total(user_id: int) -> int:
     return await asyncio.to_thread(_get_user_unpaid_total_sync, user_id)
+
+def _update_member_id_sync(old_id: int, new_id: int) -> None:
+    with _get_connection() as conn:
+        conn.execute("UPDATE users SET user_id = ? WHERE user_id = ?;", (new_id, old_id))
+        conn.execute("UPDATE weeks SET cleaner1_id = ? WHERE cleaner1_id = ?;", (new_id, old_id))
+        conn.execute("UPDATE weeks SET cleaner2_id = ? WHERE cleaner2_id = ?;", (new_id, old_id))
+        conn.execute("UPDATE weeks SET approver_id = ? WHERE approver_id = ?;", (new_id, old_id))
+        conn.execute("UPDATE weeks SET photo_submitted_by = ? WHERE photo_submitted_by = ?;", (new_id, old_id))
+        conn.execute("UPDATE fines SET user_id = ? WHERE user_id = ?;", (new_id, old_id))
+        conn.commit()
+
+async def update_member_id_in_db(old_id: int, new_id: int) -> None:
+    await asyncio.to_thread(_update_member_id_sync, old_id, new_id)

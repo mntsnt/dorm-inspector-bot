@@ -84,13 +84,23 @@ async def post_init(application: Application) -> None:
     logger.info("Timezone: %s", config.TIMEZONE)
 
     current_week = config.get_week_info()
-    logger.info(
-        "Current Week #%d (%s): Cleaners -> %s & %s",
-        current_week.week_number,
-        current_week.week_start,
-        current_week.cleaner1.name,
-        current_week.cleaner2.name,
-    )
+    if current_week.week_number < 1:
+        w1 = config.get_week_info(config.START_BASE_MONDAY)
+        logger.info(
+            "Schedule not started yet. Starts %s (%s): Cleaners -> %s & %s",
+            w1.week_start,
+            w1.monday_date.strftime("%A"),
+            w1.cleaner1.name,
+            w1.cleaner2.name,
+        )
+    else:
+        logger.info(
+            "Current Week #%d (%s): Cleaners -> %s & %s",
+            current_week.week_number,
+            current_week.week_start,
+            current_week.cleaner1.name,
+            current_week.cleaner2.name,
+        )
 
 # ---------------------------------------------------------------------------
 # Main Runner

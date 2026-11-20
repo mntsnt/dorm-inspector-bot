@@ -6,6 +6,7 @@ Fully idempotent and resilient against bot downtime and restarts.
 
 from datetime import datetime, timedelta
 import logging
+from pathlib import Path
 from typing import Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -201,7 +202,7 @@ async def thursday_reminder_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     week_info = config.get_week_info(now_date)
 
     if week_info.week_number < 1:
-        logger.info("Schedule has not started yet (starts %s). Skipping Monday announcement.", config.START_BASE_MONDAY)
+        logger.info("Schedule has not started yet (starts %s). Skipping Thursday reminder.", config.START_BASE_MONDAY)
         return
     week_record = await db.get_week(week_info.week_start)
 
@@ -388,6 +389,8 @@ async def monitor_and_fallback_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         if deadline_str:
             try:
                 deadline = datetime.fromisoformat(deadline_str)
+                if deadline.tzinfo is None:
+                    deadline = deadline.replace(tzinfo=config.TIMEZONE)
                 if now >= deadline:
                     logger.info("Approver timeout reached for week %s. Applying fallback...", week_info.week_start)
                     await _process_approver_timeout(context, week_record)

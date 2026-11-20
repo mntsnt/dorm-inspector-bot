@@ -99,9 +99,11 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(start.weekday(), 0, "2026-11-23 is a Monday")
         self.assertEqual(config.START_BASE_MONDAY, date(2026, 11, 23))
 
-        # Before start date: Thursday Nov 19
+        # Before start date: Thursday Nov 19 - cleaner pair is Pair 1 (Bilisuma & Nahom)
         w_before = config.get_week_info(date(2026, 11, 19))
         self.assertLessEqual(w_before.week_number, 0, "Nov 19 is before duty starts")
+        self.assertEqual(w_before.cleaner1.name, "Bilisuma")
+        self.assertEqual(w_before.cleaner2.name, "Nahom")
 
         # Week 1 (Monday Nov 23) - Announced Monday Nov 23 with Pair 1, cleaning Friday Nov 27
         w1 = config.get_week_info(date(2026, 11, 23))
@@ -296,6 +298,39 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(m_name_upper.name, "Nahom")
 
         self.assertIsNone(config.get_member_by_name("GhostResident"))
+
+    async def test_update_member_id_and_db_propagation(self):
+        """Test dynamic updating of member user_id in config and db."""
+        await db.init_db()
+
+        # Temporarily update Bilisuma's placeholder ID
+        orig_id = 111111111
+        temp_id = 999111999
+
+        # Record a test fine with orig_id
+        await db.create_fines_for_week(
+            week_start="2026-11-23",
+            cleaner1_id=orig_id,
+            cleaner1_name="Bilisuma",
+            cleaner2_id=1758752115,
+            cleaner2_name="Nahom",
+            fine_each=50
+        )
+        self.assertEqual(await db.get_user_unpaid_total(orig_id), 50)
+
+        # Update ID dynamically
+        success = config.update_member_id("Bilisuma", temp_id)
+        self.assertTrue(success)
+        self.assertEqual(config.get_member(temp_id).name, "Bilisuma")
+
+        # Propagate to database
+        await db.update_member_id_in_db(old_id=orig_id, new_id=temp_id)
+        self.assertEqual(await db.get_user_unpaid_total(orig_id), 0)
+        self.assertEqual(await db.get_user_unpaid_total(temp_id), 50)
+
+        # Revert back to original ID
+        config.update_member_id("Bilisuma", orig_id)
+        self.assertEqual(config.get_member(orig_id).name, "Bilisuma")
 
     def test_weekday_math_for_all_days(self):
         """Verify get_monday_of_week correctly identifies Monday for any day of the week."""

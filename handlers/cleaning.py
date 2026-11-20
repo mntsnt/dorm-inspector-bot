@@ -88,19 +88,39 @@ async def handle_cleaner_done(
     msg = update.effective_message
     week_info = config.get_week_info()
 
+    if week_info.week_number < 1:
+        await msg.reply_text(
+            f"Cleaning duty has not started yet.\n"
+            f"Week 1 starts on Monday, {config.START_BASE_MONDAY.strftime('%b %d')}."
+        )
+        return
+
     target_week_start = week_start or week_info.week_start
     week_record = await db.get_week(target_week_start)
 
+    if not week_record:
+        eligible_approver_ids = [
+            m.user_id for m in config.MEMBERS
+            if m.user_id not in (week_info.cleaner1.user_id, week_info.cleaner2.user_id)
+        ]
+        week_record = await db.get_or_create_week(
+            week_start=week_info.week_start,
+            week_number=week_info.week_number,
+            cleaner1_id=week_info.cleaner1.user_id,
+            cleaner2_id=week_info.cleaner2.user_id,
+            eligible_approver_ids=eligible_approver_ids
+        )
+
     # Validate that user is one of the 2 cleaners
-    c1_id = week_record["cleaner1_id"] if week_record else week_info.cleaner1.user_id
-    c2_id = week_record["cleaner2_id"] if week_record else week_info.cleaner2.user_id
+    c1_id = week_record["cleaner1_id"]
+    c2_id = week_record["cleaner2_id"]
 
     if user_id not in (c1_id, c2_id):
         await msg.reply_text("You are not on cleaning duty this week.")
         return
 
     # Check if already completed
-    if week_record and week_record.get("final_status") == "completed":
+    if week_record.get("final_status") == "completed":
         await msg.reply_text("Cleaning for this week is already done!")
         return
 
@@ -137,11 +157,30 @@ async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     week_info = config.get_week_info()
+    if week_info.week_number < 1:
+        await update.message.reply_text(
+            f"Cleaning duty has not started yet.\n"
+            f"Week 1 starts on Monday, {config.START_BASE_MONDAY.strftime('%b %d')}."
+        )
+        return
+
     week_record = await db.get_week(week_info.week_start)
+    if not week_record:
+        eligible_approver_ids = [
+            m.user_id for m in config.MEMBERS
+            if m.user_id not in (week_info.cleaner1.user_id, week_info.cleaner2.user_id)
+        ]
+        week_record = await db.get_or_create_week(
+            week_start=week_info.week_start,
+            week_number=week_info.week_number,
+            cleaner1_id=week_info.cleaner1.user_id,
+            cleaner2_id=week_info.cleaner2.user_id,
+            eligible_approver_ids=eligible_approver_ids
+        )
 
     # Check cleaners
-    c1_id = week_record["cleaner1_id"] if week_record else week_info.cleaner1.user_id
-    c2_id = week_record["cleaner2_id"] if week_record else week_info.cleaner2.user_id
+    c1_id = week_record["cleaner1_id"]
+    c2_id = week_record["cleaner2_id"]
 
     if user.id not in (c1_id, c2_id):
         await update.message.reply_text(
@@ -149,7 +188,7 @@ async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return
 
-    if week_record and week_record.get("final_status") == "completed":
+    if week_record.get("final_status") == "completed":
         await update.message.reply_text(
             "Cleaning for this week is already done!"
         )
@@ -169,7 +208,7 @@ async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
     c1_name = c1.name if c1 else f"ID {c1_id}"
     c2_name = c2.name if c2 else f"ID {c2_id}"
 
-    approver_id = week_record.get("approver_id") if week_record else None
+    approver_id = week_record.get("approver_id")
     approver = config.get_member(approver_id) if approver_id else None
     approver_name = approver.name if approver else "Approver"
 
@@ -192,8 +231,8 @@ async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
     if approver_id:
         approver_keyboard = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("✅ Approve", callback_data=f"approve_{week_info.week_start}"),
-                InlineKeyboardButton("❌ Reject", callback_data=f"reject_{week_info.week_start}"),
+                InlineKeyboardButton("Approve", callback_data=f"approve_{week_info.week_start}"),
+                InlineKeyboardButton("Reject", callback_data=f"reject_{week_info.week_start}"),
             ]
         ])
         approver_caption = (

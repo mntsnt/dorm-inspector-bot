@@ -293,7 +293,7 @@ def get_week_info(target_date: Optional[datetime.date] = None) -> WeekInfo:
     weeks_diff = days_diff // 7
 
     week_number = weeks_diff + 1
-    pair_index = (week_number - 1) % len(PAIRS)
+    pair_index = 0 if week_number < 1 else (week_number - 1) % len(PAIRS)
     cleaner1, cleaner2 = PAIRS[pair_index]
     friday_date = target_monday + datetime.timedelta(days=4)
 
@@ -333,3 +333,40 @@ def get_member_by_name(name: str) -> Optional[Member]:
     if norm in ("hasan", "hassen", "hasen"):
         norm = "hassan"
     return MEMBERS_BY_NAME.get(norm)
+
+def update_member_id(name: str, new_user_id: int) -> bool:
+    """
+    Update a member's user_id in members.json and reload in-memory structures.
+    Returns True on success, False on failure.
+    """
+    global MEMBERS, MEMBERS_BY_ID, MEMBERS_BY_NAME, PAIRS
+    try:
+        with open(MEMBERS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        target_norm = name.strip().lower()
+        if target_norm in ("hasan", "hassen", "hasen"):
+            target_norm = "hassan"
+
+        found = False
+        for item in data.get("members", []):
+            item_norm = item.get("name", "").strip().lower()
+            if item_norm in ("hasan", "hassen", "hasen"):
+                item_norm = "hassan"
+            if item_norm == target_norm:
+                item["user_id"] = new_user_id
+                found = True
+                break
+
+        if not found:
+            return False
+
+        with open(MEMBERS_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+
+        MEMBERS, MEMBERS_BY_ID, MEMBERS_BY_NAME, PAIRS = load_and_validate_members(MEMBERS_FILE)
+        logger.info("Successfully updated user_id for %s to %s", name, new_user_id)
+        return True
+    except Exception as e:
+        logger.error("Failed to update user_id for %s: %s", name, e)
+        return False

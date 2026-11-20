@@ -88,6 +88,48 @@ async def markpaid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     except Exception as e:
         logger.error("Failed to post fine payment notice in group chat: %s", e)
 
+async def setid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin command to update a member's user_id."""
+    user = update.effective_user
+    if not user or user.id != config.ADMIN_ID:
+        await update.effective_message.reply_text("Only the admin can use this command.")
+        return
+
+    if not context.args or len(context.args) < 2:
+        await update.effective_message.reply_text(
+            "Usage: `/setid <name> <new_user_id>`\nExample: `/setid Bilisuma 123456789`",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    name_input = context.args[0].strip().lstrip("@")
+    id_input = context.args[1].strip()
+
+    if not id_input.isdigit():
+        await update.effective_message.reply_text("The user ID must be a number.")
+        return
+
+    new_id = int(id_input)
+    target_member = config.get_member_by_name(name_input)
+    if not target_member:
+        member_list = ", ".join(m.name for m in config.MEMBERS)
+        await update.effective_message.reply_text(
+            f"Member '{name_input}' not found.\nMembers: {member_list}"
+        )
+        return
+
+    old_id = target_member.user_id
+    success = config.update_member_id(target_member.name, new_id)
+    if success:
+        await db.update_member_id_in_db(old_id=old_id, new_id=new_id)
+        await update.effective_message.reply_text(
+            f"Updated **{target_member.name}**'s ID to `{new_id}` (was `{old_id}`).",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    else:
+        await update.effective_message.reply_text("Failed to update ID in members.json.")
+
 def register_admin_handlers(application: Application) -> None:
     """Attach admin command handlers."""
     application.add_handler(CommandHandler("markpaid", markpaid_command))
+    application.add_handler(CommandHandler("setid", setid_command))

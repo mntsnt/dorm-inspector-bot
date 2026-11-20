@@ -276,10 +276,6 @@ def get_help_content() -> Tuple[str, InlineKeyboardMarkup]:
 async def get_done_content(user_id: int) -> Tuple[str, InlineKeyboardMarkup]:
     """Generate cleaning submission instruction text and navigation buttons."""
     week_info = config.get_week_info()
-    week_record = await db.get_week(week_info.week_start)
-
-    c1_id = week_record["cleaner1_id"] if week_record else week_info.cleaner1.user_id
-    c2_id = week_record["cleaner2_id"] if week_record else week_info.cleaner2.user_id
 
     keyboard = InlineKeyboardMarkup([
         [
@@ -290,6 +286,30 @@ async def get_done_content(user_id: int) -> Tuple[str, InlineKeyboardMarkup]:
             InlineKeyboardButton("Main Menu", callback_data="menu_home"),
         ]
     ])
+
+    if week_info.week_number < 1:
+        msg = (
+            f"Cleaning duty has not started yet.\n"
+            f"Week 1 starts on Monday, {config.START_BASE_MONDAY.strftime('%b %d')}."
+        )
+        return msg, keyboard
+
+    week_record = await db.get_week(week_info.week_start)
+    if not week_record:
+        eligible_approver_ids = [
+            m.user_id for m in config.MEMBERS
+            if m.user_id not in (week_info.cleaner1.user_id, week_info.cleaner2.user_id)
+        ]
+        week_record = await db.get_or_create_week(
+            week_start=week_info.week_start,
+            week_number=week_info.week_number,
+            cleaner1_id=week_info.cleaner1.user_id,
+            cleaner2_id=week_info.cleaner2.user_id,
+            eligible_approver_ids=eligible_approver_ids
+        )
+
+    c1_id = week_record["cleaner1_id"]
+    c2_id = week_record["cleaner2_id"]
 
     if user_id not in (c1_id, c2_id):
         c1 = config.get_member(c1_id)
@@ -536,7 +556,7 @@ def register_command_handlers(application: Application) -> None:
     # Register persistent reply keyboard text handler
     application.add_handler(
         MessageHandler(
-            filters.TEXT & ~filters.COMMAND & filters.Regex(r"^(Status|Schedule|Submit Cleaning|Fines|History|Help|Main Menu|📋 Status|📅 Schedule|🧼 Submit Cleaning|💸 Fines|📜 History|ℹ️ Help|🏠 Main Menu)$"),
+            filters.TEXT & ~filters.COMMAND & filters.Regex(r"(?i)^(Status|Schedule|Submit Cleaning|Fines|History|Help|Main Menu|📋 Status|📅 Schedule|🧼 Submit Cleaning|💸 Fines|📜 History|ℹ️ Help|🏠 Main Menu)$"),
             reply_keyboard_text_handler
         )
     )
