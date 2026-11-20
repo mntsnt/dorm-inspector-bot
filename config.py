@@ -24,6 +24,19 @@ logger = logging.getLogger(__name__)
 # Base directory of the project
 BASE_DIR = Path(__file__).resolve().parent
 
+# Memes Directory
+MEMES_DIR = BASE_DIR / "assets" / "memes"
+
+def get_meme_file(name: str) -> Optional[Path]:
+    """Return Path to a meme image file if it exists, else None."""
+    if not MEMES_DIR.exists():
+        return None
+    for ext in (".jpg", ".jpeg", ".png", ".webp"):
+        candidate = MEMES_DIR / f"{name}{ext}"
+        if candidate.is_file():
+            return candidate
+    return None
+
 # ---------------------------------------------------------------------------
 # Timezone Configuration (Africa/Addis_Ababa is permanently UTC+3, no DST)
 # ---------------------------------------------------------------------------

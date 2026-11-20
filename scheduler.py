@@ -108,12 +108,22 @@ async def monday_announcement_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         f"👀 Approver: **{approver_name}**\n"
         f"⏰ Deadline: Friday 8:00 PM"
     )
+    announcement_meme = config.get_meme_file("announcement")
     try:
-        await context.bot.send_message(
-            chat_id=config.GROUP_ID,
-            text=group_text,
-            parse_mode=ParseMode.MARKDOWN
-        )
+        if announcement_meme:
+            with open(announcement_meme, "rb") as photo:
+                await context.bot.send_photo(
+                    chat_id=config.GROUP_ID,
+                    photo=photo,
+                    caption=group_text,
+                    parse_mode=ParseMode.MARKDOWN
+                )
+        else:
+            await context.bot.send_message(
+                chat_id=config.GROUP_ID,
+                text=group_text,
+                parse_mode=ParseMode.MARKDOWN
+            )
     except Exception as e:
         logger.error("Failed to post Monday announcement to group %s: %s", config.GROUP_ID, e)
 

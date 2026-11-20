@@ -107,6 +107,19 @@ async def handle_cleaner_done(
     await db.mark_done_reported(target_week_start)
 
     instruction = "Please send a photo of the cleaned dorm in this chat."
+    dog_meme = config.get_meme_file("suspicious_dog")
+    if dog_meme:
+        try:
+            with open(dog_meme, "rb") as photo:
+                await msg.reply_photo(
+                    photo=photo,
+                    caption="Are you sure? 👀\nSend a photo of the cleaned dorm to prove it.",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+                return
+        except Exception as e:
+            logger.warning("Could not send suspicious dog meme: %s", e)
+
     await msg.reply_text(instruction, parse_mode=ParseMode.MARKDOWN)
 
 # ---------------------------------------------------------------------------
