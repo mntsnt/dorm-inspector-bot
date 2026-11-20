@@ -49,16 +49,16 @@ def get_main_menu_inline_keyboard() -> InlineKeyboardMarkup:
     """Main menu 6-button grid for one-tap navigation."""
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("📋 Status", callback_data="menu_status"),
-            InlineKeyboardButton("📅 Schedule", callback_data="menu_schedule"),
+            InlineKeyboardButton("Status", callback_data="menu_status"),
+            InlineKeyboardButton("Schedule", callback_data="menu_schedule"),
         ],
         [
-            InlineKeyboardButton("🧼 Submit Cleaning", callback_data="menu_done"),
-            InlineKeyboardButton("💸 Fines", callback_data="menu_fines"),
+            InlineKeyboardButton("Submit Cleaning", callback_data="menu_done"),
+            InlineKeyboardButton("Fines", callback_data="menu_fines"),
         ],
         [
-            InlineKeyboardButton("📜 History", callback_data="menu_history"),
-            InlineKeyboardButton("ℹ️ Help", callback_data="menu_help"),
+            InlineKeyboardButton("History", callback_data="menu_history"),
+            InlineKeyboardButton("Help", callback_data="menu_help"),
         ],
     ])
 
@@ -66,10 +66,10 @@ def get_reply_keyboard() -> ReplyKeyboardMarkup:
     """Persistent mobile bottom keyboard for easy thumb navigation."""
     return ReplyKeyboardMarkup(
         [
-            ["📋 Status", "📅 Schedule"],
-            ["🧼 Submit Cleaning", "💸 Fines"],
-            ["📜 History", "ℹ️ Help"],
-            ["🏠 Main Menu"],
+            ["Status", "Schedule"],
+            ["Submit Cleaning", "Fines"],
+            ["History", "Help"],
+            ["Main Menu"],
         ],
         resize_keyboard=True
     )
@@ -104,11 +104,11 @@ async def get_status_content(user_id: int) -> Tuple[str, InlineKeyboardMarkup]:
 
     keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("📅 Schedule ➡️", callback_data="menu_schedule"),
-            InlineKeyboardButton("🧼 Submit Cleaning", callback_data="menu_done"),
+            InlineKeyboardButton("Schedule", callback_data="menu_schedule"),
+            InlineKeyboardButton("Submit Cleaning", callback_data="menu_done"),
         ],
         [
-            InlineKeyboardButton("🔙 Main Menu", callback_data="menu_home"),
+            InlineKeyboardButton("Main Menu", callback_data="menu_home"),
         ]
     ])
 
@@ -139,24 +139,24 @@ async def get_status_content(user_id: int) -> Tuple[str, InlineKeyboardMarkup]:
         check_sent = week_record.get("check_sent", 0)
 
         if final_status == "completed":
-            duty_state = "✅ Cleaned and approved! No fines."
+            duty_state = "Cleaned and approved. No fines."
         elif final_status == "fined":
-            duty_state = f"❌ Not cleaned. Fined {config.FINE_TOTAL} ETB total."
+            duty_state = f"Not cleaned. Fined {config.FINE_TOTAL} ETB total."
         elif photo_status == "approved":
-            duty_state = "✅ Photo approved!"
+            duty_state = "Photo approved."
         elif photo_status == "submitted":
-            duty_state = f"📸 Photo sent. Waiting for {approver_name} to check."
+            duty_state = f"Photo sent. Waiting for {approver_name} to check."
         elif photo_status == "rejected":
-            duty_state = f"⚠️ Photo rejected. Cleaners must clean again and send a new photo."
+            duty_state = f"Photo rejected. Cleaners need to clean again and send a new photo."
         elif week_record.get("done_reported"):
             duty_state = "Cleaners reported done. Waiting for photo."
         elif check_sent:
             duty_state = f"Friday check in progress. Waiting for {approver_name}."
         else:
-            duty_state = "In progress (due Friday 8:00 PM)."
+            duty_state = "In progress (deadline Friday 8:00 PM)."
 
     msg = (
-        f"📋 **Week #{week_info.week_number}** ({week_info.monday_date.strftime('%b %d')} – {week_info.friday_date.strftime('%b %d')})\n\n"
+        f"Week #{week_info.week_number} ({week_info.monday_date.strftime('%b %d')} – {week_info.friday_date.strftime('%b %d')})\n\n"
         f"Cleaners: **{c1_name}** & **{c2_name}**\n"
         f"Approver: **{approver_name}**\n"
         f"Status: {duty_state}"
@@ -166,19 +166,19 @@ async def get_status_content(user_id: int) -> Tuple[str, InlineKeyboardMarkup]:
 def get_schedule_content() -> Tuple[str, InlineKeyboardMarkup]:
     """Generate 4-week schedule text and navigation buttons."""
     upcoming = config.get_upcoming_schedule(count=4)
-    lines = ["📅 **Next 4 Weeks:**\n"]
+    lines = ["Next 4 Weeks:\n"]
     for idx, w in enumerate(upcoming):
         tag = " (This Week)" if idx == 0 else ""
         date_str = f"{w.monday_date.strftime('%b %d')} – {w.friday_date.strftime('%b %d')}"
-        lines.append(f"• **Week {w.week_number}** ({date_str}){tag}: {w.cleaner1.name} & {w.cleaner2.name}")
+        lines.append(f"• Week {w.week_number} ({date_str}){tag}: {w.cleaner1.name} & {w.cleaner2.name}")
 
     keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("⬅️ Status", callback_data="menu_status"),
-            InlineKeyboardButton("Fines ➡️", callback_data="menu_fines"),
+            InlineKeyboardButton("Status", callback_data="menu_status"),
+            InlineKeyboardButton("Fines", callback_data="menu_fines"),
         ],
         [
-            InlineKeyboardButton("🔙 Main Menu", callback_data="menu_home"),
+            InlineKeyboardButton("Main Menu", callback_data="menu_home"),
         ]
     ])
     return "\n".join(lines), keyboard
@@ -187,20 +187,20 @@ async def get_fines_content() -> Tuple[str, InlineKeyboardMarkup]:
     """Generate unpaid fines ledger text and navigation buttons."""
     keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("⬅️ Schedule", callback_data="menu_schedule"),
-            InlineKeyboardButton("History ➡️", callback_data="menu_history"),
+            InlineKeyboardButton("Schedule", callback_data="menu_schedule"),
+            InlineKeyboardButton("History", callback_data="menu_history"),
         ],
         [
-            InlineKeyboardButton("🔙 Main Menu", callback_data="menu_home"),
+            InlineKeyboardButton("Main Menu", callback_data="menu_home"),
         ]
     ])
 
     unpaid_summary = await db.get_unpaid_fines_summary()
     if not unpaid_summary:
-        msg = "🎉 No unpaid fines!"
+        msg = "No unpaid fines!"
         return msg, keyboard
 
-    lines = ["💸 **Unpaid Fines:**\n"]
+    lines = ["Unpaid Fines:\n"]
     total_ledger = 0
     for entry in unpaid_summary:
         amount = entry["total_unpaid"]
@@ -215,11 +215,11 @@ async def get_history_content() -> Tuple[str, InlineKeyboardMarkup]:
     """Generate past 8 weeks history text and navigation buttons."""
     keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("⬅️ Fines", callback_data="menu_fines"),
-            InlineKeyboardButton("Help ➡️", callback_data="menu_help"),
+            InlineKeyboardButton("Fines", callback_data="menu_fines"),
+            InlineKeyboardButton("Help", callback_data="menu_help"),
         ],
         [
-            InlineKeyboardButton("🔙 Main Menu", callback_data="menu_home"),
+            InlineKeyboardButton("Main Menu", callback_data="menu_home"),
         ]
     ])
 
@@ -228,7 +228,7 @@ async def get_history_content() -> Tuple[str, InlineKeyboardMarkup]:
         msg = "No history yet."
         return msg, keyboard
 
-    lines = ["📜 **Past Weeks:**\n"]
+    lines = ["Past Weeks:\n"]
     for r in records:
         w_start = r["week_start"]
         c1 = config.get_member(r["cleaner1_id"])
@@ -245,7 +245,7 @@ async def get_history_content() -> Tuple[str, InlineKeyboardMarkup]:
         else:
             badge = "Pending"
 
-        lines.append(f"• **Week {r['week_number']}** ({w_start}): {c1_name} & {c2_name} — {badge}")
+        lines.append(f"• Week {r['week_number']} ({w_start}): {c1_name} & {c2_name} — {badge}")
 
     return "\n".join(lines), keyboard
 
@@ -253,23 +253,23 @@ def get_help_content() -> Tuple[str, InlineKeyboardMarkup]:
     """Generate user guide text and navigation buttons."""
     keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("⬅️ History", callback_data="menu_history"),
-            InlineKeyboardButton("Status ➡️", callback_data="menu_status"),
+            InlineKeyboardButton("History", callback_data="menu_history"),
+            InlineKeyboardButton("Status", callback_data="menu_status"),
         ],
         [
-            InlineKeyboardButton("🔙 Main Menu", callback_data="menu_home"),
+            InlineKeyboardButton("Main Menu", callback_data="menu_home"),
         ]
     ])
 
     help_text = (
-        "ℹ️ **How it works:**\n\n"
-        "• **Mon 8:00 AM**: Duty is announced (cleaners & approver).\n"
-        "• **Mon – Fri**: Cleaners clean, tap 'We cleaned', and send a photo.\n"
-        "• **Photo review**: Approver approves or rejects the photo.\n"
-        "• **Thu 6:00 PM**: Reminder if not done yet.\n"
-        "• **Fri 8:00 PM**: Check time. Cleaners confirm and approver gives final decision.\n"
-        "• **Fines**: 50 ETB each (100 ETB total) if not cleaned.\n"
-        "• **Weekend**: Off."
+        "How it works:\n\n"
+        "• Monday 8:00 AM: Duty is announced (cleaners & approver)\n"
+        "• Monday – Friday: Cleaners clean, tap 'We cleaned', and send a photo\n"
+        "• Photo review: Approver approves or rejects the photo\n"
+        "• Thursday 6:00 PM: Reminder if not done yet\n"
+        "• Friday 8:00 PM: Check time. Cleaners confirm and approver gives final decision\n"
+        "• Fines: 50 ETB each (100 ETB total) if not cleaned\n"
+        "• Weekend: Off"
     )
     return help_text, keyboard
 
@@ -283,11 +283,11 @@ async def get_done_content(user_id: int) -> Tuple[str, InlineKeyboardMarkup]:
 
     keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("📋 View Status", callback_data="menu_status"),
-            InlineKeyboardButton("📅 View Schedule", callback_data="menu_schedule"),
+            InlineKeyboardButton("Status", callback_data="menu_status"),
+            InlineKeyboardButton("Schedule", callback_data="menu_schedule"),
         ],
         [
-            InlineKeyboardButton("🔙 Main Menu", callback_data="menu_home"),
+            InlineKeyboardButton("Main Menu", callback_data="menu_home"),
         ]
     ])
 
@@ -337,25 +337,42 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     welcome_text = get_main_menu_text(member_name)
     inline_markup = get_main_menu_inline_keyboard()
 
+    welcome_meme = config.get_meme_file("welcome")
     if chat.type == "private":
-        # In private chat, also supply the persistent reply keyboard
         reply_markup = get_reply_keyboard()
-        await update.effective_message.reply_text(
-            welcome_text,
-            reply_markup=inline_markup,
-            parse_mode=ParseMode.MARKDOWN
-        )
-        # Send brief confirmation to dock the reply keyboard
+        if welcome_meme:
+            with open(welcome_meme, "rb") as photo:
+                await update.effective_message.reply_photo(
+                    photo=photo,
+                    caption=welcome_text,
+                    reply_markup=inline_markup,
+                    parse_mode=ParseMode.MARKDOWN
+                )
+        else:
+            await update.effective_message.reply_text(
+                welcome_text,
+                reply_markup=inline_markup,
+                parse_mode=ParseMode.MARKDOWN
+            )
         await update.effective_message.reply_text(
             "Buttons are also available below.",
             reply_markup=reply_markup
         )
     else:
-        await update.effective_message.reply_text(
-            welcome_text,
-            reply_markup=inline_markup,
-            parse_mode=ParseMode.MARKDOWN
-        )
+        if welcome_meme:
+            with open(welcome_meme, "rb") as photo:
+                await update.effective_message.reply_photo(
+                    photo=photo,
+                    caption=welcome_text,
+                    reply_markup=inline_markup,
+                    parse_mode=ParseMode.MARKDOWN
+                )
+        else:
+            await update.effective_message.reply_text(
+                welcome_text,
+                reply_markup=inline_markup,
+                parse_mode=ParseMode.MARKDOWN
+            )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send help instructions with navigation buttons."""
@@ -510,7 +527,7 @@ def register_command_handlers(application: Application) -> None:
     # Register persistent reply keyboard text handler
     application.add_handler(
         MessageHandler(
-            filters.TEXT & ~filters.COMMAND & filters.Regex(r"^(📋 Status|📅 Schedule|🧼 Submit Cleaning|💸 Fines|📜 History|ℹ️ Help|🏠 Main Menu)$"),
+            filters.TEXT & ~filters.COMMAND & filters.Regex(r"^(Status|Schedule|Submit Cleaning|Fines|History|Help|Main Menu|📋 Status|📅 Schedule|🧼 Submit Cleaning|💸 Fines|📜 History|ℹ️ Help|🏠 Main Menu)$"),
             reply_keyboard_text_handler
         )
     )

@@ -338,10 +338,10 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         # 3. Mobile reply keyboard has quick jump options
         reply_kb = commands.get_reply_keyboard()
         reply_texts = [btn.text if hasattr(btn, "text") else btn for row in reply_kb.keyboard for btn in row]
-        self.assertIn("📋 Status", reply_texts)
-        self.assertIn("📅 Schedule", reply_texts)
-        self.assertIn("💸 Fines", reply_texts)
-        self.assertIn("🏠 Main Menu", reply_texts)
+        self.assertIn("Status", reply_texts)
+        self.assertIn("Schedule", reply_texts)
+        self.assertIn("Fines", reply_texts)
+        self.assertIn("Main Menu", reply_texts)
 
         # 4. Status view has Forward (Schedule) and Back (Menu)
         status_text, status_kb = await commands.get_status_content(111111111)

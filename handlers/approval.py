@@ -5,6 +5,8 @@ The approver has the final authority; fines are only created upon their decision
 """
 
 import logging
+from pathlib import Path
+from typing import Optional
 
 from telegram import Update
 from telegram.constants import ParseMode
@@ -20,30 +22,49 @@ async def _notify_cleaner(
     context: ContextTypes.DEFAULT_TYPE,
     cleaner_id: int,
     cleaner_name: str,
-    text: str
+    text: str,
+    photo_path: Optional[Path] = None,
 ) -> None:
     """Send private DM to cleaner, falling back to group message if DM fails."""
     try:
-        await context.bot.send_message(
-            chat_id=cleaner_id,
-            text=text,
-            parse_mode=ParseMode.MARKDOWN
-        )
+        if photo_path and photo_path.is_file():
+            with open(photo_path, "rb") as photo:
+                await context.bot.send_photo(
+                    chat_id=cleaner_id,
+                    photo=photo,
+                    caption=text,
+                    parse_mode=ParseMode.MARKDOWN
+                )
+        else:
+            await context.bot.send_message(
+                chat_id=cleaner_id,
+                text=text,
+                parse_mode=ParseMode.MARKDOWN
+            )
     except TelegramError as te:
         logger.warning("Could not DM cleaner %s (%s): %s", cleaner_id, cleaner_name, te)
         try:
             bot_info = await context.bot.get_me()
             bot_user = bot_info.username or "bot"
             fallback = (
-                f"⚠️ For **{cleaner_name}**:\n"
+                f"For **{cleaner_name}**:\n"
                 f"{text}\n\n"
                 f"_(Could not DM you. Please message @{bot_user} and send /start)_"
             )
-            await context.bot.send_message(
-                chat_id=config.GROUP_ID,
-                text=fallback,
-                parse_mode=ParseMode.MARKDOWN
-            )
+            if photo_path and photo_path.is_file():
+                with open(photo_path, "rb") as photo:
+                    await context.bot.send_photo(
+                        chat_id=config.GROUP_ID,
+                        photo=photo,
+                        caption=fallback,
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+            else:
+                await context.bot.send_message(
+                    chat_id=config.GROUP_ID,
+                    text=fallback,
+                    parse_mode=ParseMode.MARKDOWN
+                )
         except Exception as ge:
             logger.error("Failed to send fallback message to group: %s", ge)
 
@@ -89,22 +110,35 @@ async def approve_photo_callback(update: Update, context: ContextTypes.DEFAULT_T
 
     # Update approver's message
     await query.edit_message_caption(
-        caption="✅ You approved the cleaning photo. Thanks!",
+        caption="You approved the cleaning photo. Thanks!",
         parse_mode=ParseMode.MARKDOWN
     )
 
-    # Post result in group chat
-    group_msg = f"✅ **{approver_name}** approved the cleaning by **{c1_name}** & **{c2_name}**. Done for this week!"
-    await context.bot.send_message(
-        chat_id=config.GROUP_ID,
-        text=group_msg,
-        parse_mode=ParseMode.MARKDOWN
-    )
+    # Post result in group chat (with approved meme)
+    group_msg = f"**{approver_name}** approved the cleaning by **{c1_name}** & **{c2_name}**. Done for the week!"
+    approved_meme = config.get_meme_file("approved")
+    try:
+        if approved_meme:
+            with open(approved_meme, "rb") as photo:
+                await context.bot.send_photo(
+                    chat_id=config.GROUP_ID,
+                    photo=photo,
+                    caption=group_msg,
+                    parse_mode=ParseMode.MARKDOWN
+                )
+        else:
+            await context.bot.send_message(
+                chat_id=config.GROUP_ID,
+                text=group_msg,
+                parse_mode=ParseMode.MARKDOWN
+            )
+    except Exception as e:
+        logger.error("Failed to send approval to group: %s", e)
 
     # Notify cleaners in private DM
-    dm_text = f"✅ **{approver_name}** approved your cleaning. Done for this week!"
-    await _notify_cleaner(context, week_record["cleaner1_id"], c1_name, dm_text)
-    await _notify_cleaner(context, week_record["cleaner2_id"], c2_name, dm_text)
+    dm_text = f"**{approver_name}** approved your cleaning. Done for the week!"
+    await _notify_cleaner(context, week_record["cleaner1_id"], c1_name, dm_text, photo_path=approved_meme)
+    await _notify_cleaner(context, week_record["cleaner2_id"], c2_name, dm_text, photo_path=approved_meme)
 
 async def reject_photo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Approver rejects the cleaning photo."""
@@ -141,28 +175,41 @@ async def reject_photo_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
     # Update approver's message
     await query.edit_message_caption(
-        caption="❌ You rejected the cleaning photo. Cleaners have been notified.",
+        caption="You rejected the cleaning photo. Cleaners have been notified.",
         parse_mode=ParseMode.MARKDOWN
     )
 
-    # Post in group chat
+    # Post in group chat (with rejected meme)
     group_msg = (
-        f"❌ **{approver_name}** rejected the cleaning photo.\n"
-        f"**{c1_name}** & **{c2_name}** must clean again and send a new photo before Friday 8:00 PM."
+        f"**{approver_name}** rejected the cleaning photo.\n"
+        f"**{c1_name}** & **{c2_name}** need to clean again and send a new photo before Friday 8:00 PM."
     )
-    await context.bot.send_message(
-        chat_id=config.GROUP_ID,
-        text=group_msg,
-        parse_mode=ParseMode.MARKDOWN
-    )
+    rejected_meme = config.get_meme_file("rejected")
+    try:
+        if rejected_meme:
+            with open(rejected_meme, "rb") as photo:
+                await context.bot.send_photo(
+                    chat_id=config.GROUP_ID,
+                    photo=photo,
+                    caption=group_msg,
+                    parse_mode=ParseMode.MARKDOWN
+                )
+        else:
+            await context.bot.send_message(
+                chat_id=config.GROUP_ID,
+                text=group_msg,
+                parse_mode=ParseMode.MARKDOWN
+            )
+    except Exception as e:
+        logger.error("Failed to send rejection to group: %s", e)
 
     # Notify cleaners in private DM
     dm_text = (
-        f"❌ **{approver_name}** rejected your cleaning photo.\n"
+        f"**{approver_name}** rejected your cleaning photo.\n"
         "Please clean again and send a new photo before Friday 8:00 PM."
     )
-    await _notify_cleaner(context, week_record["cleaner1_id"], c1_name, dm_text)
-    await _notify_cleaner(context, week_record["cleaner2_id"], c2_name, dm_text)
+    await _notify_cleaner(context, week_record["cleaner1_id"], c1_name, dm_text, photo_path=rejected_meme)
+    await _notify_cleaner(context, week_record["cleaner2_id"], c2_name, dm_text, photo_path=rejected_meme)
 
 # ---------------------------------------------------------------------------
 # Friday Final Confirmation Callbacks: Confirm Cleaned / Confirm Not Cleaned
@@ -205,20 +252,33 @@ async def confirm_cleaned_callback(update: Update, context: ContextTypes.DEFAULT
     c2_name = c2.name if c2 else f"ID {week_record['cleaner2_id']}"
 
     # Edit approver message
-    await query.edit_message_text("✅ You confirmed the dorm was cleaned. No fines.")
+    await query.edit_message_text("You confirmed the dorm was cleaned. No fines.")
 
-    # Post in group chat
-    group_msg = f"✅ **{approver_name}** confirmed that **{c1_name}** & **{c2_name}** cleaned the dorm. No fines!"
-    await context.bot.send_message(
-        chat_id=config.GROUP_ID,
-        text=group_msg,
-        parse_mode=ParseMode.MARKDOWN
-    )
+    # Post in group chat (with approved meme)
+    group_msg = f"**{approver_name}** confirmed that **{c1_name}** & **{c2_name}** cleaned the dorm. No fines!"
+    approved_meme = config.get_meme_file("approved")
+    try:
+        if approved_meme:
+            with open(approved_meme, "rb") as photo:
+                await context.bot.send_photo(
+                    chat_id=config.GROUP_ID,
+                    photo=photo,
+                    caption=group_msg,
+                    parse_mode=ParseMode.MARKDOWN
+                )
+        else:
+            await context.bot.send_message(
+                chat_id=config.GROUP_ID,
+                text=group_msg,
+                parse_mode=ParseMode.MARKDOWN
+            )
+    except Exception as e:
+        logger.error("Failed to send confirm cleaned to group: %s", e)
 
     # Notify cleaners
-    dm_text = f"✅ **{approver_name}** confirmed you cleaned the dorm. No fines!"
-    await _notify_cleaner(context, week_record["cleaner1_id"], c1_name, dm_text)
-    await _notify_cleaner(context, week_record["cleaner2_id"], c2_name, dm_text)
+    dm_text = f"**{approver_name}** confirmed you cleaned the dorm. No fines!"
+    await _notify_cleaner(context, week_record["cleaner1_id"], c1_name, dm_text, photo_path=approved_meme)
+    await _notify_cleaner(context, week_record["cleaner2_id"], c2_name, dm_text, photo_path=approved_meme)
 
 async def confirm_not_cleaned_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Approver confirms the final result: Not Cleaned (Fines recorded)."""
@@ -269,27 +329,40 @@ async def confirm_not_cleaned_callback(update: Update, context: ContextTypes.DEF
 
     # Edit approver message
     await query.edit_message_text(
-        f"❌ You confirmed the dorm was NOT cleaned. Fine: {config.FINE_TOTAL} ETB total."
+        f"You confirmed the dorm was NOT cleaned. Fine: {config.FINE_TOTAL} ETB total."
     )
 
-    # Post in group chat
+    # Post in group chat (with fined meme)
     group_msg = (
-        f"❌ **{approver_name}** confirmed the dorm was NOT cleaned.\n\n"
+        f"**{approver_name}** confirmed the dorm was NOT cleaned.\n\n"
         f"Fine: {config.FINE_EACH} ETB each for **{c1_name}** & **{c2_name}** (100 ETB total)."
     )
-    await context.bot.send_message(
-        chat_id=config.GROUP_ID,
-        text=group_msg,
-        parse_mode=ParseMode.MARKDOWN
-    )
+    fined_meme = config.get_meme_file("fined")
+    try:
+        if fined_meme:
+            with open(fined_meme, "rb") as photo:
+                await context.bot.send_photo(
+                    chat_id=config.GROUP_ID,
+                    photo=photo,
+                    caption=group_msg,
+                    parse_mode=ParseMode.MARKDOWN
+                )
+        else:
+            await context.bot.send_message(
+                chat_id=config.GROUP_ID,
+                text=group_msg,
+                parse_mode=ParseMode.MARKDOWN
+            )
+    except Exception as e:
+        logger.error("Failed to send fine notice to group: %s", e)
 
     # Notify cleaners
     dm_text = (
-        f"❌ Approver **{approver_name}** confirmed the dorm was NOT cleaned.\n"
+        f"Approver **{approver_name}** confirmed the dorm was NOT cleaned.\n"
         f"Fine: **{config.FINE_EACH} ETB** recorded for you."
     )
-    await _notify_cleaner(context, week_record["cleaner1_id"], c1_name, dm_text)
-    await _notify_cleaner(context, week_record["cleaner2_id"], c2_name, dm_text)
+    await _notify_cleaner(context, week_record["cleaner1_id"], c1_name, dm_text, photo_path=fined_meme)
+    await _notify_cleaner(context, week_record["cleaner2_id"], c2_name, dm_text, photo_path=fined_meme)
 
 def register_approval_handlers(application: Application) -> None:
     """Attach approver decision handlers."""

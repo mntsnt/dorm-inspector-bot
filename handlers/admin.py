@@ -67,14 +67,24 @@ async def markpaid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     reply_msg = f"Cleared {unpaid_total} ETB in fines for **{target_member.name}**."
     await update.effective_message.reply_text(reply_msg, parse_mode=ParseMode.MARKDOWN)
 
-    # Post notification in group chat
+    # Post notification in group chat (with paid meme if present)
     try:
         group_notice = f"Admin marked {unpaid_total} ETB fine as paid for **{target_member.name}**."
-        await context.bot.send_message(
-            chat_id=config.GROUP_ID,
-            text=group_notice,
-            parse_mode=ParseMode.MARKDOWN
-        )
+        paid_meme = config.get_meme_file("paid")
+        if paid_meme:
+            with open(paid_meme, "rb") as photo:
+                await context.bot.send_photo(
+                    chat_id=config.GROUP_ID,
+                    photo=photo,
+                    caption=group_notice,
+                    parse_mode=ParseMode.MARKDOWN
+                )
+        else:
+            await context.bot.send_message(
+                chat_id=config.GROUP_ID,
+                text=group_notice,
+                parse_mode=ParseMode.MARKDOWN
+            )
     except Exception as e:
         logger.error("Failed to post fine payment notice in group chat: %s", e)
 

@@ -26,20 +26,31 @@ async def send_dm_with_fallback(
     user_id: int,
     member_name: str,
     text: str,
-    reply_markup: Optional[InlineKeyboardMarkup] = None
+    reply_markup: Optional[InlineKeyboardMarkup] = None,
+    photo_path: Optional[Path] = None,
 ) -> bool:
     """
-    Attempt to send a private DM to the member.
+    Attempt to send a private DM to the member (with optional photo).
     If it fails (e.g. user hasn't clicked /start or blocked the bot),
     fall back to mentioning them in the dorm group chat.
     """
     try:
-        await context.bot.send_message(
-            chat_id=user_id,
-            text=text,
-            reply_markup=reply_markup,
-            parse_mode=ParseMode.MARKDOWN
-        )
+        if photo_path and photo_path.is_file():
+            with open(photo_path, "rb") as photo:
+                await context.bot.send_photo(
+                    chat_id=user_id,
+                    photo=photo,
+                    caption=text,
+                    reply_markup=reply_markup,
+                    parse_mode=ParseMode.MARKDOWN
+                )
+        else:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=text,
+                reply_markup=reply_markup,
+                parse_mode=ParseMode.MARKDOWN
+            )
         return True
     except TelegramError as te:
         logger.warning("Could not send private DM to %s (%s): %s", member_name, user_id, te)
@@ -47,16 +58,26 @@ async def send_dm_with_fallback(
             bot_info = await context.bot.get_me()
             bot_username = bot_info.username or "the bot"
             fallback_text = (
-                f"⚠️ For **{member_name}**:\n"
+                f"For **{member_name}**:\n"
                 f"{text}\n\n"
                 f"_(Could not DM you. Please message @{bot_username} and send /start)_"
             )
-            await context.bot.send_message(
-                chat_id=config.GROUP_ID,
-                text=fallback_text,
-                reply_markup=reply_markup,
-                parse_mode=ParseMode.MARKDOWN
-            )
+            if photo_path and photo_path.is_file():
+                with open(photo_path, "rb") as photo:
+                    await context.bot.send_photo(
+                        chat_id=config.GROUP_ID,
+                        photo=photo,
+                        caption=fallback_text,
+                        reply_markup=reply_markup,
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+            else:
+                await context.bot.send_message(
+                    chat_id=config.GROUP_ID,
+                    text=fallback_text,
+                    reply_markup=reply_markup,
+                    parse_mode=ParseMode.MARKDOWN
+                )
         except Exception as ge:
             logger.error("Failed to post group fallback for %s: %s", member_name, ge)
         return False
@@ -104,9 +125,9 @@ async def monday_announcement_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
     # 1. Post in the dorm group chat
     group_text = (
-        f"🧹 Cleaners this week: **{c1_name}** & **{c2_name}**\n"
-        f"👀 Approver: **{approver_name}**\n"
-        f"⏰ Deadline: Friday 8:00 PM"
+        f"Cleaners this week: **{c1_name}** & **{c2_name}**\n"
+        f"Approver: **{approver_name}**\n"
+        f"Deadline: Friday 8:00 PM"
     )
     announcement_meme = config.get_meme_file("announcement")
     try:
@@ -129,7 +150,7 @@ async def monday_announcement_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
     # 2. Private DM to Cleaner 1 & Cleaner 2
     cleaner_btn = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🧹 We cleaned", callback_data=f"cleaned_{week_info.week_start}")]
+        [InlineKeyboardButton("We cleaned", callback_data=f"cleaned_{week_info.week_start}")]
     ])
     await send_dm_with_fallback(
         context,
@@ -196,11 +217,11 @@ async def thursday_reminder_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     cleaner_btn = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🧹 We cleaned", callback_data=f"cleaned_{week_info.week_start}")]
+        [InlineKeyboardButton("We cleaned", callback_data=f"cleaned_{week_info.week_start}")]
     ])
     reminder_text = (
-        "⏰ Reminder: You have cleaning duty this week.\n"
-        "Deadline: Friday 8:00 PM. Please send a photo once done."
+        "Reminder: You have cleaning duty this week.\n"
+        "Deadline: Friday 8:00 PM. Send a photo once done."
     )
 
     c1 = config.get_member(week_record["cleaner1_id"])
@@ -208,8 +229,9 @@ async def thursday_reminder_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     c1_name = c1.name if c1 else f"ID {week_record['cleaner1_id']}"
     c2_name = c2.name if c2 else f"ID {week_record['cleaner2_id']}"
 
-    await send_dm_with_fallback(context, week_record["cleaner1_id"], c1_name, reminder_text, reply_markup=cleaner_btn)
-    await send_dm_with_fallback(context, week_record["cleaner2_id"], c2_name, reminder_text, reply_markup=cleaner_btn)
+    reminder_meme = config.get_meme_file("reminder")
+    await send_dm_with_fallback(context, week_record["cleaner1_id"], c1_name, reminder_text, reply_markup=cleaner_btn, photo_path=reminder_meme)
+    await send_dm_with_fallback(context, week_record["cleaner2_id"], c2_name, reminder_text, reply_markup=cleaner_btn, photo_path=reminder_meme)
 
     await db.mark_reminder_sent(week_info.week_start)
     logger.info("Thursday reminder sent for week %s", week_info.week_start)
@@ -252,11 +274,13 @@ async def friday_check_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     if week_record.get("photo_status") == "approved" or week_record.get("final_status") == "completed":
         timeout_deadline = now_time + timedelta(hours=config.APPROVER_TIMEOUT_HOURS)
         await db.set_check_sent(week_info.week_start, timeout_deadline.isoformat())
-        await context.bot.send_message(
-            chat_id=config.GROUP_ID,
-            text=f"✅ Friday Check: **{c1_name}** & **{c2_name}** already cleaned and their photo was approved. All done!",
-            parse_mode=ParseMode.MARKDOWN
-        )
+        approved_meme = config.get_meme_file("approved")
+        app_msg = f"Friday Check: **{c1_name}** & **{c2_name}** cleaned and photo was approved. All done!"
+        if approved_meme:
+            with open(approved_meme, "rb") as photo:
+                await context.bot.send_photo(chat_id=config.GROUP_ID, photo=photo, caption=app_msg, parse_mode=ParseMode.MARKDOWN)
+        else:
+            await context.bot.send_message(chat_id=config.GROUP_ID, text=app_msg, parse_mode=ParseMode.MARKDOWN)
         return
 
     # Set timeout deadline for approver
@@ -266,8 +290,8 @@ async def friday_check_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     # Send Yes/No check to both cleaners
     check_keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("✅ Yes", callback_data=f"fcheck_yes_{week_info.week_start}"),
-            InlineKeyboardButton("❌ No", callback_data=f"fcheck_no_{week_info.week_start}"),
+            InlineKeyboardButton("Yes", callback_data=f"fcheck_yes_{week_info.week_start}"),
+            InlineKeyboardButton("No", callback_data=f"fcheck_no_{week_info.week_start}"),
         ]
     ])
     cleaner_check_msg = "Did you clean the dorm this week?"
@@ -277,8 +301,8 @@ async def friday_check_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     # Send final confirmation request to Approver
     approver_confirm_keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("✅ Confirm Cleaned", callback_data=f"fconfirm_clean_{week_info.week_start}"),
-            InlineKeyboardButton("❌ Confirm Not Cleaned", callback_data=f"fconfirm_notclean_{week_info.week_start}"),
+            InlineKeyboardButton("Confirm Cleaned", callback_data=f"fconfirm_clean_{week_info.week_start}"),
+            InlineKeyboardButton("Confirm Not Cleaned", callback_data=f"fconfirm_notclean_{week_info.week_start}"),
         ]
     ])
     photo_status = week_record.get("photo_status", "none")
@@ -288,7 +312,7 @@ async def friday_check_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         f"Friday Check:\n"
         f"Cleaners: **{c1_name}** & **{c2_name}**\n"
         f"Status: {status_desc}\n\n"
-        f"Did they clean the dorm? Please confirm within {config.APPROVER_TIMEOUT_HOURS} hours:"
+        f"Did they clean the dorm? Confirm within {config.APPROVER_TIMEOUT_HOURS} hours:"
     )
     await send_dm_with_fallback(
         context,
@@ -392,11 +416,16 @@ async def _process_approver_timeout(context: ContextTypes.DEFAULT_TYPE, week_rec
     if cleaners_claim_yes and has_photo:
         # Fallback decision: Cleaned
         await db.mark_timeout_processed(week_start, decision="timeout", final_status="completed")
+        approved_meme = config.get_meme_file("approved")
         group_msg = (
             f"Approver **{approver_name}** didn't reply in time.\n"
-            f"Photo was sent, so marked as cleaned. No fines!"
+            f"Photo was sent, so marked as cleaned. No fines."
         )
-        await context.bot.send_message(chat_id=config.GROUP_ID, text=group_msg, parse_mode=ParseMode.MARKDOWN)
+        if approved_meme:
+            with open(approved_meme, "rb") as photo:
+                await context.bot.send_photo(chat_id=config.GROUP_ID, photo=photo, caption=group_msg, parse_mode=ParseMode.MARKDOWN)
+        else:
+            await context.bot.send_message(chat_id=config.GROUP_ID, text=group_msg, parse_mode=ParseMode.MARKDOWN)
     else:
         # Fallback decision: Not cleaned -> Fined
         await db.mark_timeout_processed(week_start, decision="timeout", final_status="fined")
@@ -408,20 +437,25 @@ async def _process_approver_timeout(context: ContextTypes.DEFAULT_TYPE, week_rec
             cleaner2_name=c2_name,
             fine_each=config.FINE_EACH
         )
+        fined_meme = config.get_meme_file("fined")
         group_msg = (
             f"Approver **{approver_name}** didn't reply in time and no approved photo was sent.\n"
             f"Marked as NOT cleaned.\n\n"
             f"Fine: {config.FINE_EACH} ETB each for **{c1_name}** & **{c2_name}**."
         )
-        await context.bot.send_message(chat_id=config.GROUP_ID, text=group_msg, parse_mode=ParseMode.MARKDOWN)
+        if fined_meme:
+            with open(fined_meme, "rb") as photo:
+                await context.bot.send_photo(chat_id=config.GROUP_ID, photo=photo, caption=group_msg, parse_mode=ParseMode.MARKDOWN)
+        else:
+            await context.bot.send_message(chat_id=config.GROUP_ID, text=group_msg, parse_mode=ParseMode.MARKDOWN)
 
         # Notify cleaners of fine
         dm_fine_msg = (
             f"The approver didn't reply in time and no photo was approved. Duty marked as NOT cleaned.\n"
             f"Fine: **{config.FINE_EACH} ETB**."
         )
-        await send_dm_with_fallback(context, week_record["cleaner1_id"], c1_name, dm_fine_msg)
-        await send_dm_with_fallback(context, week_record["cleaner2_id"], c2_name, dm_fine_msg)
+        await send_dm_with_fallback(context, week_record["cleaner1_id"], c1_name, dm_fine_msg, photo_path=fined_meme)
+        await send_dm_with_fallback(context, week_record["cleaner2_id"], c2_name, dm_fine_msg, photo_path=fined_meme)
 
 # ---------------------------------------------------------------------------
 # Scheduler Setup
