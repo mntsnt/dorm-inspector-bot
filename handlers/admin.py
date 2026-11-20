@@ -129,7 +129,41 @@ async def setid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     else:
         await update.effective_message.reply_text("Failed to update ID in members.json.")
 
+async def testgroup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin command to verify group connectivity and permissions."""
+    user = update.effective_user
+    if not user or user.id != config.ADMIN_ID:
+        await update.effective_message.reply_text("Only the admin can use this command.")
+        return
+
+    if not config.GROUP_ID:
+        await update.effective_message.reply_text("GROUP_ID is not configured in environment variables.")
+        return
+
+    try:
+        chat = await context.bot.get_chat(config.GROUP_ID)
+        chat_title = chat.title or "Dorm Group"
+        await context.bot.send_message(
+            chat_id=config.GROUP_ID,
+            text=f"Group verification successful! Bot is connected to {chat_title}."
+        )
+        await update.effective_message.reply_text(
+            f"Successfully connected to group **{chat_title}** (ID: `{config.GROUP_ID}`).\n"
+            "A test verification message was sent to the group chat.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        await update.effective_message.reply_text(
+            f"Failed to connect to group (ID: `{config.GROUP_ID}`):\n`{e}`\n\n"
+            "Troubleshooting:\n"
+            "1. Make sure the bot is added as a member in the dorm group.\n"
+            "2. Make sure the bot has permission to send messages (or make it an Admin).\n"
+            "3. Verify that GROUP_ID in your cloud environment matches this group's ID.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+
 def register_admin_handlers(application: Application) -> None:
     """Attach admin command handlers."""
     application.add_handler(CommandHandler("markpaid", markpaid_command))
     application.add_handler(CommandHandler("setid", setid_command))
+    application.add_handler(CommandHandler("testgroup", testgroup_command))
