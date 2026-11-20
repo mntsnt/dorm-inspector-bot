@@ -47,9 +47,9 @@ async def send_dm_with_fallback(
             bot_info = await context.bot.get_me()
             bot_username = bot_info.username or "the bot"
             fallback_text = (
-                f"⚠️ **Notice for {member_name}**:\n"
+                f"⚠️ For **{member_name}**:\n"
                 f"{text}\n\n"
-                f"_(Could not DM you. Please open a chat with @{bot_username} and press /start!)_"
+                f"_(Could not DM you. Please message @{bot_username} and send /start)_"
             )
             await context.bot.send_message(
                 chat_id=config.GROUP_ID,
@@ -104,11 +104,9 @@ async def monday_announcement_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
     # 1. Post in the dorm group chat
     group_text = (
-        f"🧹 **Cleaning Duty — Week #{week_info.week_number}**\n\n"
-        f"This week's cleaners: **{c1_name}** & **{c2_name}**.\n"
-        f"Approver: **{approver_name}**.\n\n"
-        f"📅 **Deadline:** Friday 8:00 PM\n"
-        f"Cleaners, please clean the dorm and submit your photo before Friday 8:00 PM!"
+        f"🧹 Cleaners this week: **{c1_name}** & **{c2_name}**\n"
+        f"👀 Approver: **{approver_name}**\n"
+        f"⏰ Deadline: Friday 8:00 PM"
     )
     try:
         await context.bot.send_message(
@@ -123,32 +121,34 @@ async def monday_announcement_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     cleaner_btn = InlineKeyboardMarkup([
         [InlineKeyboardButton("🧹 We cleaned", callback_data=f"cleaned_{week_info.week_start}")]
     ])
-    cleaner_dm_text = (
-        f"🧹 **Cleaning Duty — Week #{week_info.week_number}**\n\n"
-        f"You're on cleaning duty this week with **{'%s' if c1_name == c2_name else (c2_name if c1_name == week_info.cleaner1.name else c1_name)}**, "
-        f"deadline **Friday 8 PM**.\n\n"
-        "When you're done, press 'We cleaned' below and send a photo."
-    )
     await send_dm_with_fallback(
         context,
         user_id=week_info.cleaner1.user_id,
         member_name=c1_name,
-        text=cleaner_dm_text,
+        text=(
+            f"You have cleaning duty this week with **{c2_name}**.\n"
+            f"Deadline: Friday 8:00 PM.\n\n"
+            "When done, tap 'We cleaned' below and send a photo."
+        ),
         reply_markup=cleaner_btn
     )
     await send_dm_with_fallback(
         context,
         user_id=week_info.cleaner2.user_id,
         member_name=c2_name,
-        text=cleaner_dm_text,
+        text=(
+            f"You have cleaning duty this week with **{c1_name}**.\n"
+            f"Deadline: Friday 8:00 PM.\n\n"
+            "When done, tap 'We cleaned' below and send a photo."
+        ),
         reply_markup=cleaner_btn
     )
 
     # 3. Private DM to Approver
     approver_dm_text = (
-        f"👀 **Approver Duty — Week #{week_info.week_number}**\n\n"
-        f"You're this week's approver! Cleaners are **{c1_name}** & **{c2_name}**.\n"
-        "You'll review the cleaning photo when submitted."
+        f"You are this week's approver.\n"
+        f"Cleaners: **{c1_name}** & **{c2_name}**.\n\n"
+        "Please check their photo when they send it."
     )
     await send_dm_with_fallback(
         context,
@@ -189,9 +189,8 @@ async def thursday_reminder_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         [InlineKeyboardButton("🧹 We cleaned", callback_data=f"cleaned_{week_info.week_start}")]
     ])
     reminder_text = (
-        f"⏰ **Reminder: Cleaning Duty**\n\n"
-        f"You have cleaning duty this week! The deadline is **Friday at 8:00 PM**.\n"
-        "Please make sure to clean and submit your photo in time."
+        "⏰ Reminder: You have cleaning duty this week.\n"
+        "Deadline: Friday 8:00 PM. Please send a photo once done."
     )
 
     c1 = config.get_member(week_record["cleaner1_id"])
@@ -245,7 +244,7 @@ async def friday_check_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         await db.set_check_sent(week_info.week_start, timeout_deadline.isoformat())
         await context.bot.send_message(
             chat_id=config.GROUP_ID,
-            text=f"✅ **Friday Check:** Cleaners **{c1_name}** & **{c2_name}** have already cleaned and their photo was approved! Cleaning duty completed successfully. 🎉",
+            text=f"✅ Friday Check: **{c1_name}** & **{c2_name}** already cleaned and their photo was approved. All done!",
             parse_mode=ParseMode.MARKDOWN
         )
         return
@@ -261,10 +260,7 @@ async def friday_check_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             InlineKeyboardButton("❌ No", callback_data=f"fcheck_no_{week_info.week_start}"),
         ]
     ])
-    cleaner_check_msg = (
-        "❓ **Friday Check (8:00 PM):**\n\n"
-        "Did you clean the dorm?"
-    )
+    cleaner_check_msg = "Did you clean the dorm this week?"
     await send_dm_with_fallback(context, week_record["cleaner1_id"], c1_name, cleaner_check_msg, reply_markup=check_keyboard)
     await send_dm_with_fallback(context, week_record["cleaner2_id"], c2_name, cleaner_check_msg, reply_markup=check_keyboard)
 
@@ -276,14 +272,13 @@ async def friday_check_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         ]
     ])
     photo_status = week_record.get("photo_status", "none")
-    status_desc = "📸 Photo submitted" if photo_status == "submitted" else ("❌ Photo rejected" if photo_status == "rejected" else "⚠️ No photo submitted")
+    status_desc = "Photo sent" if photo_status == "submitted" else ("Photo rejected" if photo_status == "rejected" else "No photo sent")
 
     approver_confirm_msg = (
-        f"⚖️ **Friday Check — Final Confirmation**\n\n"
+        f"Friday Check:\n"
         f"Cleaners: **{c1_name}** & **{c2_name}**\n"
-        f"Current photo status: **{status_desc}**\n\n"
-        f"As this week's approver, you have final authority to confirm whether the dorm was cleaned.\n"
-        f"Please confirm within {config.APPROVER_TIMEOUT_HOURS} hours:"
+        f"Status: {status_desc}\n\n"
+        f"Did they clean the dorm? Please confirm within {config.APPROVER_TIMEOUT_HOURS} hours:"
     )
     await send_dm_with_fallback(
         context,
@@ -388,10 +383,8 @@ async def _process_approver_timeout(context: ContextTypes.DEFAULT_TYPE, week_rec
         # Fallback decision: Cleaned
         await db.mark_timeout_processed(week_start, decision="timeout", final_status="completed")
         group_msg = (
-            f"ℹ️ **Approver Timeout Fallback:**\n\n"
-            f"Approver **{approver_name}** did not confirm within {config.APPROVER_TIMEOUT_HOURS} hours.\n"
-            f"Falling back to cleaners' response and submitted photo: **Cleaned!**\n"
-            "Duty completed. No fines recorded."
+            f"Approver **{approver_name}** didn't reply in time.\n"
+            f"Photo was sent, so marked as cleaned. No fines!"
         )
         await context.bot.send_message(chat_id=config.GROUP_ID, text=group_msg, parse_mode=ParseMode.MARKDOWN)
     else:
@@ -406,20 +399,16 @@ async def _process_approver_timeout(context: ContextTypes.DEFAULT_TYPE, week_rec
             fine_each=config.FINE_EACH
         )
         group_msg = (
-            f"⚠️ **Approver Timeout Fallback:**\n\n"
-            f"Approver **{approver_name}** did not respond within {config.APPROVER_TIMEOUT_HOURS} hours.\n"
-            f"Falling back to cleaners' response / unverified state: **NOT cleaned**.\n\n"
-            f"💸 **Fines Recorded:**\n"
-            f"• **{c1_name}**: {config.FINE_EACH} ETB\n"
-            f"• **{c2_name}**: {config.FINE_EACH} ETB\n"
-            f"Total: {config.FINE_TOTAL} ETB"
+            f"Approver **{approver_name}** didn't reply in time and no approved photo was sent.\n"
+            f"Marked as NOT cleaned.\n\n"
+            f"Fine: {config.FINE_EACH} ETB each for **{c1_name}** & **{c2_name}**."
         )
         await context.bot.send_message(chat_id=config.GROUP_ID, text=group_msg, parse_mode=ParseMode.MARKDOWN)
 
         # Notify cleaners of fine
         dm_fine_msg = (
-            f"🚨 **Fine Notice:** The approver did not respond, and due to no approved photo, the fallback marked duty as NOT cleaned.\n"
-            f"A fine of **{config.FINE_EACH} ETB** has been recorded for you."
+            f"The approver didn't reply in time and no photo was approved. Duty marked as NOT cleaned.\n"
+            f"Fine: **{config.FINE_EACH} ETB**."
         )
         await send_dm_with_fallback(context, week_record["cleaner1_id"], c1_name, dm_fine_msg)
         await send_dm_with_fallback(context, week_record["cleaner2_id"], c2_name, dm_fine_msg)

@@ -27,10 +27,10 @@ async def _send_dm_fallback_notice(context: ContextTypes.DEFAULT_TYPE, member_na
     """Send fallback notice to the dorm group chat if a private DM fails."""
     try:
         bot_info = await context.bot.get_me()
-        bot_username = bot_info.username or "the bot"
+        bot_username = bot_info.username or "bot"
         msg = (
-            f"⚠️ Could not send a private message to **{member_name}**.\n"
-            f"Please open a private chat with @{bot_username} and press /start!"
+            f"⚠️ Could not DM **{member_name}**.\n"
+            f"Please message @{bot_username} and send /start"
         )
         await context.bot.send_message(
             chat_id=config.GROUP_ID,
@@ -52,12 +52,12 @@ async def done_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     if not config.is_member(user.id):
         if update.effective_message:
-            await update.effective_message.reply_text("🚫 Sorry, this bot is exclusively for residents of the dorm.")
+            await update.effective_message.reply_text("Sorry, this bot is only for dorm members.")
         return
 
     if chat.type != "private":
         await update.effective_message.reply_text(
-            "Please send /done in a private chat with the bot."
+            "Please send /done in private chat with the bot."
         )
         return
 
@@ -70,7 +70,7 @@ async def cleaned_button_callback(update: Update, context: ContextTypes.DEFAULT_
     user = query.from_user
 
     if not config.is_member(user.id):
-        await query.answer("Unauthorized.", show_alert=True)
+        await query.answer("Sorry, this bot is only for dorm members.", show_alert=True)
         return
 
     parts = query.data.split("_", 1)
@@ -96,20 +96,17 @@ async def handle_cleaner_done(
     c2_id = week_record["cleaner2_id"] if week_record else week_info.cleaner2.user_id
 
     if user_id not in (c1_id, c2_id):
-        await msg.reply_text("🚫 You are not on cleaning duty for this week.")
+        await msg.reply_text("You are not on cleaning duty this week.")
         return
 
     # Check if already completed
     if week_record and week_record.get("final_status") == "completed":
-        await msg.reply_text("🎉 The cleaning for this week has already been approved and completed!")
+        await msg.reply_text("Cleaning for this week is already done!")
         return
 
     await db.mark_done_reported(target_week_start)
 
-    instruction = (
-        "🧼 **Awesome! Now please send a photo of the cleaned dorm.**\n\n"
-        "Just send the photo directly in this chat. I will forward it to the approver and the group chat for verification."
-    )
+    instruction = "Please send a photo of the cleaned dorm in this chat."
     await msg.reply_text(instruction, parse_mode=ParseMode.MARKDOWN)
 
 # ---------------------------------------------------------------------------
@@ -123,7 +120,7 @@ async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     if not config.is_member(user.id):
-        await update.message.reply_text("🚫 Sorry, this bot is exclusively for residents of the dorm.")
+        await update.message.reply_text("Sorry, this bot is only for dorm members.")
         return
 
     week_info = config.get_week_info()
@@ -135,13 +132,13 @@ async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
 
     if user.id not in (c1_id, c2_id):
         await update.message.reply_text(
-            "ℹ️ You are not on cleaning duty this week, so your photo submission was not processed."
+            "You are not on cleaning duty this week."
         )
         return
 
     if week_record and week_record.get("final_status") == "completed":
         await update.message.reply_text(
-            "🎉 Cleaning duty for this week is already marked as completed!"
+            "Cleaning for this week is already done!"
         )
         return
 
@@ -165,9 +162,8 @@ async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
 
     # Forward/send photo to the dorm group chat
     group_caption = (
-        f"📸 **Dorm cleaned by {c1_name} & {c2_name}!**\n"
-        f"Submitted by: {submitter_name}\n"
-        f"Waiting for approval from **{approver_name}**."
+        f"Cleaned by **{c1_name}** & **{c2_name}** (sent by {submitter_name}).\n"
+        f"Waiting for **{approver_name}** to approve."
     )
     try:
         await context.bot.send_photo(
@@ -188,10 +184,8 @@ async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
             ]
         ])
         approver_caption = (
-            f"🧹 **Cleaning Submission for Review**\n\n"
-            f"Cleaners: **{c1_name}** & **{c2_name}**\n"
-            f"Week starting: {week_info.week_start}\n\n"
-            "Please review the photo and choose an action below:"
+            f"Photo sent by **{c1_name}** & **{c2_name}**.\n"
+            "Please approve or reject:"
         )
         try:
             await context.bot.send_photo(
@@ -206,11 +200,7 @@ async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
             await _send_dm_fallback_notice(context, approver_name)
 
     # Confirm to cleaner in DM
-    reply_text = (
-        f"✅ Photo received!\n"
-        f"It has been posted to the group and forwarded to **{approver_name}** for review.\n"
-        "You will be notified as soon as they decide."
-    )
+    reply_text = f"Photo received! Sent to the group and to **{approver_name}** to review."
     await update.message.reply_text(reply_text, parse_mode=ParseMode.MARKDOWN)
 
 # ---------------------------------------------------------------------------
@@ -223,7 +213,7 @@ async def friday_check_yes_callback(update: Update, context: ContextTypes.DEFAUL
     user = query.from_user
 
     if not config.is_member(user.id):
-        await query.answer("Unauthorized.", show_alert=True)
+        await query.answer("Sorry, this bot is only for dorm members.", show_alert=True)
         return
 
     parts = query.data.split("_", 2)
@@ -250,22 +240,21 @@ async def friday_check_yes_callback(update: Update, context: ContextTypes.DEFAUL
     if photo_status == "approved":
         # Yes and photo already approved
         await query.edit_message_text(
-            "✅ You confirmed you cleaned, and your photo has already been approved! Duty completed."
+            "You confirmed you cleaned, and your photo was approved. All done!"
         )
         await context.bot.send_message(
             chat_id=config.GROUP_ID,
-            text=f"✅ **Friday Check:** Cleaner **{member_name}** confirmed they cleaned, and the photo is already approved! Cleaned successfully.",
+            text=f"Friday Check: **{member_name}** confirmed they cleaned (photo already approved).",
             parse_mode=ParseMode.MARKDOWN
         )
     else:
-        # Yes but no approved photo yet -> prompt for photo & grace period
+        # Yes but no approved photo yet -> prompt for photo
         await query.edit_message_text(
-            "⚠️ You answered **YES**, but your cleaning photo has not been approved yet!\n"
-            "Please send the photo of the cleaned dorm right now (short grace period)."
+            "You answered YES, but no approved photo on record yet. Please send the photo now!"
         )
         await context.bot.send_message(
             chat_id=config.GROUP_ID,
-            text=f"⚠️ **Friday Check:** Cleaner **{member_name}** confirmed they cleaned, but no approved photo is on record yet. Cleaners must submit a photo immediately!",
+            text=f"Friday Check: **{member_name}** answered YES, but no photo approved yet.",
             parse_mode=ParseMode.MARKDOWN
         )
 
@@ -276,7 +265,7 @@ async def friday_check_no_callback(update: Update, context: ContextTypes.DEFAULT
     user = query.from_user
 
     if not config.is_member(user.id):
-        await query.answer("Unauthorized.", show_alert=True)
+        await query.answer("Sorry, this bot is only for dorm members.", show_alert=True)
         return
 
     parts = query.data.split("_", 2)
@@ -297,11 +286,11 @@ async def friday_check_no_callback(update: Update, context: ContextTypes.DEFAULT
     await db.record_cleaner_response(week_start, user.id, "no")
 
     await query.edit_message_text(
-        "❌ You confirmed you did not clean. Your response has been recorded."
+        "Recorded. The approver will make the final decision."
     )
     await context.bot.send_message(
         chat_id=config.GROUP_ID,
-        text=f"⚠️ **Friday Check:** Cleaner **{member_name}** answered that they did **NOT** clean the dorm.",
+        text=f"Friday Check: **{member_name}** answered that they did NOT clean.",
         parse_mode=ParseMode.MARKDOWN
     )
 

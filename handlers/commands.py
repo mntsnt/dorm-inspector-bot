@@ -39,7 +39,7 @@ async def reject_non_member(update: Update) -> None:
     """Politely reject users who are not in members.json."""
     if update.effective_message:
         await update.effective_message.reply_text(
-            "🚫 Sorry, this bot is exclusively for residents of the dorm."
+            "Sorry, this bot is only for dorm members."
         )
 
 # ---------------------------------------------------------------------------
@@ -49,16 +49,16 @@ def get_main_menu_inline_keyboard() -> InlineKeyboardMarkup:
     """Main menu 6-button grid for one-tap navigation."""
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("📋 Current Status", callback_data="menu_status"),
-            InlineKeyboardButton("📅 4-Week Schedule", callback_data="menu_schedule"),
+            InlineKeyboardButton("📋 Status", callback_data="menu_status"),
+            InlineKeyboardButton("📅 Schedule", callback_data="menu_schedule"),
         ],
         [
             InlineKeyboardButton("🧼 Submit Cleaning", callback_data="menu_done"),
-            InlineKeyboardButton("💸 Unpaid Fines", callback_data="menu_fines"),
+            InlineKeyboardButton("💸 Fines", callback_data="menu_fines"),
         ],
         [
-            InlineKeyboardButton("📜 Cleaning History", callback_data="menu_history"),
-            InlineKeyboardButton("ℹ️ Rules & Guide", callback_data="menu_help"),
+            InlineKeyboardButton("📜 History", callback_data="menu_history"),
+            InlineKeyboardButton("ℹ️ Help", callback_data="menu_help"),
         ],
     ])
 
@@ -80,27 +80,19 @@ def get_main_menu_text(member_name: str) -> str:
     week_info = config.get_week_info(current_date)
 
     if week_info.week_number < 1:
-        friday_deadline = config.START_BASE_MONDAY + timedelta(days=4)
-        cycle_preview = (
-            f"📅 **Upcoming Start:** Week #1 begins **Monday, {config.START_BASE_MONDAY.strftime('%B %d, %Y')}**\n"
-            f"🧹 **First Cleaners:** {config.PAIRS[0][0].name} & {config.PAIRS[0][1].name}\n"
-            f"📢 **Announcement:** Monday, {config.START_BASE_MONDAY.strftime('%b %d')} at 08:00 AM\n"
-            f"🧼 **Cleaners Deadline:** Friday, {friday_deadline.strftime('%b %d')} at 08:00 PM"
+        first_cleaners = f"{config.PAIRS[0][0].name} & {config.PAIRS[0][1].name}"
+        return (
+            f"Hi **{member_name}**!\n\n"
+            f"Week 1 starts: Monday, {config.START_BASE_MONDAY.strftime('%b %d')}\n"
+            f"First cleaners: **{first_cleaners}**\n\n"
+            "Use the buttons below to check duty, fines, or rules."
         )
     else:
-        cycle_preview = (
-            f"📅 **Current Cycle:** Week #{week_info.week_number} "
-            f"({week_info.monday_date.strftime('%b %d')} – {week_info.friday_date.strftime('%b %d')})\n"
-            f"🧹 **Cleaners on Duty:** {week_info.cleaner1.name} & {week_info.cleaner2.name}"
+        return (
+            f"Hi **{member_name}**!\n\n"
+            f"Week {week_info.week_number} cleaners: **{week_info.cleaner1.name}** & **{week_info.cleaner2.name}**\n\n"
+            "Use the buttons below to check duty, fines, or submit cleaning."
         )
-
-    return (
-        f"👋 **Welcome, {member_name}!**\n\n"
-        "You are connected to the **Dorm Inspector Bot**.\n"
-        "I coordinate the weekly cleaning rotation, approvals, and reminders for our dorm.\n\n"
-        f"{cycle_preview}\n\n"
-        "👇 **Tap any button below to navigate between functionalities:**"
-    )
 
 # ---------------------------------------------------------------------------
 # View Content Generators (Text + Next/Prev/Back Buttons)
@@ -112,23 +104,20 @@ async def get_status_content(user_id: int) -> Tuple[str, InlineKeyboardMarkup]:
 
     keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("📅 Next: Schedule ➡️", callback_data="menu_schedule"),
+            InlineKeyboardButton("📅 Schedule ➡️", callback_data="menu_schedule"),
             InlineKeyboardButton("🧼 Submit Cleaning", callback_data="menu_done"),
         ],
         [
-            InlineKeyboardButton("🔙 Back to Main Menu", callback_data="menu_home"),
+            InlineKeyboardButton("🔙 Main Menu", callback_data="menu_home"),
         ]
     ])
 
     if week_info.week_number < 1:
         first_pair = config.PAIRS[0]
-        friday_deadline = config.START_BASE_MONDAY + timedelta(days=4)
         msg = (
-            f"⏳ **Cleaning duty has not started yet.**\n\n"
-            f"Week #1 officially begins on **Monday, {config.START_BASE_MONDAY.strftime('%B %d, %Y')}**.\n"
-            f"🧹 **First Cleaners:** {first_pair[0].name} & {first_pair[1].name}\n"
-            f"📢 The announcement will be sent at 08:00 AM on Monday, {config.START_BASE_MONDAY.strftime('%b %d')}.\n"
-            f"🧼 Cleaners clean and verify on Friday, {friday_deadline.strftime('%b %d')}."
+            f"Cleaning has not started yet.\n\n"
+            f"Starts: Monday, {config.START_BASE_MONDAY.strftime('%b %d')}\n"
+            f"First cleaners: **{first_pair[0].name}** & **{first_pair[1].name}**"
         )
         return msg, keyboard
 
@@ -140,62 +129,56 @@ async def get_status_content(user_id: int) -> Tuple[str, InlineKeyboardMarkup]:
         approver = config.get_member(week_record["approver_id"])
         approver_name = approver.name if approver else f"ID {week_record['approver_id']}"
     else:
-        approver_name = "Not yet assigned (will be picked on Monday announcement)"
+        approver_name = "Not yet assigned"
 
     if not week_record or not week_record.get("announced"):
-        duty_state = "⏳ Awaiting Monday morning announcement."
+        duty_state = "Not announced yet."
     else:
         final_status = week_record.get("final_status", "pending")
         photo_status = week_record.get("photo_status", "none")
         check_sent = week_record.get("check_sent", 0)
 
         if final_status == "completed":
-            duty_state = "✅ **Completed** — Cleaning has been approved! No fines."
+            duty_state = "✅ Cleaned and approved! No fines."
         elif final_status == "fined":
-            duty_state = f"❌ **Missed / Fined** — A fine of {config.FINE_TOTAL} ETB total was recorded."
+            duty_state = f"❌ Not cleaned. Fined {config.FINE_TOTAL} ETB total."
         elif photo_status == "approved":
-            duty_state = "✅ **Photo Approved** by approver! Good job."
+            duty_state = "✅ Photo approved!"
         elif photo_status == "submitted":
-            duty_state = f"📸 **Photo Submitted** — Waiting for approval from {approver_name}."
+            duty_state = f"📸 Photo sent. Waiting for {approver_name} to check."
         elif photo_status == "rejected":
-            duty_state = f"⚠️ **Photo Rejected** by {approver_name}. Cleaners must redo and resubmit before Friday 8 PM!"
+            duty_state = f"⚠️ Photo rejected. Cleaners must clean again and send a new photo."
         elif week_record.get("done_reported"):
-            duty_state = "⏳ Cleaners reported 'We cleaned' — Waiting for photo submission."
+            duty_state = "Cleaners reported done. Waiting for photo."
         elif check_sent:
-            duty_state = f"⚖️ **Friday Check in progress** — Waiting for final confirmation from {approver_name}."
+            duty_state = f"Friday check in progress. Waiting for {approver_name}."
         else:
-            duty_state = "🧹 **In Progress** — Cleaners must clean and submit photo before Friday 8:00 PM."
+            duty_state = "In progress (due Friday 8:00 PM)."
 
     msg = (
-        f"📋 **Current Cleaning Status (Week #{week_info.week_number})**\n\n"
-        f"📅 **Week:** {week_info.monday_date.strftime('%b %d, %Y')} – {week_info.friday_date.strftime('%b %d, %Y')}\n"
-        f"🧹 **Cleaners:** {c1_name} & {c2_name}\n"
-        f"👀 **Approver:** {approver_name}\n\n"
-        f"**State:**\n{duty_state}"
+        f"📋 **Week #{week_info.week_number}** ({week_info.monday_date.strftime('%b %d')} – {week_info.friday_date.strftime('%b %d')})\n\n"
+        f"Cleaners: **{c1_name}** & **{c2_name}**\n"
+        f"Approver: **{approver_name}**\n"
+        f"Status: {duty_state}"
     )
     return msg, keyboard
 
 def get_schedule_content() -> Tuple[str, InlineKeyboardMarkup]:
     """Generate 4-week schedule text and navigation buttons."""
     upcoming = config.get_upcoming_schedule(count=4)
-    lines = ["📅 **Upcoming Cleaning Schedule (Next 4 Weeks)**:\n"]
+    lines = ["📅 **Next 4 Weeks:**\n"]
     for idx, w in enumerate(upcoming):
         tag = " (This Week)" if idx == 0 else ""
         date_str = f"{w.monday_date.strftime('%b %d')} – {w.friday_date.strftime('%b %d')}"
-        lines.append(
-            f"• **Week {w.week_number}** ({date_str}){tag}:\n"
-            f"   🧹 **{w.cleaner1.name}** & **{w.cleaner2.name}**"
-        )
-
-    lines.append("\n_Note: Each member cleans once every 4 weeks in a fixed rotation._")
+        lines.append(f"• **Week {w.week_number}** ({date_str}){tag}: {w.cleaner1.name} & {w.cleaner2.name}")
 
     keyboard = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("⬅️ Status", callback_data="menu_status"),
-            InlineKeyboardButton("Next: Fines ➡️", callback_data="menu_fines"),
+            InlineKeyboardButton("Fines ➡️", callback_data="menu_fines"),
         ],
         [
-            InlineKeyboardButton("🔙 Back to Main Menu", callback_data="menu_home"),
+            InlineKeyboardButton("🔙 Main Menu", callback_data="menu_home"),
         ]
     ])
     return "\n".join(lines), keyboard
@@ -205,29 +188,27 @@ async def get_fines_content() -> Tuple[str, InlineKeyboardMarkup]:
     keyboard = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("⬅️ Schedule", callback_data="menu_schedule"),
-            InlineKeyboardButton("Next: History ➡️", callback_data="menu_history"),
+            InlineKeyboardButton("History ➡️", callback_data="menu_history"),
         ],
         [
-            InlineKeyboardButton("🔙 Back to Main Menu", callback_data="menu_home"),
+            InlineKeyboardButton("🔙 Main Menu", callback_data="menu_home"),
         ]
     ])
 
     unpaid_summary = await db.get_unpaid_fines_summary()
     if not unpaid_summary:
-        msg = "🎉 **Clean slate!** There are currently no unpaid fines in the dorm."
+        msg = "🎉 No unpaid fines!"
         return msg, keyboard
 
-    lines = ["💸 **Unpaid Fines Ledger**:\n"]
+    lines = ["💸 **Unpaid Fines:**\n"]
     total_ledger = 0
     for entry in unpaid_summary:
         amount = entry["total_unpaid"]
-        count = entry["unpaid_count"]
         name = entry["user_name"]
         total_ledger += amount
-        lines.append(f"• **{name}**: {amount} ETB ({count} missed week{'s' if count > 1 else ''})")
+        lines.append(f"• **{name}**: {amount} ETB")
 
-    lines.append(f"\n**Total Outstanding Fines:** {total_ledger} ETB")
-    lines.append("_Admin can clear paid fines using /markpaid <member>_")
+    lines.append(f"\nTotal: {total_ledger} ETB")
     return "\n".join(lines), keyboard
 
 async def get_history_content() -> Tuple[str, InlineKeyboardMarkup]:
@@ -235,42 +216,36 @@ async def get_history_content() -> Tuple[str, InlineKeyboardMarkup]:
     keyboard = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("⬅️ Fines", callback_data="menu_fines"),
-            InlineKeyboardButton("Next: Rules & Guide ➡️", callback_data="menu_help"),
+            InlineKeyboardButton("Help ➡️", callback_data="menu_help"),
         ],
         [
-            InlineKeyboardButton("🔙 Back to Main Menu", callback_data="menu_home"),
+            InlineKeyboardButton("🔙 Main Menu", callback_data="menu_home"),
         ]
     ])
 
     records = await db.get_history(limit=8)
     if not records:
-        msg = "📜 No cleaning history recorded yet."
+        msg = "No history yet."
         return msg, keyboard
 
-    lines = ["📜 **Cleaning History (Last 8 Weeks)**:\n"]
+    lines = ["📜 **Past Weeks:**\n"]
     for r in records:
         w_start = r["week_start"]
         c1 = config.get_member(r["cleaner1_id"])
         c2 = config.get_member(r["cleaner2_id"])
-        app = config.get_member(r["approver_id"])
 
         c1_name = c1.name if c1 else f"ID {r['cleaner1_id']}"
         c2_name = c2.name if c2 else f"ID {r['cleaner2_id']}"
-        app_name = app.name if app else f"ID {r['approver_id']}"
 
         status = r.get("final_status", "pending")
         if status == "completed":
-            badge = "✅ Completed"
+            badge = "Cleaned"
         elif status == "fined":
-            badge = "❌ Fined"
+            badge = "Fined"
         else:
-            badge = "⏳ In Progress"
+            badge = "Pending"
 
-        lines.append(
-            f"• **Week {r['week_number']}** ({w_start}):\n"
-            f"   Cleaners: {c1_name} & {c2_name} | Approver: {app_name}\n"
-            f"   Result: {badge}\n"
-        )
+        lines.append(f"• **Week {r['week_number']}** ({w_start}): {c1_name} & {c2_name} — {badge}")
 
     return "\n".join(lines), keyboard
 
@@ -282,23 +257,19 @@ def get_help_content() -> Tuple[str, InlineKeyboardMarkup]:
             InlineKeyboardButton("Status ➡️", callback_data="menu_status"),
         ],
         [
-            InlineKeyboardButton("🔙 Back to Main Menu", callback_data="menu_home"),
+            InlineKeyboardButton("🔙 Main Menu", callback_data="menu_home"),
         ]
     ])
 
     help_text = (
-        "🧹 **Dorm Inspector Bot — User Guide**\n\n"
-        "**Weekly Cleaning Schedule:**\n"
-        "• **Monday 08:00 AM**: Bot announces this week's 2 cleaners & randomly chosen approver.\n"
-        "• **Mon – Fri**: Cleaners do the cleaning, click /done (or 'We cleaned'), and send a photo.\n"
-        "• **Photo Approval**: Approver reviews the photo in private DM (Approve / Reject).\n"
-        "• **Thursday 06:00 PM**: Reminder sent to cleaners if cleaning is not completed.\n"
-        "• **Friday 08:00 PM (Check Time)**: Final verification. Bot asks cleaners if they cleaned.\n"
-        "• **Approver Confirmation**: Approver has 12 hours to confirm final result. Fines are only created after approver's decision.\n"
-        "• **Weekend**: Saturday & Sunday have no cleaning duty.\n\n"
-        "**Quick Navigation:**\n"
-        "• Use the buttons on messages or the bottom keyboard to browse.\n"
-        "• Or use slash commands: `/status`, `/schedule`, `/done`, `/fines`, `/history`."
+        "ℹ️ **How it works:**\n\n"
+        "• **Mon 8:00 AM**: Duty is announced (cleaners & approver).\n"
+        "• **Mon – Fri**: Cleaners clean, tap 'We cleaned', and send a photo.\n"
+        "• **Photo review**: Approver approves or rejects the photo.\n"
+        "• **Thu 6:00 PM**: Reminder if not done yet.\n"
+        "• **Fri 8:00 PM**: Check time. Cleaners confirm and approver gives final decision.\n"
+        "• **Fines**: 50 ETB each (100 ETB total) if not cleaned.\n"
+        "• **Weekend**: Off."
     )
     return help_text, keyboard
 
@@ -316,7 +287,7 @@ async def get_done_content(user_id: int) -> Tuple[str, InlineKeyboardMarkup]:
             InlineKeyboardButton("📅 View Schedule", callback_data="menu_schedule"),
         ],
         [
-            InlineKeyboardButton("🔙 Back to Main Menu", callback_data="menu_home"),
+            InlineKeyboardButton("🔙 Main Menu", callback_data="menu_home"),
         ]
     ])
 
@@ -325,24 +296,16 @@ async def get_done_content(user_id: int) -> Tuple[str, InlineKeyboardMarkup]:
         c2 = config.get_member(c2_id)
         c1_name = c1.name if c1 else f"ID {c1_id}"
         c2_name = c2.name if c2 else f"ID {c2_id}"
-        msg = (
-            f"ℹ️ **You are not on cleaning duty for this week.**\n\n"
-            f"This week's assigned cleaners are **{c1_name}** and **{c2_name}**.\n"
-            "Only the assigned cleaners can submit photos for verification."
-        )
+        msg = f"You are not on cleaning duty this week.\nCleaners: **{c1_name}** & **{c2_name}**."
         return msg, keyboard
 
     if week_record and week_record.get("final_status") == "completed":
-        msg = "🎉 **Great news!** The cleaning for this week has already been approved and completed."
+        msg = "Cleaning for this week is already done!"
         return msg, keyboard
 
     await db.mark_done_reported(week_info.week_start)
 
-    msg = (
-        "🧼 **Ready to submit your cleaning photo?**\n\n"
-        "Please send the photo directly in this private chat with the bot.\n"
-        "I will forward it to the assigned approver and post it in the dorm group for verification!"
-    )
+    msg = "Please send a photo of the cleaned dorm in this chat."
     return msg, keyboard
 
 # ---------------------------------------------------------------------------
@@ -384,7 +347,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
         # Send brief confirmation to dock the reply keyboard
         await update.effective_message.reply_text(
-            "⌨️ Quick menu buttons are also available below.",
+            "Buttons are also available below.",
             reply_markup=reply_markup
         )
     else:
@@ -459,7 +422,7 @@ async def menu_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     if not check_member_permission(user.id):
-        await query.answer("🚫 Sorry, this bot is exclusively for residents of the dorm.", show_alert=True)
+        await query.answer("Sorry, this bot is only for dorm members.", show_alert=True)
         return
 
     action = query.data

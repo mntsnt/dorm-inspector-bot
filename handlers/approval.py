@@ -33,11 +33,11 @@ async def _notify_cleaner(
         logger.warning("Could not DM cleaner %s (%s): %s", cleaner_id, cleaner_name, te)
         try:
             bot_info = await context.bot.get_me()
-            bot_user = bot_info.username or "the bot"
+            bot_user = bot_info.username or "bot"
             fallback = (
-                f"⚠️ Notification for cleaner **{cleaner_name}**:\n"
+                f"⚠️ For **{cleaner_name}**:\n"
                 f"{text}\n\n"
-                f"_(Please open a private chat with @{bot_user} and send /start!)_"
+                f"_(Could not DM you. Please message @{bot_user} and send /start)_"
             )
             await context.bot.send_message(
                 chat_id=config.GROUP_ID,
@@ -70,13 +70,13 @@ async def approve_photo_callback(update: Update, context: ContextTypes.DEFAULT_T
 
     if user.id != approver_id:
         await query.answer(
-            f"🚫 Only the assigned approver ({approver_name}) can approve this!",
+            f"Only the assigned approver ({approver_name}) can approve this.",
             show_alert=True
         )
         return
 
     if week_record.get("final_status") == "completed":
-        await query.answer("This week's cleaning is already completed.", show_alert=True)
+        await query.answer("Cleaning is already completed.", show_alert=True)
         return
 
     # Update database: mark approved and completed
@@ -89,16 +89,12 @@ async def approve_photo_callback(update: Update, context: ContextTypes.DEFAULT_T
 
     # Update approver's message
     await query.edit_message_caption(
-        caption=f"✅ **You approved the cleaning photo for week starting {week_start}.**\nThank you!",
+        caption="✅ You approved the cleaning photo. Thanks!",
         parse_mode=ParseMode.MARKDOWN
     )
 
     # Post result in group chat
-    group_msg = (
-        f"🎉 **Cleaning Approved!**\n\n"
-        f"Approver **{approver_name}** has approved the cleaning by **{c1_name}** and **{c2_name}**.\n"
-        "Duty is marked as completed for this week. No fines! 👏"
-    )
+    group_msg = f"✅ **{approver_name}** approved the cleaning by **{c1_name}** & **{c2_name}**. Done for this week!"
     await context.bot.send_message(
         chat_id=config.GROUP_ID,
         text=group_msg,
@@ -106,10 +102,7 @@ async def approve_photo_callback(update: Update, context: ContextTypes.DEFAULT_T
     )
 
     # Notify cleaners in private DM
-    dm_text = (
-        f"🎉 **Great job!** Approver **{approver_name}** has approved your cleaning photo.\n"
-        "Your duty for this week is officially completed. No fines!"
-    )
+    dm_text = f"✅ **{approver_name}** approved your cleaning. Done for this week!"
     await _notify_cleaner(context, week_record["cleaner1_id"], c1_name, dm_text)
     await _notify_cleaner(context, week_record["cleaner2_id"], c2_name, dm_text)
 
@@ -133,7 +126,7 @@ async def reject_photo_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
     if user.id != approver_id:
         await query.answer(
-            f"🚫 Only the assigned approver ({approver_name}) can reject this!",
+            f"Only the assigned approver ({approver_name}) can reject this.",
             show_alert=True
         )
         return
@@ -148,15 +141,14 @@ async def reject_photo_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
     # Update approver's message
     await query.edit_message_caption(
-        caption=f"❌ **You rejected the cleaning photo for week starting {week_start}.**\nThe cleaners have been notified to redo it.",
+        caption="❌ You rejected the cleaning photo. Cleaners have been notified.",
         parse_mode=ParseMode.MARKDOWN
     )
 
     # Post in group chat
     group_msg = (
-        f"❌ **Cleaning Photo Rejected**\n\n"
-        f"Approver **{approver_name}** rejected the cleaning photo.\n"
-        f"Cleaners **{c1_name}** and **{c2_name}** must redo the cleaning and send a new photo before Friday 8:00 PM!"
+        f"❌ **{approver_name}** rejected the cleaning photo.\n"
+        f"**{c1_name}** & **{c2_name}** must clean again and send a new photo before Friday 8:00 PM."
     )
     await context.bot.send_message(
         chat_id=config.GROUP_ID,
@@ -166,8 +158,8 @@ async def reject_photo_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
     # Notify cleaners in private DM
     dm_text = (
-        f"⚠️ **Attention:** Approver **{approver_name}** has rejected your cleaning photo.\n\n"
-        "Please redo the cleaning and send an updated photo using the 'We cleaned' button or /done before Friday 8:00 PM!"
+        f"❌ **{approver_name}** rejected your cleaning photo.\n"
+        "Please clean again and send a new photo before Friday 8:00 PM."
     )
     await _notify_cleaner(context, week_record["cleaner1_id"], c1_name, dm_text)
     await _notify_cleaner(context, week_record["cleaner2_id"], c2_name, dm_text)
@@ -195,13 +187,13 @@ async def confirm_cleaned_callback(update: Update, context: ContextTypes.DEFAULT
 
     if user.id != approver_id:
         await query.answer(
-            f"🚫 Only the assigned approver ({approver_name}) can confirm this!",
+            f"Only the assigned approver ({approver_name}) can confirm this.",
             show_alert=True
         )
         return
 
     if week_record.get("final_status") in ("completed", "fined"):
-        await query.answer("This week's status has already been finalized.", show_alert=True)
+        await query.answer("Status has already been decided.", show_alert=True)
         return
 
     # Record approver decision
@@ -213,16 +205,10 @@ async def confirm_cleaned_callback(update: Update, context: ContextTypes.DEFAULT
     c2_name = c2.name if c2 else f"ID {week_record['cleaner2_id']}"
 
     # Edit approver message
-    await query.edit_message_text(
-        f"✅ **You confirmed that the dorm was cleaned for week starting {week_start}.**\nNo fines recorded."
-    )
+    await query.edit_message_text("✅ You confirmed the dorm was cleaned. No fines.")
 
     # Post in group chat
-    group_msg = (
-        f"🎉 **Final Confirmation:**\n\n"
-        f"Approver **{approver_name}** has confirmed that **{c1_name}** & **{c2_name}** cleaned the dorm.\n"
-        "Duty complete for this week. No fines! 🌟"
-    )
+    group_msg = f"✅ **{approver_name}** confirmed that **{c1_name}** & **{c2_name}** cleaned the dorm. No fines!"
     await context.bot.send_message(
         chat_id=config.GROUP_ID,
         text=group_msg,
@@ -230,10 +216,7 @@ async def confirm_cleaned_callback(update: Update, context: ContextTypes.DEFAULT
     )
 
     # Notify cleaners
-    dm_text = (
-        f"🎉 Approver **{approver_name}** has confirmed that you cleaned the dorm!\n"
-        "Your duty is officially complete. No fines."
-    )
+    dm_text = f"✅ **{approver_name}** confirmed you cleaned the dorm. No fines!"
     await _notify_cleaner(context, week_record["cleaner1_id"], c1_name, dm_text)
     await _notify_cleaner(context, week_record["cleaner2_id"], c2_name, dm_text)
 
@@ -257,13 +240,13 @@ async def confirm_not_cleaned_callback(update: Update, context: ContextTypes.DEF
 
     if user.id != approver_id:
         await query.answer(
-            f"🚫 Only the assigned approver ({approver_name}) can confirm this!",
+            f"Only the assigned approver ({approver_name}) can confirm this.",
             show_alert=True
         )
         return
 
     if week_record.get("final_status") in ("completed", "fined"):
-        await query.answer("This week's status has already been finalized.", show_alert=True)
+        await query.answer("Status has already been decided.", show_alert=True)
         return
 
     # Record approver decision
@@ -286,19 +269,13 @@ async def confirm_not_cleaned_callback(update: Update, context: ContextTypes.DEF
 
     # Edit approver message
     await query.edit_message_text(
-        f"❌ **You confirmed that the dorm was NOT cleaned for week starting {week_start}.**\n"
-        f"A fine of {config.FINE_TOTAL} ETB total ({config.FINE_EACH} ETB each) has been recorded."
+        f"❌ You confirmed the dorm was NOT cleaned. Fine: {config.FINE_TOTAL} ETB total."
     )
 
     # Post in group chat
     group_msg = (
-        f"🚨 **Final Confirmation:**\n\n"
-        f"Approver **{approver_name}** has confirmed that **{c1_name}** & **{c2_name}** did **NOT** clean the dorm.\n\n"
-        f"💸 **Fines Recorded:**\n"
-        f"• **{c1_name}**: {config.FINE_EACH} ETB\n"
-        f"• **{c2_name}**: {config.FINE_EACH} ETB\n"
-        f"Total: {config.FINE_TOTAL} ETB\n\n"
-        "Use /fines to view outstanding fines."
+        f"❌ **{approver_name}** confirmed the dorm was NOT cleaned.\n\n"
+        f"Fine: {config.FINE_EACH} ETB each for **{c1_name}** & **{c2_name}** (100 ETB total)."
     )
     await context.bot.send_message(
         chat_id=config.GROUP_ID,
@@ -308,9 +285,8 @@ async def confirm_not_cleaned_callback(update: Update, context: ContextTypes.DEF
 
     # Notify cleaners
     dm_text = (
-        f"🚨 **Fine Notice:** Approver **{approver_name}** confirmed the dorm was NOT cleaned this week.\n"
-        f"A fine of **{config.FINE_EACH} ETB** has been recorded for you in the ledger.\n"
-        "Please settle your fine with the admin."
+        f"❌ Approver **{approver_name}** confirmed the dorm was NOT cleaned.\n"
+        f"Fine: **{config.FINE_EACH} ETB** recorded for you."
     )
     await _notify_cleaner(context, week_record["cleaner1_id"], c1_name, dm_text)
     await _notify_cleaner(context, week_record["cleaner2_id"], c2_name, dm_text)

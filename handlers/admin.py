@@ -24,15 +24,14 @@ async def markpaid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     # Security check: Only ADMIN_ID can execute
     if user.id != config.ADMIN_ID:
         await update.effective_message.reply_text(
-            "🚫 Unauthorized. This command is restricted to the bot administrator."
+            "Only the admin can use this command."
         )
         return
 
     # Check argument
     if not context.args:
         await update.effective_message.reply_text(
-            "⚠️ **Usage:** `/markpaid <member_name_or_user_id>`\n"
-            "Example: `/markpaid Bilisuma` or `/markpaid 111111111`",
+            "Usage: `/markpaid <name_or_id>`\nExample: `/markpaid Bilisuma`",
             parse_mode=ParseMode.MARKDOWN
         )
         return
@@ -50,7 +49,7 @@ async def markpaid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if not target_member:
         member_list = ", ".join(m.name for m in config.MEMBERS)
         await update.effective_message.reply_text(
-            f"❌ Member '{target_input}' not found.\nValid members: {member_list}"
+            f"Member '{target_input}' not found.\nMembers: {member_list}"
         )
         return
 
@@ -58,25 +57,19 @@ async def markpaid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     unpaid_total = await db.get_user_unpaid_total(target_member.user_id)
     if unpaid_total == 0:
         await update.effective_message.reply_text(
-            f"ℹ️ **{target_member.name}** currently has no unpaid fines."
+            f"{target_member.name} has no unpaid fines."
         )
         return
 
     # Mark fines as paid in ledger
     count = await db.mark_fines_paid(target_member.user_id, admin_id=user.id)
 
-    reply_msg = (
-        f"✅ **Fines Cleared!**\n"
-        f"Successfully marked {count} unpaid record(s) totaling **{unpaid_total} ETB** as PAID for **{target_member.name}**."
-    )
+    reply_msg = f"Cleared {unpaid_total} ETB in fines for **{target_member.name}**."
     await update.effective_message.reply_text(reply_msg, parse_mode=ParseMode.MARKDOWN)
 
     # Post notification in group chat
     try:
-        group_notice = (
-            f"🧾 **Fine Settlement:**\n"
-            f"Admin has marked **{unpaid_total} ETB** of fines as **PAID** for **{target_member.name}**."
-        )
+        group_notice = f"Admin marked {unpaid_total} ETB fine as paid for **{target_member.name}**."
         await context.bot.send_message(
             chat_id=config.GROUP_ID,
             text=group_notice,
