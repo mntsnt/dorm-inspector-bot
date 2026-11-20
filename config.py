@@ -183,6 +183,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 raw_group_id = os.getenv("GROUP_ID", "").strip()
 raw_admin_id = os.getenv("ADMIN_ID", "").strip()
 raw_start_date = os.getenv("START_DATE", "").strip()
+raw_topic_id = os.getenv("TOPIC_ID", "").strip()
 
 if not BOT_TOKEN:
     logger.warning("BOT_TOKEN is not set in environment or .env file.")
@@ -191,6 +192,11 @@ try:
     GROUP_ID = int(raw_group_id) if raw_group_id else 0
 except ValueError:
     sys.exit(f"CRITICAL ERROR: GROUP_ID must be an integer, got: {raw_group_id}")
+
+try:
+    TOPIC_ID = int(raw_topic_id) if raw_topic_id else None
+except ValueError:
+    TOPIC_ID = None
 
 try:
     ADMIN_ID = int(raw_admin_id) if raw_admin_id else 0

@@ -67,6 +67,7 @@ async def send_dm_with_fallback(
                 with open(photo_path, "rb") as photo:
                     await context.bot.send_photo(
                         chat_id=config.GROUP_ID,
+                        message_thread_id=config.TOPIC_ID,
                         photo=photo,
                         caption=fallback_text,
                         reply_markup=reply_markup,
@@ -75,6 +76,7 @@ async def send_dm_with_fallback(
             else:
                 await context.bot.send_message(
                     chat_id=config.GROUP_ID,
+                    message_thread_id=config.TOPIC_ID,
                     text=fallback_text,
                     reply_markup=reply_markup,
                     parse_mode=ParseMode.MARKDOWN
@@ -136,6 +138,7 @@ async def monday_announcement_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             with open(announcement_meme, "rb") as photo:
                 await context.bot.send_photo(
                     chat_id=config.GROUP_ID,
+                    message_thread_id=config.TOPIC_ID,
                     photo=photo,
                     caption=group_text,
                     parse_mode=ParseMode.MARKDOWN
@@ -143,6 +146,7 @@ async def monday_announcement_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         else:
             await context.bot.send_message(
                 chat_id=config.GROUP_ID,
+                message_thread_id=config.TOPIC_ID,
                 text=group_text,
                 parse_mode=ParseMode.MARKDOWN
             )
@@ -279,9 +283,9 @@ async def friday_check_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         app_msg = f"Friday Check: **{c1_name}** & **{c2_name}** cleaned and photo was approved. All done!"
         if approved_meme:
             with open(approved_meme, "rb") as photo:
-                await context.bot.send_photo(chat_id=config.GROUP_ID, photo=photo, caption=app_msg, parse_mode=ParseMode.MARKDOWN)
+                await context.bot.send_photo(chat_id=config.GROUP_ID, message_thread_id=config.TOPIC_ID, photo=photo, caption=app_msg, parse_mode=ParseMode.MARKDOWN)
         else:
-            await context.bot.send_message(chat_id=config.GROUP_ID, text=app_msg, parse_mode=ParseMode.MARKDOWN)
+            await context.bot.send_message(chat_id=config.GROUP_ID, message_thread_id=config.TOPIC_ID, text=app_msg, parse_mode=ParseMode.MARKDOWN)
         return
 
     # Set timeout deadline for approver
@@ -426,9 +430,9 @@ async def _process_approver_timeout(context: ContextTypes.DEFAULT_TYPE, week_rec
         )
         if approved_meme:
             with open(approved_meme, "rb") as photo:
-                await context.bot.send_photo(chat_id=config.GROUP_ID, photo=photo, caption=group_msg, parse_mode=ParseMode.MARKDOWN)
+                await context.bot.send_photo(chat_id=config.GROUP_ID, message_thread_id=config.TOPIC_ID, photo=photo, caption=group_msg, parse_mode=ParseMode.MARKDOWN)
         else:
-            await context.bot.send_message(chat_id=config.GROUP_ID, text=group_msg, parse_mode=ParseMode.MARKDOWN)
+            await context.bot.send_message(chat_id=config.GROUP_ID, message_thread_id=config.TOPIC_ID, text=group_msg, parse_mode=ParseMode.MARKDOWN)
     else:
         # Fallback decision: Not cleaned -> Fined
         await db.mark_timeout_processed(week_start, decision="timeout", final_status="fined")
@@ -448,9 +452,9 @@ async def _process_approver_timeout(context: ContextTypes.DEFAULT_TYPE, week_rec
         )
         if fined_meme:
             with open(fined_meme, "rb") as photo:
-                await context.bot.send_photo(chat_id=config.GROUP_ID, photo=photo, caption=group_msg, parse_mode=ParseMode.MARKDOWN)
+                await context.bot.send_photo(chat_id=config.GROUP_ID, message_thread_id=config.TOPIC_ID, photo=photo, caption=group_msg, parse_mode=ParseMode.MARKDOWN)
         else:
-            await context.bot.send_message(chat_id=config.GROUP_ID, text=group_msg, parse_mode=ParseMode.MARKDOWN)
+            await context.bot.send_message(chat_id=config.GROUP_ID, message_thread_id=config.TOPIC_ID, text=group_msg, parse_mode=ParseMode.MARKDOWN)
 
         # Notify cleaners of fine
         dm_fine_msg = (

@@ -34,6 +34,7 @@ async def _send_dm_fallback_notice(context: ContextTypes.DEFAULT_TYPE, member_na
         )
         await context.bot.send_message(
             chat_id=config.GROUP_ID,
+            message_thread_id=config.TOPIC_ID,
             text=msg,
             parse_mode=ParseMode.MARKDOWN
         )
@@ -220,6 +221,7 @@ async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
     try:
         await context.bot.send_photo(
             chat_id=config.GROUP_ID,
+            message_thread_id=config.TOPIC_ID,
             photo=photo_file_id,
             caption=group_caption,
             parse_mode=ParseMode.MARKDOWN
@@ -296,6 +298,7 @@ async def friday_check_yes_callback(update: Update, context: ContextTypes.DEFAUL
         )
         await context.bot.send_message(
             chat_id=config.GROUP_ID,
+            message_thread_id=config.TOPIC_ID,
             text=f"Friday Check: **{member_name}** confirmed they cleaned (photo already approved).",
             parse_mode=ParseMode.MARKDOWN
         )
@@ -306,6 +309,7 @@ async def friday_check_yes_callback(update: Update, context: ContextTypes.DEFAUL
         )
         await context.bot.send_message(
             chat_id=config.GROUP_ID,
+            message_thread_id=config.TOPIC_ID,
             text=f"Friday Check: **{member_name}** answered YES, but no photo approved yet.",
             parse_mode=ParseMode.MARKDOWN
         )
@@ -342,6 +346,7 @@ async def friday_check_no_callback(update: Update, context: ContextTypes.DEFAULT
     )
     await context.bot.send_message(
         chat_id=config.GROUP_ID,
+        message_thread_id=config.TOPIC_ID,
         text=f"Friday Check: **{member_name}** answered that they did NOT clean.",
         parse_mode=ParseMode.MARKDOWN
     )

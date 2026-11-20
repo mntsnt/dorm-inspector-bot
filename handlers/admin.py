@@ -75,6 +75,7 @@ async def markpaid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             with open(paid_meme, "rb") as photo:
                 await context.bot.send_photo(
                     chat_id=config.GROUP_ID,
+                    message_thread_id=config.TOPIC_ID,
                     photo=photo,
                     caption=group_notice,
                     parse_mode=ParseMode.MARKDOWN
@@ -82,6 +83,7 @@ async def markpaid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         else:
             await context.bot.send_message(
                 chat_id=config.GROUP_ID,
+                message_thread_id=config.TOPIC_ID,
                 text=group_notice,
                 parse_mode=ParseMode.MARKDOWN
             )
@@ -143,12 +145,14 @@ async def testgroup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     try:
         chat = await context.bot.get_chat(config.GROUP_ID)
         chat_title = chat.title or "Dorm Group"
+        topic_info = f", Topic ID: `{config.TOPIC_ID}`" if config.TOPIC_ID is not None else ""
         await context.bot.send_message(
             chat_id=config.GROUP_ID,
+            message_thread_id=config.TOPIC_ID,
             text=f"Group verification successful! Bot is connected to {chat_title}."
         )
         await update.effective_message.reply_text(
-            f"Successfully connected to group **{chat_title}** (ID: `{config.GROUP_ID}`).\n"
+            f"Successfully connected to group **{chat_title}** (ID: `{config.GROUP_ID}`{topic_info}).\n"
             "A test verification message was sent to the group chat.",
             parse_mode=ParseMode.MARKDOWN
         )

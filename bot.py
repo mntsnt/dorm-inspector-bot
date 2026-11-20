@@ -78,7 +78,7 @@ async def post_init(application: Application) -> None:
 
     bot_info = await application.bot.get_me()
     logger.info("Bot authenticated successfully: @%s (ID: %s)", bot_info.username, bot_info.id)
-    logger.info("Dorm Group ID: %s", config.GROUP_ID)
+    logger.info("Dorm Group ID: %s (Topic ID: %s)", config.GROUP_ID, config.TOPIC_ID if config.TOPIC_ID is not None else "None/General")
     logger.info("Admin User ID: %s", config.ADMIN_ID)
     logger.info("Rotation Start Date: %s (%s)", config.START_DATE_STR, config.START_DATE_OBJ.strftime("%A"))
     logger.info("Timezone: %s", config.TIMEZONE)

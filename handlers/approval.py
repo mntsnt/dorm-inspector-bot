@@ -55,6 +55,7 @@ async def _notify_cleaner(
                 with open(photo_path, "rb") as photo:
                     await context.bot.send_photo(
                         chat_id=config.GROUP_ID,
+                        message_thread_id=config.TOPIC_ID,
                         photo=photo,
                         caption=fallback,
                         parse_mode=ParseMode.MARKDOWN
@@ -62,6 +63,7 @@ async def _notify_cleaner(
             else:
                 await context.bot.send_message(
                     chat_id=config.GROUP_ID,
+                    message_thread_id=config.TOPIC_ID,
                     text=fallback,
                     parse_mode=ParseMode.MARKDOWN
                 )
@@ -122,6 +124,7 @@ async def approve_photo_callback(update: Update, context: ContextTypes.DEFAULT_T
             with open(approved_meme, "rb") as photo:
                 await context.bot.send_photo(
                     chat_id=config.GROUP_ID,
+                    message_thread_id=config.TOPIC_ID,
                     photo=photo,
                     caption=group_msg,
                     parse_mode=ParseMode.MARKDOWN
@@ -129,6 +132,7 @@ async def approve_photo_callback(update: Update, context: ContextTypes.DEFAULT_T
         else:
             await context.bot.send_message(
                 chat_id=config.GROUP_ID,
+                message_thread_id=config.TOPIC_ID,
                 text=group_msg,
                 parse_mode=ParseMode.MARKDOWN
             )
@@ -190,6 +194,7 @@ async def reject_photo_callback(update: Update, context: ContextTypes.DEFAULT_TY
             with open(rejected_meme, "rb") as photo:
                 await context.bot.send_photo(
                     chat_id=config.GROUP_ID,
+                    message_thread_id=config.TOPIC_ID,
                     photo=photo,
                     caption=group_msg,
                     parse_mode=ParseMode.MARKDOWN
@@ -197,6 +202,7 @@ async def reject_photo_callback(update: Update, context: ContextTypes.DEFAULT_TY
         else:
             await context.bot.send_message(
                 chat_id=config.GROUP_ID,
+                message_thread_id=config.TOPIC_ID,
                 text=group_msg,
                 parse_mode=ParseMode.MARKDOWN
             )
@@ -262,6 +268,7 @@ async def confirm_cleaned_callback(update: Update, context: ContextTypes.DEFAULT
             with open(approved_meme, "rb") as photo:
                 await context.bot.send_photo(
                     chat_id=config.GROUP_ID,
+                    message_thread_id=config.TOPIC_ID,
                     photo=photo,
                     caption=group_msg,
                     parse_mode=ParseMode.MARKDOWN
@@ -269,6 +276,7 @@ async def confirm_cleaned_callback(update: Update, context: ContextTypes.DEFAULT
         else:
             await context.bot.send_message(
                 chat_id=config.GROUP_ID,
+                message_thread_id=config.TOPIC_ID,
                 text=group_msg,
                 parse_mode=ParseMode.MARKDOWN
             )
@@ -343,6 +351,7 @@ async def confirm_not_cleaned_callback(update: Update, context: ContextTypes.DEF
             with open(fined_meme, "rb") as photo:
                 await context.bot.send_photo(
                     chat_id=config.GROUP_ID,
+                    message_thread_id=config.TOPIC_ID,
                     photo=photo,
                     caption=group_msg,
                     parse_mode=ParseMode.MARKDOWN
@@ -350,6 +359,7 @@ async def confirm_not_cleaned_callback(update: Update, context: ContextTypes.DEF
         else:
             await context.bot.send_message(
                 chat_id=config.GROUP_ID,
+                message_thread_id=config.TOPIC_ID,
                 text=group_msg,
                 parse_mode=ParseMode.MARKDOWN
             )
