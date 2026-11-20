@@ -90,6 +90,15 @@ def _init_db_sync(db_path: Optional[Path] = None) -> None:
             );
         """)
 
+        # System settings key-value store (e.g. tracking one-off milestones like all members connected)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+
         conn.commit()
     logger.info("Database initialized successfully at %s", target_path)
 
@@ -125,6 +134,47 @@ def _get_user_chat_id_sync(user_id: int) -> Optional[int]:
 
 async def get_user_chat_id(user_id: int) -> Optional[int]:
     return await asyncio.to_thread(_get_user_chat_id_sync, user_id)
+
+def _get_connected_user_ids_sync() -> List[int]:
+    with _get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT user_id FROM users WHERE chat_id IS NOT NULL")
+        return [int(row["user_id"]) for row in cursor.fetchall()]
+
+async def get_connected_user_ids() -> List[int]:
+    return await asyncio.to_thread(_get_connected_user_ids_sync)
+
+def _get_setting_sync(key: str) -> Optional[str]:
+    with _get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
+        row = cursor.fetchone()
+        return row["value"] if row else None
+
+async def get_setting(key: str) -> Optional[str]:
+    return await asyncio.to_thread(_get_setting_sync, key)
+
+def _set_setting_sync(key: str, value: str) -> None:
+    with _get_connection() as conn:
+        conn.execute("""
+            INSERT INTO settings (key, value, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = CURRENT_TIMESTAMP;
+        """, (key, value))
+        conn.commit()
+
+async def set_setting(key: str, value: str) -> None:
+    await asyncio.to_thread(_set_setting_sync, key, value)
+
+async def get_connection_status() -> tuple:
+    """Return (connected_count, total_count, connected_members, pending_members)."""
+    import config
+    connected_ids = set(await get_connected_user_ids())
+    connected = [m for m in config.MEMBERS if m.user_id in connected_ids]
+    pending = [m for m in config.MEMBERS if m.user_id not in connected_ids]
+    return len(connected), len(config.MEMBERS), connected, pending
 
 # ---------------------------------------------------------------------------
 # Week Duty Operations

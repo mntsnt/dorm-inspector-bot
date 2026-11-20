@@ -74,23 +74,25 @@ def get_reply_keyboard() -> ReplyKeyboardMarkup:
         resize_keyboard=True
     )
 
-def get_main_menu_text(member_name: str) -> str:
+def get_main_menu_text(member_name: str, connected_info: Optional[str] = None) -> str:
     """Welcome and overview text for the main menu."""
     current_date = config.get_current_date()
     week_info = config.get_week_info(current_date)
+
+    status_suffix = f"\n\nMembers connected: **{connected_info}**" if connected_info else ""
 
     if week_info.week_number < 1:
         first_cleaners = f"{config.PAIRS[0][0].name} & {config.PAIRS[0][1].name}"
         return (
             f"Hi **{member_name}**!\n\n"
             f"Week 1 starts: Monday, {config.START_BASE_MONDAY.strftime('%b %d')}\n"
-            f"First cleaners: **{first_cleaners}**\n\n"
+            f"First cleaners: **{first_cleaners}**{status_suffix}\n\n"
             "Use the buttons below to check duty, fines, or rules."
         )
     else:
         return (
             f"Hi **{member_name}**!\n\n"
-            f"Week {week_info.week_number} cleaners: **{week_info.cleaner1.name}** & **{week_info.cleaner2.name}**\n\n"
+            f"Week {week_info.week_number} cleaners: **{week_info.cleaner1.name}** & **{week_info.cleaner2.name}**{status_suffix}\n\n"
             "Use the buttons below to check duty, fines, or submit cleaning."
         )
 
@@ -269,7 +271,9 @@ def get_help_content() -> Tuple[str, InlineKeyboardMarkup]:
         "• Thursday 6:00 PM: Reminder if not done yet\n"
         "• Friday 8:00 PM: Check time. Cleaners confirm and approver gives final decision\n"
         "• Fines: 50 ETB each (100 ETB total) if not cleaned\n"
-        "• Weekend: Off"
+        "• Weekend: Off\n\n"
+        "Commands:\n"
+        "• /members: See who has connected to the bot"
     )
     return help_text, keyboard
 
@@ -346,6 +350,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     member_name = member.name if member else user.first_name
 
     # Persist user chat_id for private DM capability
+    conn_str = None
     if chat.type == "private":
         await db.upsert_user(
             user_id=user.id,
@@ -354,7 +359,45 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             username=user.username
         )
 
-    welcome_text = get_main_menu_text(member_name)
+        connected_count, total_count, connected_members, pending_members = await db.get_connection_status()
+        conn_str = f"{connected_count}/{total_count}"
+
+        # If all 8 members are now connected, announce celebration to group topic once
+        if connected_count >= total_count:
+            already_announced = await db.get_setting("all_connected_announced")
+            if not already_announced:
+                await db.set_setting("all_connected_announced", "1")
+                w1 = config.get_week_info(config.START_BASE_MONDAY)
+                first_cleaners = f"**{w1.cleaner1.name}** & **{w1.cleaner2.name}**"
+                group_text = (
+                    "🎉 **All 8 dorm mates are now connected!**\n\n"
+                    "Everyone has successfully linked to the bot. Dorm Inspector is fully functional and ready.\n\n"
+                    f"• Week 1 starts: Monday, {config.START_BASE_MONDAY.strftime('%b %d')}\n"
+                    f"• First cleaners: {first_cleaners}\n\n"
+                    "Let's keep the dorm clean!"
+                )
+                welcome_meme = config.get_meme_file("welcome")
+                try:
+                    if welcome_meme:
+                        with open(welcome_meme, "rb") as photo:
+                            await context.bot.send_photo(
+                                chat_id=config.GROUP_ID,
+                                message_thread_id=config.TOPIC_ID,
+                                photo=photo,
+                                caption=group_text,
+                                parse_mode=ParseMode.MARKDOWN
+                            )
+                    else:
+                        await context.bot.send_message(
+                            chat_id=config.GROUP_ID,
+                            message_thread_id=config.TOPIC_ID,
+                            text=group_text,
+                            parse_mode=ParseMode.MARKDOWN
+                        )
+                except Exception as e:
+                    logger.error("Failed to post all-connected announcement to group: %s", e)
+
+    welcome_text = get_main_menu_text(member_name, connected_info=conn_str)
     inline_markup = get_main_menu_inline_keyboard()
 
     welcome_meme = config.get_meme_file("welcome")
@@ -435,6 +478,31 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     text, keyboard = await get_history_content()
     await update.effective_message.reply_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+
+async def members_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show connection status of all 8 dorm members."""
+    user = update.effective_user
+    if not user or not check_member_permission(user.id):
+        await reject_non_member(update)
+        return
+
+    connected_count, total_count, connected_members, pending_members = await db.get_connection_status()
+    lines = [f"Dorm Members ({connected_count}/{total_count} Connected):\n"]
+
+    connected_ids = {m.user_id for m in connected_members}
+    for m in config.MEMBERS:
+        if m.user_id in connected_ids:
+            lines.append(f"• **{m.name}**: Connected")
+        else:
+            lines.append(f"• **{m.name}**: Waiting to send /start")
+
+    if connected_count >= total_count:
+        lines.append("\nAll 8 members are connected! The bot is fully functional.")
+    else:
+        pending_names = ", ".join(m.name for m in pending_members)
+        lines.append(f"\nWaiting for: {pending_names}")
+
+    await update.effective_message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
 
 # ---------------------------------------------------------------------------
 # Interactive Inline Menu Callback Handler (Back / Forward / Menu Navigation)
@@ -549,6 +617,7 @@ def register_command_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("schedule", schedule_command))
     application.add_handler(CommandHandler("fines", fines_command))
     application.add_handler(CommandHandler("history", history_command))
+    application.add_handler(CommandHandler("members", members_command))
 
     # Register inline menu navigation callback handler
     application.add_handler(CallbackQueryHandler(menu_callback_handler, pattern=r"^menu_"))

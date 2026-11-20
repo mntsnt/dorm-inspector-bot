@@ -332,6 +332,28 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         config.update_member_id("Bilisuma", orig_id)
         self.assertEqual(config.get_member(orig_id).name, "Bilisuma")
 
+    async def test_connection_status_and_settings(self):
+        """Verify tracking of connected members and idempotent settings."""
+        await db.init_db()
+
+        # Initially 0 connected
+        count, total, conn_list, pend_list = await db.get_connection_status()
+        self.assertEqual(count, 0)
+        self.assertEqual(total, 8)
+        self.assertEqual(len(pend_list), 8)
+
+        # Connect 1 member
+        m1 = config.MEMBERS[0]
+        await db.upsert_user(m1.user_id, m1.name, chat_id=12345)
+        count, total, conn_list, pend_list = await db.get_connection_status()
+        self.assertEqual(count, 1)
+        self.assertEqual(conn_list[0].user_id, m1.user_id)
+
+        # Settings key-value test
+        self.assertIsNone(await db.get_setting("all_connected_announced"))
+        await db.set_setting("all_connected_announced", "1")
+        self.assertEqual(await db.get_setting("all_connected_announced"), "1")
+
     def test_weekday_math_for_all_days(self):
         """Verify get_monday_of_week correctly identifies Monday for any day of the week."""
         # 2026-11-16 is Monday
