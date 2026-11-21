@@ -354,6 +354,63 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         await db.set_setting("all_connected_announced", "1")
         self.assertEqual(await db.get_setting("all_connected_announced"), "1")
 
+    async def test_multi_tenant_dorm_isolation(self):
+        """Verify that multiple dorms operate completely independently without leaking data."""
+        await db.init_db()
+
+        # Create Dorm A (4 students, 2 pairs)
+        dorm_a_id = -1001111111111
+        await db.create_or_update_dorm(
+            dorm_id=dorm_a_id,
+            admin_id=101,
+            dorm_name="Block 1 Room 101",
+            fine_amount=50,
+            start_date="2026-11-23"
+        )
+        await db.add_dorm_member(dorm_a_id, user_id=101, name="Abebe", is_admin=1)
+        await db.add_dorm_member(dorm_a_id, user_id=102, name="Kebede")
+        await db.add_dorm_member(dorm_a_id, user_id=103, name="Almaz")
+        await db.add_dorm_member(dorm_a_id, user_id=104, name="Tigist")
+
+        pairs_a = await db.auto_generate_dorm_pairs(dorm_a_id)
+        self.assertEqual(len(pairs_a), 2)
+
+        # Create Dorm B (6 students, 3 pairs)
+        dorm_b_id = -1002222222222
+        await db.create_or_update_dorm(
+            dorm_id=dorm_b_id,
+            admin_id=201,
+            dorm_name="Block 2 Room 202",
+            fine_amount=100,
+            start_date="2026-11-23"
+        )
+        for i in range(1, 7):
+            await db.add_dorm_member(dorm_b_id, user_id=200 + i, name=f"Student_{i}")
+
+        pairs_b = await db.auto_generate_dorm_pairs(dorm_b_id)
+        self.assertEqual(len(pairs_b), 3)
+
+        # Verify members list isolation
+        members_a = await db.get_dorm_members(dorm_a_id)
+        members_b = await db.get_dorm_members(dorm_b_id)
+        self.assertEqual(len(members_a), 4)
+        self.assertEqual(len(members_b), 6)
+
+        # Verify fines isolation
+        await db.create_fines_for_week(
+            week_start="2026-11-23",
+            cleaner1_id=101,
+            cleaner1_name="Abebe",
+            cleaner2_id=102,
+            cleaner2_name="Kebede",
+            fine_each=25,
+            dorm_id=dorm_a_id
+        )
+        fines_a = await db.get_unpaid_fines_summary(dorm_id=dorm_a_id)
+        fines_b = await db.get_unpaid_fines_summary(dorm_id=dorm_b_id)
+        self.assertEqual(len(fines_a), 2)
+        self.assertEqual(len(fines_b), 0, "Dorm B must not see Dorm A fines")
+
     def test_weekday_math_for_all_days(self):
         """Verify get_monday_of_week correctly identifies Monday for any day of the week."""
         # 2026-11-16 is Monday
@@ -407,7 +464,7 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         self.assertIn("menu_home", status_callbacks, "Back to main menu")
 
         # 5. Schedule view has Prev (Status), Next (Fines), and Back (Menu)
-        sched_text, sched_kb = commands.get_schedule_content()
+        sched_text, sched_kb = await commands.get_schedule_content()
         sched_callbacks = [btn.callback_data for row in sched_kb.inline_keyboard for btn in row]
         self.assertIn("menu_status", sched_callbacks, "Prev back to status")
         self.assertIn("menu_fines", sched_callbacks, "Next forward to fines")
@@ -433,6 +490,74 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         self.assertIn("menu_history", help_callbacks)
         self.assertIn("menu_status", help_callbacks)
         self.assertIn("menu_home", help_callbacks)
+
+    async def test_multi_dorm_scheduler_flow(self):
+        """Verify scheduler calculations and isolation across distinct dorms."""
+        try:
+            import telegram
+        except ImportError:
+            self.skipTest("python-telegram-bot is not installed in the local environment")
+
+        await db.init_db()
+        from scheduler import get_dorm_week_info
+
+        # Create two distinct dorms
+        dorm_eng = await db.create_or_update_dorm(
+            dorm_id=-1001111111,
+            admin_id=901,
+            dorm_name="Engineering Dorm",
+            fine_amount=60,
+            start_date="2026-11-23"
+        )
+        dorm_med = await db.create_or_update_dorm(
+            dorm_id=-1002222222,
+            admin_id=905,
+            dorm_name="Medical Dorm",
+            fine_amount=100,
+            start_date="2026-11-30"  # Starts a week later
+        )
+
+        # Set up members and pairs for Engineering Dorm (4 members, 2 pairs)
+        await db.add_dorm_member(-1001111111, 901, "Eng_Abebe")
+        await db.add_dorm_member(-1001111111, 902, "Eng_Kebede")
+        await db.add_dorm_member(-1001111111, 903, "Eng_Almaz")
+        await db.add_dorm_member(-1001111111, 904, "Eng_Tigist")
+        await db.set_dorm_pairs(-1001111111, [(901, 902), (903, 904)])
+
+        # Set up members and pairs for Medical Dorm (4 members, 2 pairs)
+        await db.add_dorm_member(-1002222222, 905, "Med_Sara")
+        await db.add_dorm_member(-1002222222, 906, "Med_Hanna")
+        await db.add_dorm_member(-1002222222, 907, "Med_Blen")
+        await db.add_dorm_member(-1002222222, 908, "Med_Eden")
+        await db.set_dorm_pairs(-1002222222, [(905, 906), (907, 908)])
+
+        # Test week info calculation on 2026-11-23
+        eng_pairs = await db.get_dorm_pairs(-1001111111)
+        eng_members = {m["user_id"]: m["name"] for m in await db.get_dorm_members(-1001111111)}
+        w_eng = get_dorm_week_info(dorm_eng, eng_pairs, eng_members, target_date=date(2026, 11, 23))
+
+        self.assertIsNotNone(w_eng)
+        self.assertEqual(w_eng.week_number, 1)
+        self.assertEqual(w_eng.cleaner1_name, "Eng_Abebe")
+        self.assertEqual(w_eng.cleaner2_name, "Eng_Kebede")
+
+        # Medical Dorm starts 2026-11-30, so on 2026-11-23 week_number is 0 (not started)
+        med_pairs = await db.get_dorm_pairs(-1002222222)
+        med_members = {m["user_id"]: m["name"] for m in await db.get_dorm_members(-1002222222)}
+        w_med = get_dorm_week_info(dorm_med, med_pairs, med_members, target_date=date(2026, 11, 23))
+        self.assertLessEqual(w_med.week_number, 0)
+
+        # On 2026-11-30, Medical Dorm starts Week 1 (Med_Sara & Med_Hanna)
+        w_med_start = get_dorm_week_info(dorm_med, med_pairs, med_members, target_date=date(2026, 11, 30))
+        self.assertEqual(w_med_start.week_number, 1)
+        self.assertEqual(w_med_start.cleaner1_name, "Med_Sara")
+        self.assertEqual(w_med_start.cleaner2_name, "Med_Hanna")
+
+        # And Engineering Dorm on 2026-11-30 is on Week 2 (Eng_Almaz & Eng_Tigist)
+        w_eng_w2 = get_dorm_week_info(dorm_eng, eng_pairs, eng_members, target_date=date(2026, 11, 30))
+        self.assertEqual(w_eng_w2.week_number, 2)
+        self.assertEqual(w_eng_w2.cleaner1_name, "Eng_Almaz")
+        self.assertEqual(w_eng_w2.cleaner2_name, "Eng_Tigist")
 
 if __name__ == "__main__":
     unittest.main()

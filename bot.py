@@ -1,6 +1,8 @@
 """
-Dorm Inspector Bot - Main Entry Point
-A Telegram bot in Python that manages a weekly cleaning schedule for 8 dorm mates.
+Dorm Inspector Bot - Main Entry Point (Universal Multi-Tenant Platform)
+Manages weekly cleaning schedules, photo inspections, and fine tracking for university dorms across Ethiopia.
+Supports multi-tenant operation where any dorm can onboard via /setup,
+while maintaining 100% backward compatibility for single-dorm environments.
 """
 
 import asyncio
@@ -72,35 +74,25 @@ def start_health_server() -> None:
 # Startup Post-Init Hook
 # ---------------------------------------------------------------------------
 async def post_init(application: Application) -> None:
-    """Run initial database setup and report bot status."""
-    logger.info("Initializing database...")
+    """Run initial database setup and report platform status."""
+    logger.info("Initializing multi-tenant database...")
     await db.init_db()
 
     bot_info = await application.bot.get_me()
     logger.info("Bot authenticated successfully: @%s (ID: %s)", bot_info.username, bot_info.id)
-    logger.info("Dorm Group ID: %s (Topic ID: %s)", config.GROUP_ID, config.TOPIC_ID if config.TOPIC_ID is not None else "None/General")
-    logger.info("Admin User ID: %s", config.ADMIN_ID)
-    logger.info("Rotation Start Date: %s (%s)", config.START_DATE_STR, config.START_DATE_OBJ.strftime("%A"))
-    logger.info("Timezone: %s", config.TIMEZONE)
 
-    current_week = config.get_week_info()
-    if current_week.week_number < 1:
-        w1 = config.get_week_info(config.START_BASE_MONDAY)
-        logger.info(
-            "Schedule not started yet. Starts %s (%s): Cleaners -> %s & %s",
-            w1.week_start,
-            w1.monday_date.strftime("%A"),
-            w1.cleaner1.name,
-            w1.cleaner2.name,
-        )
-    else:
-        logger.info(
-            "Current Week #%d (%s): Cleaners -> %s & %s",
-            current_week.week_number,
-            current_week.week_start,
-            current_week.cleaner1.name,
-            current_week.cleaner2.name,
-        )
+    # Automatically seed the default dorm if configured in environment
+    if getattr(config, "GROUP_ID", 0) and getattr(config, "ADMIN_ID", 0):
+        await db.seed_default_dorm()
+        logger.info("Default Dorm Group ID: %s (Topic ID: %s)", config.GROUP_ID, config.TOPIC_ID if config.TOPIC_ID is not None else "None/General")
+        logger.info("Default Admin User ID: %s", config.ADMIN_ID)
+
+    active_dorms = await db.get_all_active_dorms()
+    logger.info("Universal Multi-Tenant Platform active with %d registered dorm(s).", len(active_dorms))
+    for d in active_dorms:
+        logger.info("• Dorm: '%s' (ID: %s, Admin: %s, Fine: %s ETB, Status: %s)", d["dorm_name"], d["dorm_id"], d["admin_id"], d["fine_amount"], d["status"])
+
+    logger.info("Timezone: %s", config.TIMEZONE)
 
 # ---------------------------------------------------------------------------
 # Main Runner
@@ -111,25 +103,19 @@ def main() -> None:
     start_health_server()
 
     # 2. Check essential environment configuration
-    missing_vars = []
     if not config.BOT_TOKEN:
-        missing_vars.append("BOT_TOKEN")
-    if not config.GROUP_ID:
-        missing_vars.append("GROUP_ID")
-    if not config.ADMIN_ID:
-        missing_vars.append("ADMIN_ID")
-
-    if missing_vars:
         logger.critical(
-            "FATAL: Missing required environment variable(s): %s! "
-            "Please configure them in your cloud platform dashboard or .env file.",
-            ", ".join(missing_vars),
+            "FATAL: Missing required environment variable BOT_TOKEN! "
+            "Please configure it in your cloud platform dashboard or .env file."
         )
         logger.info("Health check server remains running to prevent container crash loops. Waiting for environment configuration...")
         while True:
             time.sleep(30)
 
-    logger.info("Starting Dorm Inspector Bot with %d registered members...", len(config.MEMBERS))
+    if not config.GROUP_ID or not config.ADMIN_ID:
+        logger.info("GROUP_ID or ADMIN_ID not set. Running in Universal Multi-Tenant mode. Dorms can onboard via /setup.")
+    else:
+        logger.info("Starting Dorm Inspector Bot with default group %s and %d pre-configured members...", config.GROUP_ID, len(config.MEMBERS))
 
     # Build the Application
     app = (

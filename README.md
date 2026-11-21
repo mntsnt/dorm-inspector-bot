@@ -1,203 +1,105 @@
 # 🧹 Dorm Inspector Bot
 
-An automated, robust Telegram bot in Python that manages a weekly dorm cleaning schedule for 8 roommates. Built with **python-telegram-bot v20+** (async), **SQLite** for ACID-compliant persistence, and **JobQueue** for scheduled tasks.
+An automated, multi-tenant Telegram platform built for university dorms across Ethiopia. Built with **python-telegram-bot v20+** (async), **SQLite** (multi-tenant schema with ACID persistence), and **JobQueue** for scheduled tasks.
+
+Any student can add the bot to their dorm's Telegram group or topic, run `/setup`, invite roommates with a one-tap deep link, auto-generate pairs, and enjoy automated cleaning schedules, meme inspections, and fine tracking.
 
 ---
 
 ## 🌟 Key Features
 
-- **Fixed 4-Week Rotation:** Deterministically computed from `START_DATE` (`2026-11-23` Monday). A bot restart never changes the rotation order.
-- **Weekly Schedule:** Runs Monday through Friday. Weekends (Saturday & Sunday) have no cleaning duties.
-- **Random Approver Selection:** Every Monday, an approver is chosen at random from the 6 members not cleaning that week.
-- **Photo Verification Workflow:** Cleaners submit photos via private DM, which are forwarded to the dorm group and sent to the approver with **Approve** / **Reject** buttons.
-- **Friday Check & Final Authority:** At Friday 8:00 PM, cleaners answer a verification prompt, and the approver confirms the final result. If the approver does not respond within `APPROVER_TIMEOUT_HOURS`, the bot safely falls back to the cleaners' submission.
-- **Fines Ledger:** A missed week automatically issues a **100 ETB total fine** (split **50 ETB per cleaner**). Admin can mark fines as paid via `/markpaid`.
-- **Role-Based Security:** Only registered members can use the bot; only assigned cleaners can submit photos; only the assigned approver can approve; only the admin can clear fines.
-- **Idempotent & Restart-Resilient:** Offline during Monday morning? The bot automatically catches up and announces as soon as it comes online. Fines and announcements are never duplicated.
-- **Private DM Fallback:** If the bot cannot DM a member (e.g., they haven't sent `/start`), it automatically notifies them in the dorm group chat.
+- 🏢 **Universal Multi-Tenant Platform:** Multiple dorms across any Ethiopian university can use the same bot instance completely isolated from one another. Schedules, photos, members, and fines never leak.
+- 🔗 **1-Tap Roommate Onboarding:** Admin runs `/setup` in the group to get an instant deep link (`https://t.me/<bot>?start=join_<group_id>`). Roommates click it once in DM to link their account.
+- 👥 **Flexible Dorm Sizing:** Works with 4, 6, 8, 10, or 12 roommates (or any custom even/odd count). Automatically pairs members in rotation.
+- 💸 **Customizable Fines:** Each dorm configures its own fine amount (50, 100, 200 ETB, or 0 ETB). Admins settle fines via `/markpaid` or `/paid`.
+- 🎭 **Ethiopian Student Meme Integration:** Features 8 integrated meme moments (`welcome.jpg`, `announcement.jpg`, `suspicious_dog.jpg`, `reminder.jpg`, `approved.jpg`, `rejected.jpg`, `fined.jpg`, `paid.jpg`).
+- 🔄 **Deterministic Weekly Rotation:** Cycles pairs weekly Monday through Friday. Weekends are always off-duty.
+- 🎲 **Fair Approver Rotation:** Approver is randomly picked each Monday from non-cleaning roommates.
+- 📸 **Photo Verification & Inspection:** Cleaners submit photos via DM. Approver inspects and approves or rejects with inline buttons.
+- ⏰ **Friday Verification & Timeout Fallback:** At Friday 8:00 PM, cleaners answer a verification prompt, and the approver confirms the final result. If the approver doesn't reply within `APPROVER_TIMEOUT_HOURS`, the bot automatically falls back to the cleaners' submission.
+- 🔁 **Resilient & Idempotent:** Built-in catch-up monitors trigger missed announcements, reminders, or checks if the bot was temporarily offline.
 
 ---
 
-## 📁 Project Structure
+## 🚀 Quick Start for Any University Dorm
 
+### 1. Add the Bot to Your Dorm Group
+1. Create or open your dorm's Telegram group chat.
+2. Add `@YourDormBot` to the group and promote it to **Admin** (with permission to send messages).
+3. If your group has Topics (Forum enabled), open the designated cleaning topic (e.g., `#Dorm-Cleaning`).
+
+### 2. Run `/setup`
+Send `/setup` in the group topic. The bot will reply with the interactive Setup Card:
 ```
-dorm-inspector-bot/
-├── .env.example              # Environment variables template
-├── requirements.txt          # Python dependencies
-├── README.md                 # Complete setup and user guide
-├── members.json              # 8 members and their 4 fixed pairs
-├── config.py                 # Configuration loader and startup validation
-├── db.py                     # Async SQLite database layer and ledger
-├── scheduler.py              # Automated jobs and timeout monitor
-├── bot.py                    # Main bot entry point
-├── handlers/                 # Modular Telegram message and callback handlers
-│   ├── __init__.py           # Handler registration
-│   ├── commands.py           # /start, /help, /status, /schedule, /fines, /history
-│   ├── cleaning.py           # /done, photo processing, Friday check callbacks
-│   ├── approval.py           # Approve/Reject & Final confirmation callbacks
-│   └── admin.py              # /markpaid <member>
-└── tests/                    # Unit and integration test suite
-    ├── __init__.py
-    └── test_suite.py
+🧹 Dorm Inspector Setup
+
+Dorm: Block 4, Room 204
+Admin: @YourUsername
+Members joined: 1
+Fine per missed week: 100 ETB
+
+👉 Share this invite link with your roommates:
+https://t.me/YourDormBot?start=join_1002378440774
 ```
+
+### 3. Roommates Click to Join
+Roommates tap the link once. Their Telegram DM opens with `/start`, connecting their account for private duty notices and verification prompts.
+
+### 4. Launch Cleaning Schedule!
+When all roommates have joined, the admin taps **"🚀 Launch Cleaning Schedule"**.
+- The bot automatically generates cleaning pairs.
+- Announces Week 1 duty with the `welcome.jpg` meme.
+- Weekly automated inspections begin!
 
 ---
 
-## 👥 Members and Pairs
+## 💬 Command Reference
 
-Members and pairs are defined in `members.json`. On startup, the bot validates that **every member appears in exactly one pair**. If not, it halts with an error.
+### Member Commands
+| Command | Location | Description |
+| :--- | :--- | :--- |
+| `/start` | Private / Group | Connects user account, registers via join links, or opens main menu. |
+| `/status` | Private / Group | Shows current week cleaners, approver, and duty state. |
+| `/schedule` | Private / Group | Displays the upcoming 4-week cleaning schedule. |
+| `/done` | Private DM | Cleaners submit their cleaning report and prompt for photos. |
+| `/fines` | Private / Group | Displays the unpaid fines ledger. |
+| `/history` | Private / Group | Lists results of past cleaning weeks. |
+| `/members` | Private / Group | Shows who in the dorm has connected to the bot. |
+| `/help` | Private / Group | Shows the user guide and weekly timeline. |
 
-```json
-{
-  "members": [
-    {"user_id": 111111111, "name": "Bilisuma"},
-    {"user_id": 1758752115, "name": "Nahom"},
-    {"user_id": 1434634789, "name": "Dawit"},
-    {"user_id": 6764559285, "name": "Zeftret"},
-    {"user_id": 1359460823, "name": "Hassan"},
-    {"user_id": 6163528558, "name": "Mintesnot"},
-    {"user_id": 1677783364, "name": "Ahmed"},
-    {"user_id": 5625992953, "name": "Yonatan"}
-  ],
-  "pairs": [
-    ["Bilisuma", "Nahom"],
-    ["Hassan", "Mintesnot"],
-    ["Dawit", "Zeftret"],
-    ["Ahmed", "Yonatan"]
-  ]
-}
-```
-
-### 4-Week Rotation Cycle
-1. **Week 1 (Nov 23 – Nov 27):** Bilisuma & Nahom *(Announced Monday, Nov 23 at 08:00 AM | Cleaners & Check on Friday, Nov 27)*
-2. **Week 2 (Nov 30 – Dec 04):** Hassan & Mintesnot
-3. **Week 3 (Dec 07 – Dec 11):** Dawit & Zeftret
-4. **Week 4 (Dec 14 – Dec 18):** Ahmed & Yonatan
-5. **Week 5 (Dec 21 – Dec 25):** Cycles back to Pair 1 (Bilisuma & Nahom)
+### Admin Commands
+| Command | Location | Description |
+| :--- | :--- | :--- |
+| `/setup` | Group Chat | Starts interactive dorm initialization and member onboarding. |
+| `/resetdorm`| Group Chat | Pauses or reconfigures dorm settings and pairs. |
+| `/markpaid <name>` | Private / Group | Clears unpaid fines for a member in the ledger. |
+| `/paid <name>` | Private / Group | Alias for `/markpaid`. |
+| `/setid <name> <id>` | Private / Group | Updates or links a member's numeric Telegram user ID. |
 
 ---
 
-## 🛠️ Setup Guide
-
-### Step 1: Create a Bot via @BotFather
-1. Open Telegram and search for [@BotFather](https://t.me/BotFather).
-2. Send `/newbot` and follow the prompts to choose a name (e.g. `Dorm Inspector Bot`) and username (e.g. `my_dorm_inspector_bot`).
-3. BotFather will provide an **HTTP API Token** (e.g. `123456789:ABCdefGHIjklMNOpqrsTUVwxyz`). Copy this token for your `.env` file.
-4. Optional but recommended: Send `/setprivacy` to `@BotFather`, select your bot, and set it to **DISABLED** so the bot can reliably see commands in group chats.
-
-### Step 2: Get Telegram User IDs
-Each of the 8 dorm mates needs their numeric Telegram User ID:
-1. Open Telegram and search for [@userinfobot](https://t.me/userinfobot) (or [@raw_data_bot](https://t.me/raw_data_bot)).
-2. Press **Start** (`/start`). The bot will reply with your numeric `Id` (e.g., `1758752115`).
-3. Replace the placeholder IDs in `members.json` with each member's real Telegram ID.
-4. Set the admin's user ID as `ADMIN_ID` in your `.env` file.
-
-> **Important:** Every member must open a private chat with your bot and send `/start` once. Telegram prohibits bots from sending unprompted private messages to users until the user starts the conversation.
-
-### Step 3: Get the Dorm Group Chat ID
-1. Create a Telegram group for your dorm (or use your existing group).
-2. Add your newly created bot to the group.
-3. Promote the bot to an **Administrator** with permission to send messages.
-4. Temporarily add [@userinfobot](https://t.me/userinfobot) or [@RawDataBot](https://t.me/raw_data_bot) to the group. It will display the group ID (a negative number, typically starting with `-100`, e.g., `-1001234567890`).
-5. Remove the helper bot and put this value as `GROUP_ID` in `.env`.
-
-### Step 4: Configure `.env`
-Copy `.env.example` to `.env`:
-```bash
-cp .env.example .env
-```
-
-Edit `.env` with your settings:
-```env
-BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrsTUVwxyz
-GROUP_ID=-1001234567890
-ADMIN_ID=111111111
-
-# Rotation Start Date (e.g. 2026-11-23 Monday, Cleaners on Friday Nov 27)
-START_DATE=2026-11-23
-
-# Schedule configurations (Timezone: Africa/Addis_Ababa)
-ANNOUNCE_DAY=mon
-ANNOUNCE_TIME=08:00
-REMINDER_DAY=thu
-REMINDER_TIME=18:00
-CHECK_DAY=fri
-CHECK_TIME=20:00
-
-# Approver timeout window in hours
-APPROVER_TIMEOUT_HOURS=12
-
-# Total fine in ETB per missed week (split equally: 50 ETB each)
-FINE_TOTAL=100
-```
-
----
-
-## 🚀 Installation & Running
-
-### Prerequisites
-- Python 3.11 or higher
-- Git
-
-### 1. Clone repository & enter directory
-```bash
-cd c:\Users\hp\Desktop\dorm-inspector-bot
-```
-
-### 2. Create and activate a virtual environment
-**On Windows:**
-```powershell
-python -m venv venv
-venv\Scripts\activate
-```
-
-**On Linux / macOS:**
-```bash
-python3 -m venv venv
-source venv/bin/activate
-```
-
-### 3. Install dependencies
-```bash
-pip install -r requirements.txt
-```
-
-### 4. Run tests
-Verify that configuration, pairing validation, and database operations pass:
-```bash
-python -m unittest discover -s tests -p "test_*.py"
-```
-
-### 5. Launch the bot
-```bash
-python bot.py
-```
-
----
-
-## 🔄 Weekly Lifecycle & Automation Flow
+## 📅 Weekly Inspection Timeline (Africa/Addis_Ababa UTC+3)
 
 ```
    ┌─────────────────────────────────────────────────────────────┐
-   │ MONDAY 08:00 AM (Africa/Addis_Ababa)                        │
-   │ • Group Announcement: Cleaners (Pair) & Random Approver     │
-   │ • Private DM to Cleaners: "You're on duty, deadline Fri 8PM"│
-   │ • Private DM to Approver: "You're this week's approver"     │
+   │ MONDAY 08:00 AM (Duty Announcement)                         │
+   │ • Posts cleaners & approver to group with announcement meme │
+   │ • DMs cleaners with "We cleaned" button                     │
+   │ • DMs approver about review responsibility                  │
    └──────────────────────────────┬──────────────────────────────┘
                                   │
                                   ▼
    ┌─────────────────────────────────────────────────────────────┐
-   │ MONDAY – FRIDAY: Cleaning & Photo Review                    │
-   │ • Cleaners press "We cleaned" or send /done in private chat │
-   │ • Cleaners send a photo of the cleaned dorm                 │
-   │ • Photo forwarded to group & sent to Approver with buttons  │
-   │   - [✅ Approve] -> Marked completed, group notified        │
-   │   - [❌ Reject]  -> Cleaners told to redo before deadline   │
+   │ MONDAY – FRIDAY (Cleaning & Submission)                     │
+   │ • Cleaners clean, tap "We cleaned" or send /done            │
+   │ • Cleaners send photo in DM (suspicious dog meme prompt)    │
+   │ • Photo forwarded to group & approver DM with buttons       │
+   │ • Approver approves or rejects photo                        │
    └──────────────────────────────┬──────────────────────────────┘
                                   │
                                   ▼
    ┌─────────────────────────────────────────────────────────────┐
-   │ THURSDAY 06:00 PM                                           │
+   │ THURSDAY 06:00 PM (Gentle Reminder)                         │
    │ • Reminder sent to cleaners if photo not yet approved       │
    └──────────────────────────────┬──────────────────────────────┘
                                   │
@@ -212,7 +114,7 @@ python bot.py
    ┌─────────────────────────────────────────────────────────────┐
    │ APPROVER DECISION OR TIMEOUT (12 Hours)                     │
    │ • Confirm Cleaned: Week completed, no fines                 │
-   │ • Confirm Not Cleaned: 100 ETB total fine (50 ETB each)     │
+   │ • Confirm Not Cleaned: Fine recorded per cleaner            │
    │ • Timeout Fallback: If approver silent, fallback to cleaner │
    │   answer and photo submission status                        │
    └─────────────────────────────────────────────────────────────┘
@@ -220,63 +122,34 @@ python bot.py
 
 ---
 
-## 💬 Command Reference
+## 🌐 Public Hosting & Cloud Deployment
 
-| Command | Allowed Users | Description |
+### Environment Variables
+| Variable | Required | Description |
 | :--- | :--- | :--- |
-| `/start` | Dorm Members | Registers user chat ID to enable private bot notifications. |
-| `/status` | Dorm Members | Displays current week cleaners, approver, and duty state. |
-| `/schedule` | Dorm Members | Shows the upcoming 4-week cleaning schedule with dates. |
-| `/done` | Active Cleaners | Initiates cleaning completion and prompts for dorm photo. |
-| `/fines` | Dorm Members | Displays the unpaid fines ledger for all members. |
-| `/history` | Dorm Members | Lists cleaning results for the last 8 weeks. |
-| `/help` | Dorm Members | Shows the user guide and weekly timeline. |
-| `/markpaid <member>` | **Admin Only** | Marks all unpaid fines for `<member>` as paid. |
+| `BOT_TOKEN` | **Yes** | Telegram Bot API token from `@BotFather`. |
+| `GROUP_ID` | Optional | Default single-dorm group ID for backward compatibility. |
+| `ADMIN_ID` | Optional | Default single-dorm admin ID. |
+| `PORT` | Optional | Port for the built-in HTTP health check server (default `3000`). |
+| `START_DATE` | Optional | Default fallback start date (`YYYY-MM-DD`, e.g. `2026-11-23`). |
+| `APPROVER_TIMEOUT_HOURS` | Optional | Hours before approver timeout fallback triggers (default `12`). |
 
----
-
-## 🔒 Security & Data Integrity
-
-1. **Member Whitelist:** Only the 8 user IDs defined in `members.json` can interact with the bot. Unauthorized users receive a polite refusal.
-2. **Action Validation:** Photo submissions and `/done` are restricted to the 2 active cleaners. Approval decisions are restricted to the assigned approver.
-3. **Admin Privilege:** The `/markpaid` command checks that `user.id == ADMIN_ID`.
-4. **Callback Query Token Validation:** Every button callback encodes the `week_start` and checks current database state to prevent replaying old buttons.
-5. **Idempotent Fines:** SQLite table enforces `UNIQUE(week_start, user_id)`, making it impossible to issue duplicate fines for the same week.
-6. **Timezone Accuracy:** All scheduling is bound to `Africa/Addis_Ababa` (East Africa Time, UTC+3).
-
----
-
-## ⚙️ Running 24/7 as a Background Service (Linux)
-
-To run the bot continuously on a VPS (e.g. Ubuntu):
-
-1. Create a systemd service file:
-```bash
-sudo nano /etc/systemd/system/dorm-bot.service
+### Docker Deployment
+```dockerfile
+FROM python:3.11-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+EXPOSE 3000
+CMD ["python", "bot.py"]
 ```
 
-2. Add the following configuration:
-```ini
-[Unit]
-Description=Dorm Inspector Telegram Bot
-After=network.target
-
-[Service]
-Type=simple
-User=ubuntu
-WorkingDirectory=/home/ubuntu/dorm-inspector-bot
-ExecStart=/home/ubuntu/dorm-inspector-bot/venv/bin/python bot.py
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-```
-
-3. Enable and start the service:
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable dorm-bot
-sudo systemctl start dorm-bot
-sudo systemctl status dorm-bot
-```
+### Free Cloud Hosting Options
+1. **Render.com / Railway / Fly.io / Koyeb:**
+   - Connect your GitHub repository: `https://github.com/mntsnt/dorm-inspector-bot`
+   - Set environment variable `BOT_TOKEN`.
+   - The bot includes a built-in HTTP server on `$PORT` that answers `/` with 200 OK to keep cloud containers alive.
+2. **Ubuntu / Debian VPS:**
+   - Run with `systemd` or `docker compose`.
+   - Continuous 24/7 background operation.

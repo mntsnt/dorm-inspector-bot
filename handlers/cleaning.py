@@ -1,10 +1,11 @@
 """
-Cleaning Duty & Photo Submission Handler
+Cleaning Duty & Photo Submission Handler (Multi-Tenant Platform)
 Handles /done, 'We cleaned' button callbacks, photo submissions, and Friday check responses.
+Scoper to specific dorms with automatic resolution for private chat interactions.
 """
 
 import logging
-from typing import Optional
+from typing import Any, Dict, Optional, Tuple
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
@@ -23,23 +24,68 @@ import db
 
 logger = logging.getLogger(__name__)
 
-async def _send_dm_fallback_notice(context: ContextTypes.DEFAULT_TYPE, member_name: str) -> None:
-    """Send fallback notice to the dorm group chat if a private DM fails."""
-    try:
-        bot_info = await context.bot.get_me()
-        bot_username = bot_info.username or "bot"
-        msg = (
-            f"⚠️ Could not DM **{member_name}**.\n"
-            f"Please message @{bot_username} and send /start"
-        )
-        await context.bot.send_message(
-            chat_id=config.GROUP_ID,
-            message_thread_id=config.TOPIC_ID,
-            text=msg,
-            parse_mode=ParseMode.MARKDOWN
-        )
-    except Exception as e:
-        logger.error("Failed to post fallback notice in group chat: %s", e)
+async def _is_member(user_id: int) -> bool:
+    """Return True if user is a member in config or any active dorm."""
+    if config.is_member(user_id):
+        return True
+    user_dorms = await db.get_user_dorms(user_id)
+    return len(user_dorms) > 0
+
+async def _resolve_user_active_dorm(user_id: int) -> Optional[Tuple[Dict[str, Any], Optional[Dict[str, Any]]]]:
+    """
+    Resolve which dorm a user is interacting with for cleaning duty:
+    Returns (dorm_dict, active_week_record) or None.
+    """
+    user_dorms = await db.get_user_dorms(user_id)
+    if not user_dorms:
+        if config.is_member(user_id) and getattr(config, "GROUP_ID", 0):
+            await db.seed_default_dorm()
+            default_dorm = await db.get_dorm(config.GROUP_ID)
+            if default_dorm:
+                return default_dorm, None
+        return None
+
+    if len(user_dorms) == 1:
+        dorm = user_dorms[0]
+        return dorm, None
+
+    # If user belongs to multiple dorms, prioritize the one where they are on duty this week
+    for dorm in user_dorms:
+        d_id = dorm["dorm_id"]
+        # Check current history or active week
+        history = await db.get_history(limit=1, dorm_id=d_id)
+        if history and history[0].get("final_status") == "pending":
+            rec = history[0]
+            if user_id in (rec.get("cleaner1_id"), rec.get("cleaner2_id")):
+                return dorm, rec
+
+    return user_dorms[0], None
+
+def _parse_callback_dorm_and_week(callback_data: str) -> Tuple[int, str]:
+    """Parse callback data which may be 'prefix_{dorm_id}_{week_start}' or 'prefix_{week_start}'."""
+    parts = callback_data.split("_")
+    # Example: ['cleaned', '-1002378440774', '2026-11-23'] -> 3 parts
+    # Example: ['fcheck', 'yes', '-1002378440774', '2026-11-23'] -> 4 parts
+    if len(parts) >= 4 and parts[0] in ("fcheck", "fconfirm"):
+        # Pattern: prefix_action_dormId_weekStart or prefix_action_weekStart
+        # parts[2] is dorm_id if parts[3] is week_start
+        if len(parts) >= 4 and "-" in parts[3]:  # date contains hyphen e.g. 2026-11-23
+            try:
+                return int(parts[2]), parts[3]
+            except ValueError:
+                pass
+        return getattr(config, "GROUP_ID", 0), parts[-1]
+    elif len(parts) == 3:
+        # Pattern: prefix_dormId_weekStart
+        try:
+            return int(parts[1]), parts[2]
+        except ValueError:
+            return getattr(config, "GROUP_ID", 0), parts[2]
+    elif len(parts) == 2:
+        # Legacy pattern: prefix_weekStart
+        return getattr(config, "GROUP_ID", 0), parts[1]
+
+    return getattr(config, "GROUP_ID", 0), ""
 
 # ---------------------------------------------------------------------------
 # /done Command & 'We cleaned' Button
@@ -51,7 +97,7 @@ async def done_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not user:
         return
 
-    if not config.is_member(user.id):
+    if not await _is_member(user.id):
         if update.effective_message:
             await update.effective_message.reply_text("Sorry, this bot is only for dorm members.")
         return
@@ -62,7 +108,13 @@ async def done_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         return
 
-    await handle_cleaner_done(update, context, user.id)
+    resolved = await _resolve_user_active_dorm(user.id)
+    if not resolved:
+        await update.effective_message.reply_text("You are not registered in any active dorm.")
+        return
+
+    dorm, _ = resolved
+    await handle_cleaner_done(update, context, user.id, dorm_id=dorm["dorm_id"])
 
 async def cleaned_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Cleaner clicks 'We cleaned' button."""
@@ -70,46 +122,66 @@ async def cleaned_button_callback(update: Update, context: ContextTypes.DEFAULT_
     await query.answer()
     user = query.from_user
 
-    if not config.is_member(user.id):
+    if not await _is_member(user.id):
         await query.answer("Sorry, this bot is only for dorm members.", show_alert=True)
         return
 
-    parts = query.data.split("_", 1)
-    week_start = parts[1] if len(parts) > 1 else ""
-
-    await handle_cleaner_done(update, context, user.id, week_start=week_start)
+    dorm_id, week_start = _parse_callback_dorm_and_week(query.data)
+    await handle_cleaner_done(update, context, user.id, dorm_id=dorm_id, week_start=week_start)
 
 async def handle_cleaner_done(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     user_id: int,
+    dorm_id: Optional[int] = None,
     week_start: Optional[str] = None
 ) -> None:
     """Common logic for initiating cleaning submission."""
     msg = update.effective_message
-    week_info = config.get_week_info()
 
-    if week_info.week_number < 1:
+    if dorm_id is None:
+        resolved = await _resolve_user_active_dorm(user_id)
+        if resolved:
+            dorm_id = resolved[0]["dorm_id"]
+        else:
+            dorm_id = getattr(config, "GROUP_ID", 0)
+
+    dorm = await db.get_dorm(dorm_id)
+    if not dorm:
+        await msg.reply_text("Dorm configuration not found.")
+        return
+
+    pairs = await db.get_dorm_pairs(dorm_id)
+    members = await db.get_dorm_members(dorm_id)
+    members_by_id = {m["user_id"]: m["name"] for m in members}
+
+    from scheduler import get_dorm_week_info
+    week_info = get_dorm_week_info(dorm, pairs, members_by_id)
+
+    if not week_info or week_info.week_number < 1:
         await msg.reply_text(
-            f"Cleaning duty has not started yet.\n"
-            f"Week 1 starts on Monday, {config.START_BASE_MONDAY.strftime('%b %d')}."
+            f"Cleaning duty has not started yet for {dorm['dorm_name']}."
         )
         return
 
     target_week_start = week_start or week_info.week_start
-    week_record = await db.get_week(target_week_start)
+    week_record = await db.get_week(target_week_start, dorm_id=dorm_id)
 
     if not week_record:
         eligible_approver_ids = [
-            m.user_id for m in config.MEMBERS
-            if m.user_id not in (week_info.cleaner1.user_id, week_info.cleaner2.user_id)
+            m["user_id"] for m in members
+            if m["user_id"] not in (week_info.cleaner1_id, week_info.cleaner2_id)
         ]
+        if not eligible_approver_ids:
+            eligible_approver_ids = [week_info.cleaner1_id]
+
         week_record = await db.get_or_create_week(
             week_start=week_info.week_start,
             week_number=week_info.week_number,
-            cleaner1_id=week_info.cleaner1.user_id,
-            cleaner2_id=week_info.cleaner2.user_id,
-            eligible_approver_ids=eligible_approver_ids
+            cleaner1_id=week_info.cleaner1_id,
+            cleaner2_id=week_info.cleaner2_id,
+            eligible_approver_ids=eligible_approver_ids,
+            dorm_id=dorm_id
         )
 
     # Validate that user is one of the 2 cleaners
@@ -125,7 +197,7 @@ async def handle_cleaner_done(
         await msg.reply_text("Cleaning for this week is already done!")
         return
 
-    await db.mark_done_reported(target_week_start)
+    await db.mark_done_reported(target_week_start, dorm_id=dorm_id)
 
     instruction = "Please send a photo of the cleaned dorm in this chat."
     dog_meme = config.get_meme_file("suspicious_dog")
@@ -149,34 +221,49 @@ async def handle_cleaner_done(
 async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle photos submitted by cleaners in private chat."""
     user = update.effective_user
-    chat = update.effective_chat
     if not user or not update.message or not update.message.photo:
         return
 
-    if not config.is_member(user.id):
+    if not await _is_member(user.id):
         await update.message.reply_text("Sorry, this bot is only for dorm members.")
         return
 
-    week_info = config.get_week_info()
-    if week_info.week_number < 1:
-        await update.message.reply_text(
-            f"Cleaning duty has not started yet.\n"
-            f"Week 1 starts on Monday, {config.START_BASE_MONDAY.strftime('%b %d')}."
-        )
+    resolved = await _resolve_user_active_dorm(user.id)
+    if not resolved:
+        await update.message.reply_text("You are not registered in any active dorm.")
         return
 
-    week_record = await db.get_week(week_info.week_start)
+    dorm, _ = resolved
+    dorm_id = dorm["dorm_id"]
+    topic_id = dorm.get("topic_id")
+
+    pairs = await db.get_dorm_pairs(dorm_id)
+    members = await db.get_dorm_members(dorm_id)
+    members_by_id = {m["user_id"]: m["name"] for m in members}
+
+    from scheduler import get_dorm_week_info
+    week_info = get_dorm_week_info(dorm, pairs, members_by_id)
+
+    if not week_info or week_info.week_number < 1:
+        await update.message.reply_text("Cleaning duty has not started yet.")
+        return
+
+    week_record = await db.get_week(week_info.week_start, dorm_id=dorm_id)
     if not week_record:
         eligible_approver_ids = [
-            m.user_id for m in config.MEMBERS
-            if m.user_id not in (week_info.cleaner1.user_id, week_info.cleaner2.user_id)
+            m["user_id"] for m in members
+            if m["user_id"] not in (week_info.cleaner1_id, week_info.cleaner2_id)
         ]
+        if not eligible_approver_ids:
+            eligible_approver_ids = [week_info.cleaner1_id]
+
         week_record = await db.get_or_create_week(
             week_start=week_info.week_start,
             week_number=week_info.week_number,
-            cleaner1_id=week_info.cleaner1.user_id,
-            cleaner2_id=week_info.cleaner2.user_id,
-            eligible_approver_ids=eligible_approver_ids
+            cleaner1_id=week_info.cleaner1_id,
+            cleaner2_id=week_info.cleaner2_id,
+            eligible_approver_ids=eligible_approver_ids,
+            dorm_id=dorm_id
         )
 
     # Check cleaners
@@ -184,34 +271,25 @@ async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
     c2_id = week_record["cleaner2_id"]
 
     if user.id not in (c1_id, c2_id):
-        await update.message.reply_text(
-            "You are not on cleaning duty this week."
-        )
+        await update.message.reply_text("You are not on cleaning duty this week.")
         return
 
     if week_record.get("final_status") == "completed":
-        await update.message.reply_text(
-            "Cleaning for this week is already done!"
-        )
+        await update.message.reply_text("Cleaning for this week is already done!")
         return
 
     # Get the highest resolution photo
     photo_file_id = update.message.photo[-1].file_id
 
     # Record photo in database
-    await db.submit_photo(week_info.week_start, photo_file_id, user.id)
+    await db.submit_photo(week_info.week_start, photo_file_id, user.id, dorm_id=dorm_id)
 
-    submitter_member = config.get_member(user.id)
-    submitter_name = submitter_member.name if submitter_member else user.first_name
-
-    c1 = config.get_member(c1_id)
-    c2 = config.get_member(c2_id)
-    c1_name = c1.name if c1 else f"ID {c1_id}"
-    c2_name = c2.name if c2 else f"ID {c2_id}"
+    submitter_name = members_by_id.get(user.id, user.first_name)
+    c1_name = members_by_id.get(c1_id, f"ID {c1_id}")
+    c2_name = members_by_id.get(c2_id, f"ID {c2_id}")
 
     approver_id = week_record.get("approver_id")
-    approver = config.get_member(approver_id) if approver_id else None
-    approver_name = approver.name if approver else "Approver"
+    approver_name = members_by_id.get(approver_id, "Approver")
 
     # Forward/send photo to the dorm group chat
     group_caption = (
@@ -220,25 +298,25 @@ async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
     )
     try:
         await context.bot.send_photo(
-            chat_id=config.GROUP_ID,
-            message_thread_id=config.TOPIC_ID,
+            chat_id=dorm_id,
+            message_thread_id=topic_id,
             photo=photo_file_id,
             caption=group_caption,
             parse_mode=ParseMode.MARKDOWN
         )
     except Exception as e:
-        logger.error("Failed to send photo to group %s: %s", config.GROUP_ID, e)
+        logger.error("Failed to send photo to group %s: %s", dorm_id, e)
 
     # Send photo with Approve / Reject buttons in private DM to the Approver
     if approver_id:
         approver_keyboard = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("Approve", callback_data=f"approve_{week_info.week_start}"),
-                InlineKeyboardButton("Reject", callback_data=f"reject_{week_info.week_start}"),
+                InlineKeyboardButton("Approve", callback_data=f"approve_{dorm_id}_{week_info.week_start}"),
+                InlineKeyboardButton("Reject", callback_data=f"reject_{dorm_id}_{week_info.week_start}"),
             ]
         ])
         approver_caption = (
-            f"Photo sent by **{c1_name}** & **{c2_name}**.\n"
+            f"Photo sent by **{c1_name}** & **{c2_name}** ({dorm['dorm_name']}).\n"
             "Please approve or reject:"
         )
         try:
@@ -251,7 +329,14 @@ async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
             )
         except TelegramError as te:
             logger.warning("Could not send review photo to approver %s: %s", approver_id, te)
-            await _send_dm_fallback_notice(context, approver_name)
+            from scheduler import send_dm_with_fallback
+            await send_dm_with_fallback(
+                context, approver_id, approver_name,
+                f"Photo sent by **{c1_name}** & **{c2_name}**. Please check and reply.",
+                reply_markup=approver_keyboard,
+                dorm_id=dorm_id,
+                topic_id=topic_id
+            )
 
     # Confirm to cleaner in DM
     reply_text = f"Photo received! Sent to the group and to **{approver_name}** to review."
@@ -266,14 +351,15 @@ async def friday_check_yes_callback(update: Update, context: ContextTypes.DEFAUL
     await query.answer()
     user = query.from_user
 
-    if not config.is_member(user.id):
+    if not await _is_member(user.id):
         await query.answer("Sorry, this bot is only for dorm members.", show_alert=True)
         return
 
-    parts = query.data.split("_", 2)
-    week_start = parts[2] if len(parts) > 2 else ""
+    dorm_id, week_start = _parse_callback_dorm_and_week(query.data)
+    dorm = await db.get_dorm(dorm_id)
+    topic_id = dorm.get("topic_id") if dorm else None
 
-    week_record = await db.get_week(week_start)
+    week_record = await db.get_week(week_start, dorm_id=dorm_id)
     if not week_record:
         await query.answer("Week record not found.", show_alert=True)
         return
@@ -282,34 +368,32 @@ async def friday_check_yes_callback(update: Update, context: ContextTypes.DEFAUL
         await query.answer("Only assigned cleaners can answer this check.", show_alert=True)
         return
 
-    member = config.get_member(user.id)
-    member_name = member.name if member else user.first_name
+    member = await db.get_dorm_member(dorm_id, user.id)
+    member_name = member["name"] if member else user.first_name
 
-    await db.record_cleaner_response(week_start, user.id, "yes")
+    await db.record_cleaner_response(week_start, user.id, "yes", dorm_id=dorm_id)
 
     # Re-fetch week record
-    week_record = await db.get_week(week_start)
+    week_record = await db.get_week(week_start, dorm_id=dorm_id)
     photo_status = week_record.get("photo_status", "none")
 
     if photo_status == "approved":
-        # Yes and photo already approved
         await query.edit_message_text(
             "You confirmed you cleaned, and your photo was approved. All done!"
         )
         await context.bot.send_message(
-            chat_id=config.GROUP_ID,
-            message_thread_id=config.TOPIC_ID,
+            chat_id=dorm_id,
+            message_thread_id=topic_id,
             text=f"Friday Check: **{member_name}** confirmed they cleaned (photo already approved).",
             parse_mode=ParseMode.MARKDOWN
         )
     else:
-        # Yes but no approved photo yet -> prompt for photo
         await query.edit_message_text(
             "You answered YES, but no approved photo on record yet. Please send the photo now!"
         )
         await context.bot.send_message(
-            chat_id=config.GROUP_ID,
-            message_thread_id=config.TOPIC_ID,
+            chat_id=dorm_id,
+            message_thread_id=topic_id,
             text=f"Friday Check: **{member_name}** answered YES, but no photo approved yet.",
             parse_mode=ParseMode.MARKDOWN
         )
@@ -320,14 +404,15 @@ async def friday_check_no_callback(update: Update, context: ContextTypes.DEFAULT
     await query.answer()
     user = query.from_user
 
-    if not config.is_member(user.id):
+    if not await _is_member(user.id):
         await query.answer("Sorry, this bot is only for dorm members.", show_alert=True)
         return
 
-    parts = query.data.split("_", 2)
-    week_start = parts[2] if len(parts) > 2 else ""
+    dorm_id, week_start = _parse_callback_dorm_and_week(query.data)
+    dorm = await db.get_dorm(dorm_id)
+    topic_id = dorm.get("topic_id") if dorm else None
 
-    week_record = await db.get_week(week_start)
+    week_record = await db.get_week(week_start, dorm_id=dorm_id)
     if not week_record:
         await query.answer("Week record not found.", show_alert=True)
         return
@@ -336,17 +421,15 @@ async def friday_check_no_callback(update: Update, context: ContextTypes.DEFAULT
         await query.answer("Only assigned cleaners can answer this check.", show_alert=True)
         return
 
-    member = config.get_member(user.id)
-    member_name = member.name if member else user.first_name
+    member = await db.get_dorm_member(dorm_id, user.id)
+    member_name = member["name"] if member else user.first_name
 
-    await db.record_cleaner_response(week_start, user.id, "no")
+    await db.record_cleaner_response(week_start, user.id, "no", dorm_id=dorm_id)
 
-    await query.edit_message_text(
-        "Recorded. The approver will make the final decision."
-    )
+    await query.edit_message_text("Recorded. The approver will make the final decision.")
     await context.bot.send_message(
-        chat_id=config.GROUP_ID,
-        message_thread_id=config.TOPIC_ID,
+        chat_id=dorm_id,
+        message_thread_id=topic_id,
         text=f"Friday Check: **{member_name}** answered that they did NOT clean.",
         parse_mode=ParseMode.MARKDOWN
     )

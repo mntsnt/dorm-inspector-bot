@@ -1,12 +1,13 @@
 """
-General Commands & Interactive Navigation Handler
-Handles /start, /help, /status, /schedule, /fines, /history, /menu,
-plus interactive inline buttons (Next, Prev, Back to Menu) and quick reply buttons.
+General Commands & Interactive Navigation Handler (Multi-Tenant Platform)
+Handles /start, /help, /status, /schedule, /fines, /history, /menu, /members,
+plus interactive inline buttons and persistent mobile keyboard.
+Seamlessly handles both group-scoped commands and private DM interactions.
 """
 
 from datetime import datetime, timedelta
 import logging
-from typing import Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from telegram import (
     InlineKeyboardButton,
@@ -31,16 +32,39 @@ import db
 
 logger = logging.getLogger(__name__)
 
-def check_member_permission(user_id: int) -> bool:
-    """Return True if user is one of the 8 dorm members, False otherwise."""
-    return config.is_member(user_id)
+async def check_member_permission(user_id: int, dorm_id: Optional[int] = None) -> bool:
+    """Return True if user is a registered member of the dorm or platform."""
+    if config.is_member(user_id):
+        return True
+    if dorm_id:
+        member = await db.get_dorm_member(dorm_id, user_id)
+        if member:
+            return True
+    user_dorms = await db.get_user_dorms(user_id)
+    return len(user_dorms) > 0
 
 async def reject_non_member(update: Update) -> None:
-    """Politely reject users who are not in members.json."""
+    """Politely guide new students on how to set up their dorm."""
     if update.effective_message:
         await update.effective_message.reply_text(
-            "Sorry, this bot is only for dorm members."
+            "👋 **Hi! I am Dorm Inspector Bot.**\n\n"
+            "I manage weekly cleaning schedules, photo inspections, and fines for university dorm rooms.\n\n"
+            "To use me for your room:\n"
+            "1. Add me to your dorm's Telegram group chat.\n"
+            "2. Send `/setup` in that group.\n"
+            "3. Your roommates can tap the join button to link up!",
+            parse_mode=ParseMode.MARKDOWN
         )
+
+async def _resolve_user_dorm(user_id: int) -> Optional[Dict[str, Any]]:
+    """Resolve primary dorm for a user in private chat."""
+    user_dorms = await db.get_user_dorms(user_id)
+    if user_dorms:
+        return user_dorms[0]
+    if config.is_member(user_id) and getattr(config, "GROUP_ID", 0):
+        await db.seed_default_dorm()
+        return await db.get_dorm(config.GROUP_ID)
+    return None
 
 # ---------------------------------------------------------------------------
 # Keyboards & Navigation Builders
@@ -74,36 +98,34 @@ def get_reply_keyboard() -> ReplyKeyboardMarkup:
         resize_keyboard=True
     )
 
-def get_main_menu_text(member_name: str, connected_info: Optional[str] = None) -> str:
+def get_main_menu_text(member_name: str, connected_info: Optional[str] = None, dorm_name: Optional[str] = None) -> str:
     """Welcome and overview text for the main menu."""
     current_date = config.get_current_date()
     week_info = config.get_week_info(current_date)
 
     status_suffix = f"\n\nMembers connected: **{connected_info}**" if connected_info else ""
+    dorm_prefix = f"**{dorm_name}**\n\n" if dorm_name else ""
 
     if week_info.week_number < 1:
         first_cleaners = f"{config.PAIRS[0][0].name} & {config.PAIRS[0][1].name}"
         return (
-            f"Hi **{member_name}**!\n\n"
+            f"{dorm_prefix}Hi **{member_name}**!\n\n"
             f"Week 1 starts: Monday, {config.START_BASE_MONDAY.strftime('%b %d')}\n"
             f"First cleaners: **{first_cleaners}**{status_suffix}\n\n"
             "Use the buttons below to check duty, fines, or rules."
         )
     else:
         return (
-            f"Hi **{member_name}**!\n\n"
+            f"{dorm_prefix}Hi **{member_name}**!\n\n"
             f"Week {week_info.week_number} cleaners: **{week_info.cleaner1.name}** & **{week_info.cleaner2.name}**{status_suffix}\n\n"
             "Use the buttons below to check duty, fines, or submit cleaning."
         )
 
 # ---------------------------------------------------------------------------
-# View Content Generators (Text + Next/Prev/Back Buttons)
+# View Content Generators (Text + Navigation Buttons)
 # ---------------------------------------------------------------------------
-async def get_status_content(user_id: int) -> Tuple[str, InlineKeyboardMarkup]:
+async def get_status_content(user_id: int, dorm_id: Optional[int] = None) -> Tuple[str, InlineKeyboardMarkup]:
     """Generate status report text and navigation buttons."""
-    current_date = config.get_current_date()
-    week_info = config.get_week_info(current_date)
-
     keyboard = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("Schedule", callback_data="menu_schedule"),
@@ -114,22 +136,44 @@ async def get_status_content(user_id: int) -> Tuple[str, InlineKeyboardMarkup]:
         ]
     ])
 
-    if week_info.week_number < 1:
-        first_pair = config.PAIRS[0]
+    if dorm_id is None:
+        dorm = await _resolve_user_dorm(user_id)
+        if dorm:
+            dorm_id = dorm["dorm_id"]
+        else:
+            dorm_id = getattr(config, "GROUP_ID", 0)
+
+    dorm = await db.get_dorm(dorm_id)
+    if not dorm:
+        return "No dorm found.", keyboard
+
+    pairs = await db.get_dorm_pairs(dorm_id)
+    members = await db.get_dorm_members(dorm_id)
+    members_by_id = {m["user_id"]: m["name"] for m in members}
+
+    from scheduler import get_dorm_week_info
+    week_info = get_dorm_week_info(dorm, pairs, members_by_id)
+
+    if not week_info or week_info.week_number < 1:
+        start_date = dorm.get("start_date", "Soon")
+        first_cleaners = f"{pairs[0]['cleaner1_id']} & {pairs[0]['cleaner2_id']}" if pairs else "TBD"
+        if pairs:
+            c1 = members_by_id.get(pairs[0]["cleaner1_id"], f"ID {pairs[0]['cleaner1_id']}")
+            c2 = members_by_id.get(pairs[0]["cleaner2_id"], f"ID {pairs[0]['cleaner2_id']}")
+            first_cleaners = f"**{c1}** & **{c2}**"
         msg = (
-            f"Cleaning has not started yet.\n\n"
-            f"Starts: Monday, {config.START_BASE_MONDAY.strftime('%b %d')}\n"
-            f"First cleaners: **{first_pair[0].name}** & **{first_pair[1].name}**"
+            f"Cleaning has not started yet for **{dorm['dorm_name']}**.\n\n"
+            f"Starts: {start_date}\n"
+            f"First cleaners: {first_cleaners}"
         )
         return msg, keyboard
 
-    week_record = await db.get_week(week_info.week_start)
-    c1_name = week_info.cleaner1.name
-    c2_name = week_info.cleaner2.name
+    week_record = await db.get_week(week_info.week_start, dorm_id=dorm_id)
+    c1_name = week_info.cleaner1_name
+    c2_name = week_info.cleaner2_name
 
     if week_record and week_record.get("approver_id"):
-        approver = config.get_member(week_record["approver_id"])
-        approver_name = approver.name if approver else f"ID {week_record['approver_id']}"
+        approver_name = members_by_id.get(week_record["approver_id"], f"ID {week_record['approver_id']}")
     else:
         approver_name = "Not yet assigned"
 
@@ -139,17 +183,18 @@ async def get_status_content(user_id: int) -> Tuple[str, InlineKeyboardMarkup]:
         final_status = week_record.get("final_status", "pending")
         photo_status = week_record.get("photo_status", "none")
         check_sent = week_record.get("check_sent", 0)
+        fine_amount = dorm.get("fine_amount", 100)
 
         if final_status == "completed":
             duty_state = "Cleaned and approved. No fines."
         elif final_status == "fined":
-            duty_state = f"Not cleaned. Fined {config.FINE_TOTAL} ETB total."
+            duty_state = f"Not cleaned. Fined {fine_amount} ETB total."
         elif photo_status == "approved":
             duty_state = "Photo approved."
         elif photo_status == "submitted":
             duty_state = f"Photo sent. Waiting for {approver_name} to check."
         elif photo_status == "rejected":
-            duty_state = f"Photo rejected. Cleaners need to clean again and send a new photo."
+            duty_state = "Photo rejected. Cleaners need to clean again and send a new photo."
         elif week_record.get("done_reported"):
             duty_state = "Cleaners reported done. Waiting for photo."
         elif check_sent:
@@ -158,22 +203,16 @@ async def get_status_content(user_id: int) -> Tuple[str, InlineKeyboardMarkup]:
             duty_state = "In progress (deadline Friday 8:00 PM)."
 
     msg = (
-        f"Week #{week_info.week_number} ({week_info.monday_date.strftime('%b %d')} – {week_info.friday_date.strftime('%b %d')})\n\n"
+        f"**{dorm['dorm_name']}** — Week #{week_info.week_number} "
+        f"({week_info.monday_date.strftime('%b %d')} – {week_info.friday_date.strftime('%b %d')})\n\n"
         f"Cleaners: **{c1_name}** & **{c2_name}**\n"
         f"Approver: **{approver_name}**\n"
         f"Status: {duty_state}"
     )
     return msg, keyboard
 
-def get_schedule_content() -> Tuple[str, InlineKeyboardMarkup]:
+async def get_schedule_content(dorm_id: Optional[int] = None) -> Tuple[str, InlineKeyboardMarkup]:
     """Generate 4-week schedule text and navigation buttons."""
-    upcoming = config.get_upcoming_schedule(count=4)
-    lines = ["Next 4 Weeks:\n"]
-    for idx, w in enumerate(upcoming):
-        tag = " (This Week)" if idx == 0 else ""
-        date_str = f"{w.monday_date.strftime('%b %d')} – {w.friday_date.strftime('%b %d')}"
-        lines.append(f"• Week {w.week_number} ({date_str}){tag}: {w.cleaner1.name} & {w.cleaner2.name}")
-
     keyboard = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("Status", callback_data="menu_status"),
@@ -183,9 +222,38 @@ def get_schedule_content() -> Tuple[str, InlineKeyboardMarkup]:
             InlineKeyboardButton("Main Menu", callback_data="menu_home"),
         ]
     ])
+
+    resolved_id = dorm_id if dorm_id is not None else getattr(config, "GROUP_ID", 0)
+    dorm = await db.get_dorm(resolved_id)
+    pairs = await db.get_dorm_pairs(resolved_id)
+    members = await db.get_dorm_members(resolved_id)
+    members_by_id = {m["user_id"]: m["name"] for m in members}
+
+    if not dorm or not pairs:
+        upcoming = config.get_upcoming_schedule(count=4)
+        lines = ["Next 4 Weeks:\n"]
+        for idx, w in enumerate(upcoming):
+            tag = " (This Week)" if idx == 0 else ""
+            date_str = f"{w.monday_date.strftime('%b %d')} – {w.friday_date.strftime('%b %d')}"
+            lines.append(f"• Week {w.week_number} ({date_str}){tag}: {w.cleaner1.name} & {w.cleaner2.name}")
+        return "\n".join(lines), keyboard
+
+    from scheduler import get_dorm_week_info
+    today = config.get_current_date()
+    current_monday = config.get_monday_of_week(today)
+
+    lines = [f"**{dorm['dorm_name']}** — Next 4 Weeks:\n"]
+    for i in range(4):
+        target_monday = current_monday + timedelta(weeks=i)
+        w = get_dorm_week_info(dorm, pairs, members_by_id, target_date=target_monday)
+        if w:
+            tag = " (This Week)" if i == 0 else ""
+            date_str = f"{w.monday_date.strftime('%b %d')} – {w.friday_date.strftime('%b %d')}"
+            lines.append(f"• Week {w.week_number} ({date_str}){tag}: {w.cleaner1_name} & {w.cleaner2_name}")
+
     return "\n".join(lines), keyboard
 
-async def get_fines_content() -> Tuple[str, InlineKeyboardMarkup]:
+async def get_fines_content(dorm_id: Optional[int] = None) -> Tuple[str, InlineKeyboardMarkup]:
     """Generate unpaid fines ledger text and navigation buttons."""
     keyboard = InlineKeyboardMarkup([
         [
@@ -197,12 +265,17 @@ async def get_fines_content() -> Tuple[str, InlineKeyboardMarkup]:
         ]
     ])
 
-    unpaid_summary = await db.get_unpaid_fines_summary()
+    resolved_id = dorm_id if dorm_id is not None else getattr(config, "GROUP_ID", 0)
+    dorm = await db.get_dorm(resolved_id)
+    unpaid_summary = await db.get_unpaid_fines_summary(dorm_id=resolved_id)
+
+    prefix = f"**{dorm['dorm_name']}** — " if dorm else ""
+
     if not unpaid_summary:
-        msg = "No unpaid fines!"
+        msg = f"{prefix}No unpaid fines! Everyone is clean. 🎉"
         return msg, keyboard
 
-    lines = ["Unpaid Fines:\n"]
+    lines = [f"{prefix}Unpaid Fines:\n"]
     total_ledger = 0
     for entry in unpaid_summary:
         amount = entry["total_unpaid"]
@@ -213,7 +286,7 @@ async def get_fines_content() -> Tuple[str, InlineKeyboardMarkup]:
     lines.append(f"\nTotal: {total_ledger} ETB")
     return "\n".join(lines), keyboard
 
-async def get_history_content() -> Tuple[str, InlineKeyboardMarkup]:
+async def get_history_content(dorm_id: Optional[int] = None) -> Tuple[str, InlineKeyboardMarkup]:
     """Generate past 8 weeks history text and navigation buttons."""
     keyboard = InlineKeyboardMarkup([
         [
@@ -225,19 +298,23 @@ async def get_history_content() -> Tuple[str, InlineKeyboardMarkup]:
         ]
     ])
 
-    records = await db.get_history(limit=8)
+    resolved_id = dorm_id if dorm_id is not None else getattr(config, "GROUP_ID", 0)
+    dorm = await db.get_dorm(resolved_id)
+    members = await db.get_dorm_members(resolved_id)
+    members_by_id = {m["user_id"]: m["name"] for m in members}
+
+    records = await db.get_history(limit=8, dorm_id=resolved_id)
+    prefix = f"**{dorm['dorm_name']}** — " if dorm else ""
+
     if not records:
-        msg = "No history yet."
+        msg = f"{prefix}No history yet."
         return msg, keyboard
 
-    lines = ["Past Weeks:\n"]
+    lines = [f"{prefix}Past Weeks:\n"]
     for r in records:
         w_start = r["week_start"]
-        c1 = config.get_member(r["cleaner1_id"])
-        c2 = config.get_member(r["cleaner2_id"])
-
-        c1_name = c1.name if c1 else f"ID {r['cleaner1_id']}"
-        c2_name = c2.name if c2 else f"ID {r['cleaner2_id']}"
+        c1_name = members_by_id.get(r["cleaner1_id"], f"ID {r['cleaner1_id']}")
+        c2_name = members_by_id.get(r["cleaner2_id"], f"ID {r['cleaner2_id']}")
 
         status = r.get("final_status", "pending")
         if status == "completed":
@@ -264,23 +341,25 @@ def get_help_content() -> Tuple[str, InlineKeyboardMarkup]:
     ])
 
     help_text = (
-        "How it works:\n\n"
+        "How Dorm Inspector Bot Works:\n\n"
         "• Monday 8:00 AM: Duty is announced (cleaners & approver)\n"
-        "• Monday – Friday: Cleaners clean, tap 'We cleaned', and send a photo\n"
+        "• Mon – Fri: Cleaners clean, tap 'We cleaned', and send a photo\n"
         "• Photo review: Approver approves or rejects the photo\n"
-        "• Thursday 6:00 PM: Reminder if not done yet\n"
+        "• Thursday 6:00 PM: Reminder if cleaning is not yet completed\n"
         "• Friday 8:00 PM: Check time. Cleaners confirm and approver gives final decision\n"
-        "• Fines: 50 ETB each (100 ETB total) if not cleaned\n"
-        "• Weekend: Off\n\n"
+        "• Fines: Recorded in ledger if not cleaned\n"
+        "• Weekend: Rest and off-duty!\n\n"
         "Commands:\n"
-        "• /members: See who has connected to the bot"
+        "• /status: Check current week's cleaners and status\n"
+        "• /schedule: View upcoming 4 weeks\n"
+        "• /fines: See unpaid fines ledger\n"
+        "• /history: See past week records\n"
+        "• /members: See who is connected"
     )
     return help_text, keyboard
 
-async def get_done_content(user_id: int) -> Tuple[str, InlineKeyboardMarkup]:
-    """Generate cleaning submission instruction text and navigation buttons."""
-    week_info = config.get_week_info()
-
+async def get_done_content(user_id: int, dorm_id: Optional[int] = None) -> Tuple[str, InlineKeyboardMarkup]:
+    """Generate cleaning submission instruction text."""
     keyboard = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("Status", callback_data="menu_status"),
@@ -291,67 +370,102 @@ async def get_done_content(user_id: int) -> Tuple[str, InlineKeyboardMarkup]:
         ]
     ])
 
-    if week_info.week_number < 1:
-        msg = (
-            f"Cleaning duty has not started yet.\n"
-            f"Week 1 starts on Monday, {config.START_BASE_MONDAY.strftime('%b %d')}."
-        )
-        return msg, keyboard
-
-    week_record = await db.get_week(week_info.week_start)
-    if not week_record:
-        eligible_approver_ids = [
-            m.user_id for m in config.MEMBERS
-            if m.user_id not in (week_info.cleaner1.user_id, week_info.cleaner2.user_id)
-        ]
-        week_record = await db.get_or_create_week(
-            week_start=week_info.week_start,
-            week_number=week_info.week_number,
-            cleaner1_id=week_info.cleaner1.user_id,
-            cleaner2_id=week_info.cleaner2.user_id,
-            eligible_approver_ids=eligible_approver_ids
-        )
-
-    c1_id = week_record["cleaner1_id"]
-    c2_id = week_record["cleaner2_id"]
-
-    if user_id not in (c1_id, c2_id):
-        c1 = config.get_member(c1_id)
-        c2 = config.get_member(c2_id)
-        c1_name = c1.name if c1 else f"ID {c1_id}"
-        c2_name = c2.name if c2 else f"ID {c2_id}"
-        msg = f"You are not on cleaning duty this week.\nCleaners: **{c1_name}** & **{c2_name}**."
-        return msg, keyboard
-
-    if week_record and week_record.get("final_status") == "completed":
-        msg = "Cleaning for this week is already done!"
-        return msg, keyboard
-
-    await db.mark_done_reported(week_info.week_start)
-
-    msg = "Please send a photo of the cleaned dorm in this chat."
+    msg = (
+        "To submit cleaning duty:\n\n"
+        "1. Clean the dorm room with your partner.\n"
+        "2. Send /done or click 'We cleaned' in the Monday announcement.\n"
+        "3. Send a photo of the cleaned room directly in this chat.\n"
+        "4. The approver will review and confirm!"
+    )
     return msg, keyboard
 
 # ---------------------------------------------------------------------------
-# Command Handlers (/start, /help, /status, /schedule, /fines, /history)
+# Command Handlers
 # ---------------------------------------------------------------------------
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Register member's chat_id and send the interactive start menu."""
+    """Handle /start command (including join deep-links and main menu presentation)."""
     user = update.effective_user
     chat = update.effective_chat
-    if not user:
+    if not user or not chat:
         return
 
-    if not check_member_permission(user.id):
+    # Check for deep-link parameter: /start join_<param>
+    if context.args and len(context.args) > 0:
+        arg = context.args[0]
+        if arg.startswith("join_"):
+            param = arg.replace("join_", "")
+            # Telegram supergroups have negative IDs, encoded as abs(group_id)
+            try:
+                target_dorm_id = -int(param) if not param.startswith("-") else int(param)
+            except ValueError:
+                target_dorm_id = 0
+
+            dorm = await db.get_dorm(target_dorm_id)
+            if not dorm:
+                try:
+                    target_dorm_id = int(param)
+                    dorm = await db.get_dorm(target_dorm_id)
+                except ValueError:
+                    dorm = None
+
+            if dorm:
+                member_name = user.first_name or user.username or f"User {user.id}"
+                await db.add_dorm_member(
+                    dorm_id=dorm["dorm_id"],
+                    user_id=user.id,
+                    name=member_name,
+                    chat_id=chat.id,
+                    username=user.username,
+                    is_admin=1 if user.id == dorm["admin_id"] else 0
+                )
+                logger.info("User %s (%s) joined dorm %s via deep-link", member_name, user.id, dorm["dorm_id"])
+
+                # Post greeting in the dorm group chat
+                try:
+                    await context.bot.send_message(
+                        chat_id=dorm["dorm_id"],
+                        message_thread_id=dorm.get("topic_id"),
+                        text=f"👤 **{member_name}** just joined the dorm!",
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+                except Exception as e:
+                    logger.warning("Could not ping dorm group %s on member join: %s", dorm["dorm_id"], e)
+
+                welcome_dm = (
+                    f"🎉 **You successfully joined {dorm['dorm_name']}!**\n\n"
+                    "You are now registered in the dorm cleaning schedule.\n"
+                    "You will receive duty announcements, reminders, and verification prompts here in DM.\n\n"
+                    "Tap below to see your dorm's status."
+                )
+                await update.effective_message.reply_text(
+                    welcome_dm,
+                    reply_markup=get_main_menu_inline_keyboard(),
+                    parse_mode=ParseMode.MARKDOWN
+                )
+                await update.effective_message.reply_text(
+                    "Use the bottom keyboard for quick navigation.",
+                    reply_markup=get_reply_keyboard()
+                )
+                return
+
+    # Normal /start verification
+    if not await check_member_permission(user.id):
         await reject_non_member(update)
         return
 
-    member = config.get_member(user.id)
-    member_name = member.name if member else user.first_name
-
-    # Persist user chat_id for private DM capability
+    member_name = user.first_name
     conn_str = None
+    target_dorm = None
+
     if chat.type == "private":
+        target_dorm = await _resolve_user_dorm(user.id)
+        dorm_id = target_dorm["dorm_id"] if target_dorm else getattr(config, "GROUP_ID", 0)
+
+        # Look up member name from DB
+        db_member = await db.get_dorm_member(dorm_id, user.id)
+        if db_member:
+            member_name = db_member["name"]
+
         await db.upsert_user(
             user_id=user.id,
             name=member_name,
@@ -359,21 +473,20 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             username=user.username
         )
 
-        connected_count, total_count, connected_members, pending_members = await db.get_connection_status()
+        connected_count, total_count, connected_members, pending_members = await db.get_connection_status(dorm_id)
         conn_str = f"{connected_count}/{total_count}"
 
-        # If all 8 members are now connected, announce celebration to group topic once
-        if connected_count >= total_count:
-            already_announced = await db.get_setting("all_connected_announced")
+        # If all members are connected, celebrate in group
+        if total_count >= 2 and connected_count >= total_count:
+            announced_key = f"all_connected_{dorm_id}"
+            already_announced = await db.get_setting(announced_key)
             if not already_announced:
-                await db.set_setting("all_connected_announced", "1")
-                w1 = config.get_week_info(config.START_BASE_MONDAY)
-                first_cleaners = f"**{w1.cleaner1.name}** & **{w1.cleaner2.name}**"
+                await db.set_setting(announced_key, "1")
+                d_name = target_dorm["dorm_name"] if target_dorm else "Dorm"
+                topic_id = target_dorm.get("topic_id") if target_dorm else getattr(config, "TOPIC_ID", None)
                 group_text = (
-                    "🎉 **All 8 dorm mates are now connected!**\n\n"
-                    "Everyone has successfully linked to the bot. Dorm Inspector is fully functional and ready.\n\n"
-                    f"• Week 1 starts: Monday, {config.START_BASE_MONDAY.strftime('%b %d')}\n"
-                    f"• First cleaners: {first_cleaners}\n\n"
+                    f"🎉 **All {total_count} roommates in {d_name} are now connected!**\n\n"
+                    "Everyone has linked to the bot. Dorm Inspector is fully operational.\n\n"
                     "Let's keep the dorm clean!"
                 )
                 welcome_meme = config.get_meme_file("welcome")
@@ -381,28 +494,28 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                     if welcome_meme:
                         with open(welcome_meme, "rb") as photo:
                             await context.bot.send_photo(
-                                chat_id=config.GROUP_ID,
-                                message_thread_id=config.TOPIC_ID,
+                                chat_id=dorm_id,
+                                message_thread_id=topic_id,
                                 photo=photo,
                                 caption=group_text,
                                 parse_mode=ParseMode.MARKDOWN
                             )
                     else:
                         await context.bot.send_message(
-                            chat_id=config.GROUP_ID,
-                            message_thread_id=config.TOPIC_ID,
+                            chat_id=dorm_id,
+                            message_thread_id=topic_id,
                             text=group_text,
                             parse_mode=ParseMode.MARKDOWN
                         )
                 except Exception as e:
-                    logger.error("Failed to post all-connected announcement to group: %s", e)
+                    logger.error("Failed to post all-connected celebration to group: %s", e)
 
-    welcome_text = get_main_menu_text(member_name, connected_info=conn_str)
-    inline_markup = get_main_menu_inline_keyboard()
-
-    welcome_meme = config.get_meme_file("welcome")
-    if chat.type == "private":
+        d_name = target_dorm["dorm_name"] if target_dorm else None
+        welcome_text = get_main_menu_text(member_name, connected_info=conn_str, dorm_name=d_name)
+        inline_markup = get_main_menu_inline_keyboard()
         reply_markup = get_reply_keyboard()
+
+        welcome_meme = config.get_meme_file("welcome")
         if welcome_meme:
             try:
                 with open(welcome_meme, "rb") as photo:
@@ -414,25 +527,19 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             except Exception as e:
                 logger.warning("Could not send welcome meme: %s", e)
 
-        await update.effective_message.reply_text(
-            welcome_text,
-            reply_markup=inline_markup,
-            parse_mode=ParseMode.MARKDOWN
-        )
-        await update.effective_message.reply_text(
-            "Buttons are also available below.",
-            reply_markup=reply_markup
-        )
+        await update.effective_message.reply_text(welcome_text, reply_markup=inline_markup, parse_mode=ParseMode.MARKDOWN)
+        await update.effective_message.reply_text("Buttons are also available below.", reply_markup=reply_markup)
     else:
+        # In a group chat
         await update.effective_message.reply_text(
-            f"Welcome, {member_name}! To check duty or fines privately, message me in DM.",
+            f"Hi **{member_name}**! To check your duty or fines privately, message me in DM.",
             parse_mode=ParseMode.MARKDOWN
         )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send help instructions with navigation buttons."""
     user = update.effective_user
-    if not user or not check_member_permission(user.id):
+    if not user or not await check_member_permission(user.id):
         await reject_non_member(update)
         return
 
@@ -440,72 +547,91 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.effective_message.reply_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show current week's cleaners, approver, and duty status with navigation buttons."""
+    """Show current week's cleaners, approver, and duty status."""
     user = update.effective_user
-    if not user or not check_member_permission(user.id):
+    chat = update.effective_chat
+    if not user or not await check_member_permission(user.id):
         await reject_non_member(update)
         return
 
-    text, keyboard = await get_status_content(user.id)
+    dorm_id = chat.id if chat.type in ("group", "supergroup") else None
+    text, keyboard = await get_status_content(user.id, dorm_id=dorm_id)
     await update.effective_message.reply_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
 
 async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show the next 4 weeks of cleaning pairs with navigation buttons."""
+    """Show the next 4 weeks of cleaning pairs."""
     user = update.effective_user
-    if not user or not check_member_permission(user.id):
+    chat = update.effective_chat
+    if not user or not await check_member_permission(user.id):
         await reject_non_member(update)
         return
 
-    text, keyboard = get_schedule_content()
+    dorm_id = chat.id if chat.type in ("group", "supergroup") else None
+    text, keyboard = await get_schedule_content(dorm_id=dorm_id)
     await update.effective_message.reply_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
 
 async def fines_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show unpaid fine totals with navigation buttons."""
+    """Show unpaid fine totals."""
     user = update.effective_user
-    if not user or not check_member_permission(user.id):
+    chat = update.effective_chat
+    if not user or not await check_member_permission(user.id):
         await reject_non_member(update)
         return
 
-    text, keyboard = await get_fines_content()
+    dorm_id = chat.id if chat.type in ("group", "supergroup") else None
+    text, keyboard = await get_fines_content(dorm_id=dorm_id)
     await update.effective_message.reply_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
 
 async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show last 8 weeks of cleaning results with navigation buttons."""
+    """Show last 8 weeks of cleaning results."""
     user = update.effective_user
-    if not user or not check_member_permission(user.id):
+    chat = update.effective_chat
+    if not user or not await check_member_permission(user.id):
         await reject_non_member(update)
         return
 
-    text, keyboard = await get_history_content()
+    dorm_id = chat.id if chat.type in ("group", "supergroup") else None
+    text, keyboard = await get_history_content(dorm_id=dorm_id)
     await update.effective_message.reply_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
 
 async def members_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show connection status of all 8 dorm members."""
+    """Show connection status of dorm members."""
     user = update.effective_user
-    if not user or not check_member_permission(user.id):
+    chat = update.effective_chat
+    if not user or not await check_member_permission(user.id):
         await reject_non_member(update)
         return
 
-    connected_count, total_count, connected_members, pending_members = await db.get_connection_status()
-    lines = [f"Dorm Members ({connected_count}/{total_count} Connected):\n"]
+    dorm_id = chat.id if chat.type in ("group", "supergroup") else None
+    if dorm_id is None:
+        dorm = await _resolve_user_dorm(user.id)
+        dorm_id = dorm["dorm_id"] if dorm else getattr(config, "GROUP_ID", 0)
 
-    connected_ids = {m.user_id for m in connected_members}
-    for m in config.MEMBERS:
-        if m.user_id in connected_ids:
-            lines.append(f"• **{m.name}**: Connected")
+    dorm = await db.get_dorm(dorm_id)
+    d_name = dorm["dorm_name"] if dorm else "Dorm"
+
+    connected_count, total_count, connected_members, pending_members = await db.get_connection_status(dorm_id)
+    lines = [f"**{d_name} Members** ({connected_count}/{total_count} Connected):\n"]
+
+    members = await db.get_dorm_members(dorm_id)
+    connected_ids = {m["user_id"] for m in connected_members}
+
+    for m in members:
+        if m["user_id"] in connected_ids:
+            lines.append(f"• **{m['name']}**: Connected")
         else:
-            lines.append(f"• **{m.name}**: Waiting to send /start")
+            lines.append(f"• **{m['name']}**: Waiting to send /start")
 
-    if connected_count >= total_count:
-        lines.append("\nAll 8 members are connected! The bot is fully functional.")
-    else:
-        pending_names = ", ".join(m.name for m in pending_members)
+    if total_count >= 2 and connected_count >= total_count:
+        lines.append("\nAll members are connected! The bot is fully functional.")
+    elif pending_members:
+        pending_names = ", ".join(m["name"] for m in pending_members)
         lines.append(f"\nWaiting for: {pending_names}")
 
     await update.effective_message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
 
 # ---------------------------------------------------------------------------
-# Interactive Inline Menu Callback Handler (Back / Forward / Menu Navigation)
+# Interactive Inline Menu Callback Handler
 # ---------------------------------------------------------------------------
 async def menu_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle inline button clicks for smooth menu navigation."""
@@ -518,39 +644,35 @@ async def menu_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
     if not user:
         return
 
-    if not check_member_permission(user.id):
+    if not await check_member_permission(user.id):
         await query.answer("Sorry, this bot is only for dorm members.", show_alert=True)
         return
 
+    dorm = await _resolve_user_dorm(user.id)
+    dorm_id = dorm["dorm_id"] if dorm else getattr(config, "GROUP_ID", 0)
+
     action = query.data
-    member = config.get_member(user.id)
-    member_name = member.name if member else user.first_name
+    member = await db.get_dorm_member(dorm_id, user.id)
+    member_name = member["name"] if member else user.first_name
 
     text = ""
     keyboard: Optional[InlineKeyboardMarkup] = None
 
     if action == "menu_home":
-        text = get_main_menu_text(member_name)
+        text = get_main_menu_text(member_name, dorm_name=dorm["dorm_name"] if dorm else None)
         keyboard = get_main_menu_inline_keyboard()
     elif action == "menu_status":
-        text, keyboard = await get_status_content(user.id)
+        text, keyboard = await get_status_content(user.id, dorm_id=dorm_id)
     elif action == "menu_schedule":
-        text, keyboard = get_schedule_content()
+        text, keyboard = await get_schedule_content(dorm_id=dorm_id)
     elif action == "menu_done":
-        week_info = config.get_week_info()
-        week_record = await db.get_week(week_info.week_start)
-        c1_id = week_record["cleaner1_id"] if week_record else week_info.cleaner1.user_id
-        c2_id = week_record["cleaner2_id"] if week_record else week_info.cleaner2.user_id
-        if user.id in (c1_id, c2_id):
-            from handlers.cleaning import handle_cleaner_done
-            await handle_cleaner_done(update, context, user.id)
-            return
-        else:
-            text, keyboard = await get_done_content(user.id)
+        from handlers.cleaning import handle_cleaner_done
+        await handle_cleaner_done(update, context, user.id, dorm_id=dorm_id)
+        return
     elif action == "menu_fines":
-        text, keyboard = await get_fines_content()
+        text, keyboard = await get_fines_content(dorm_id=dorm_id)
     elif action == "menu_history":
-        text, keyboard = await get_history_content()
+        text, keyboard = await get_history_content(dorm_id=dorm_id)
     elif action == "menu_help":
         text, keyboard = get_help_content()
     else:
@@ -559,7 +681,6 @@ async def menu_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
     try:
         await query.edit_message_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
     except BadRequest:
-        # Ignore if content hasn't changed
         pass
     except Exception as e:
         logger.warning("Could not edit message for action %s: %s", action, e)
@@ -574,7 +695,7 @@ async def reply_keyboard_text_handler(update: Update, context: ContextTypes.DEFA
     if not user or not msg or not msg.text:
         return
 
-    if not check_member_permission(user.id):
+    if not await check_member_permission(user.id):
         await reject_non_member(update)
         return
 
@@ -585,17 +706,10 @@ async def reply_keyboard_text_handler(update: Update, context: ContextTypes.DEFA
     elif "schedule" in text_lower:
         await schedule_command(update, context)
     elif "clean" in text_lower or "submit" in text_lower:
-        member_id = user.id
-        week_info = config.get_week_info()
-        week_record = await db.get_week(week_info.week_start)
-        c1_id = week_record["cleaner1_id"] if week_record else week_info.cleaner1.user_id
-        c2_id = week_record["cleaner2_id"] if week_record else week_info.cleaner2.user_id
-        if member_id in (c1_id, c2_id):
-            from handlers.cleaning import handle_cleaner_done
-            await handle_cleaner_done(update, context, member_id)
-        else:
-            resp_text, keyboard = await get_done_content(member_id)
-            await msg.reply_text(resp_text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+        dorm = await _resolve_user_dorm(user.id)
+        dorm_id = dorm["dorm_id"] if dorm else getattr(config, "GROUP_ID", 0)
+        from handlers.cleaning import handle_cleaner_done
+        await handle_cleaner_done(update, context, user.id, dorm_id=dorm_id)
     elif "fine" in text_lower:
         await fines_command(update, context)
     elif "history" in text_lower:
@@ -619,10 +733,8 @@ def register_command_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("history", history_command))
     application.add_handler(CommandHandler("members", members_command))
 
-    # Register inline menu navigation callback handler
     application.add_handler(CallbackQueryHandler(menu_callback_handler, pattern=r"^menu_"))
 
-    # Register persistent reply keyboard text handler
     application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND & filters.Regex(r"(?i)^(Status|Schedule|Submit Cleaning|Fines|History|Help|Main Menu|📋 Status|📅 Schedule|🧼 Submit Cleaning|💸 Fines|📜 History|ℹ️ Help|🏠 Main Menu)$"),

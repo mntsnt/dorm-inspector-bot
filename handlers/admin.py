@@ -1,10 +1,11 @@
 """
-Admin Commands Handler
-Handles /markpaid <member> to settle fines in the ledger.
-Strictly restricted to ADMIN_ID.
+Admin Commands Handler (Multi-Tenant Platform)
+Handles /markpaid (or /paid) <member> to settle fines in the ledger.
+Strictly restricted to the dorm admin or system ADMIN_ID.
 """
 
 import logging
+from typing import Optional
 
 from telegram import Update
 from telegram.constants import ParseMode
@@ -16,84 +17,133 @@ import db
 logger = logging.getLogger(__name__)
 
 async def markpaid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Admin command to clear unpaid fines for a member."""
+    """Admin command to clear unpaid fines for a member in a dorm."""
     user = update.effective_user
-    if not user:
+    chat = update.effective_chat
+    if not user or not chat:
         return
 
-    # Security check: Only ADMIN_ID can execute
-    if user.id != config.ADMIN_ID:
-        await update.effective_message.reply_text(
-            "Only the admin can use this command."
-        )
+    # Determine target dorm
+    target_dorm_id: Optional[int] = None
+    if chat.type in ("group", "supergroup"):
+        target_dorm_id = chat.id
+    else:
+        # Private chat: check admin dorms
+        user_dorms = await db.get_user_dorms(user.id)
+        admin_dorms = [d for d in user_dorms if d.get("user_is_admin") == 1 or d.get("admin_id") == user.id]
+        if admin_dorms:
+            target_dorm_id = admin_dorms[0]["dorm_id"]
+        elif user.id == getattr(config, "ADMIN_ID", 0):
+            target_dorm_id = getattr(config, "GROUP_ID", 0)
+
+    if not target_dorm_id:
+        await update.effective_message.reply_text("Could not determine which dorm to manage.")
+        return
+
+    dorm = await db.get_dorm(target_dorm_id)
+    dorm_admin_id = dorm["admin_id"] if dorm else getattr(config, "ADMIN_ID", 0)
+
+    # Security check: User must be either this dorm's admin or global ADMIN_ID
+    if user.id != dorm_admin_id and user.id != getattr(config, "ADMIN_ID", 0):
+        await update.effective_message.reply_text("Only the dorm admin can use this command.")
         return
 
     # Check argument
     if not context.args:
         await update.effective_message.reply_text(
-            "Usage: `/markpaid <name_or_id>`\nExample: `/markpaid Bilisuma`",
+            "Usage: `/markpaid <name_or_id>` or `/paid <name_or_id>`\nExample: `/markpaid Bilisuma`",
             parse_mode=ParseMode.MARKDOWN
         )
         return
 
     target_input = " ".join(context.args).strip().lstrip("@")
 
-    # Resolve member by user_id or name
-    target_member = None
-    if target_input.isdigit():
-        target_member = config.get_member(int(target_input))
-    
-    if not target_member:
-        target_member = config.get_member_by_name(target_input)
+    # Resolve member by user_id or name in this dorm
+    target_member_id: Optional[int] = None
+    target_member_name: Optional[str] = None
 
-    if not target_member:
-        member_list = ", ".join(m.name for m in config.MEMBERS)
+    if target_input.isdigit():
+        uid = int(target_input)
+        m = await db.get_dorm_member(target_dorm_id, uid)
+        if m:
+            target_member_id = m["user_id"]
+            target_member_name = m["name"]
+        elif config.get_member(uid):
+            cm = config.get_member(uid)
+            target_member_id = cm.user_id
+            target_member_name = cm.name
+
+    if not target_member_id:
+        m = await db.get_dorm_member_by_name(target_dorm_id, target_input)
+        if m:
+            target_member_id = m["user_id"]
+            target_member_name = m["name"]
+        elif config.get_member_by_name(target_input):
+            cm = config.get_member_by_name(target_input)
+            target_member_id = cm.user_id
+            target_member_name = cm.name
+
+    if not target_member_id:
+        members = await db.get_dorm_members(target_dorm_id)
+        if not members:
+            member_list = ", ".join(m.name for m in config.MEMBERS)
+        else:
+            member_list = ", ".join(m["name"] for m in members)
         await update.effective_message.reply_text(
-            f"Member '{target_input}' not found.\nMembers: {member_list}"
+            f"Member '{target_input}' not found in this dorm.\nMembers: {member_list}"
         )
         return
 
     # Check unpaid total
-    unpaid_total = await db.get_user_unpaid_total(target_member.user_id)
+    unpaid_total = await db.get_user_unpaid_total(target_member_id, dorm_id=target_dorm_id)
     if unpaid_total == 0:
         await update.effective_message.reply_text(
-            f"{target_member.name} has no unpaid fines."
+            f"{target_member_name} has no unpaid fines."
         )
         return
 
     # Mark fines as paid in ledger
-    count = await db.mark_fines_paid(target_member.user_id, admin_id=user.id)
+    await db.mark_fines_paid(target_member_id, admin_id=user.id, dorm_id=target_dorm_id)
 
-    reply_msg = f"Cleared {unpaid_total} ETB in fines for **{target_member.name}**."
+    reply_msg = f"Cleared {unpaid_total} ETB in fines for **{target_member_name}**."
     await update.effective_message.reply_text(reply_msg, parse_mode=ParseMode.MARKDOWN)
 
     # Post notification in group chat (with paid meme if present)
     try:
-        group_notice = f"Admin marked {unpaid_total} ETB fine as paid for **{target_member.name}**."
+        topic_id = dorm.get("topic_id") if dorm else getattr(config, "TOPIC_ID", None)
+        group_notice = f"Admin marked {unpaid_total} ETB fine as paid for **{target_member_name}**."
         paid_meme = config.get_meme_file("paid")
         if paid_meme:
             with open(paid_meme, "rb") as photo:
                 await context.bot.send_photo(
-                    chat_id=config.GROUP_ID,
-                    message_thread_id=config.TOPIC_ID,
+                    chat_id=target_dorm_id,
+                    message_thread_id=topic_id,
                     photo=photo,
                     caption=group_notice,
                     parse_mode=ParseMode.MARKDOWN
                 )
         else:
             await context.bot.send_message(
-                chat_id=config.GROUP_ID,
-                message_thread_id=config.TOPIC_ID,
+                chat_id=target_dorm_id,
+                message_thread_id=topic_id,
                 text=group_notice,
                 parse_mode=ParseMode.MARKDOWN
             )
     except Exception as e:
-        logger.error("Failed to post fine payment notice in group chat: %s", e)
+        logger.error("Failed to post fine payment notice in group chat %s: %s", target_dorm_id, e)
 
 async def setid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Admin command to update a member's user_id."""
     user = update.effective_user
-    if not user or user.id != config.ADMIN_ID:
+    chat = update.effective_chat
+    if not user:
+        return
+
+    target_dorm_id = chat.id if chat.type in ("group", "supergroup") else getattr(config, "GROUP_ID", 0)
+    dorm = await db.get_dorm(target_dorm_id)
+    dorm_admin_id = dorm["admin_id"] if dorm else getattr(config, "ADMIN_ID", 0)
+
+    if user.id != dorm_admin_id and user.id != getattr(config, "ADMIN_ID", 0):
         await update.effective_message.reply_text("Only the admin can use this command.")
         return
 
@@ -112,62 +162,76 @@ async def setid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     new_id = int(id_input)
-    target_member = config.get_member_by_name(name_input)
-    if not target_member:
-        member_list = ", ".join(m.name for m in config.MEMBERS)
+    member = await db.get_dorm_member_by_name(target_dorm_id, name_input)
+    if not member:
+        cm = config.get_member_by_name(name_input)
+        if cm:
+            old_id = cm.user_id
+            config.update_member_id(cm.name, new_id)
+            await db.update_member_id_in_db(old_id=old_id, new_id=new_id)
+            await update.effective_message.reply_text(
+                f"Updated **{cm.name}**'s ID to `{new_id}` (was `{old_id}`).",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return
+
+        members = await db.get_dorm_members(target_dorm_id)
+        member_list = ", ".join(m["name"] for m in members) if members else ", ".join(m.name for m in config.MEMBERS)
         await update.effective_message.reply_text(
             f"Member '{name_input}' not found.\nMembers: {member_list}"
         )
         return
 
-    old_id = target_member.user_id
-    success = config.update_member_id(target_member.name, new_id)
-    if success:
-        await db.update_member_id_in_db(old_id=old_id, new_id=new_id)
-        await update.effective_message.reply_text(
-            f"Updated **{target_member.name}**'s ID to `{new_id}` (was `{old_id}`).",
-            parse_mode=ParseMode.MARKDOWN
-        )
-    else:
-        await update.effective_message.reply_text("Failed to update ID in members.json.")
+    old_id = member["user_id"]
+    await db.update_member_id_in_db(old_id=old_id, new_id=new_id)
+    await update.effective_message.reply_text(
+        f"Updated **{member['name']}**'s ID to `{new_id}` (was `{old_id}`).",
+        parse_mode=ParseMode.MARKDOWN
+    )
 
 async def testgroup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Admin command to verify group connectivity and permissions."""
     user = update.effective_user
-    if not user or user.id != config.ADMIN_ID:
+    chat = update.effective_chat
+    if not user:
+        return
+
+    target_group_id = chat.id if chat.type in ("group", "supergroup") else getattr(config, "GROUP_ID", 0)
+    if not target_group_id:
+        await update.effective_message.reply_text("GROUP_ID is not configured and no group chat detected.")
+        return
+
+    dorm = await db.get_dorm(target_group_id)
+    dorm_admin_id = dorm["admin_id"] if dorm else getattr(config, "ADMIN_ID", 0)
+
+    if user.id != dorm_admin_id and user.id != getattr(config, "ADMIN_ID", 0):
         await update.effective_message.reply_text("Only the admin can use this command.")
         return
 
-    if not config.GROUP_ID:
-        await update.effective_message.reply_text("GROUP_ID is not configured in environment variables.")
-        return
-
     try:
-        chat = await context.bot.get_chat(config.GROUP_ID)
-        chat_title = chat.title or "Dorm Group"
-        topic_info = f", Topic ID: `{config.TOPIC_ID}`" if config.TOPIC_ID is not None else ""
+        tg_chat = await context.bot.get_chat(target_group_id)
+        chat_title = tg_chat.title or "Dorm Group"
+        topic_id = dorm.get("topic_id") if dorm else getattr(config, "TOPIC_ID", None)
+        topic_info = f", Topic ID: `{topic_id}`" if topic_id is not None else ""
         await context.bot.send_message(
-            chat_id=config.GROUP_ID,
-            message_thread_id=config.TOPIC_ID,
+            chat_id=target_group_id,
+            message_thread_id=topic_id,
             text=f"Group verification successful! Bot is connected to {chat_title}."
         )
         await update.effective_message.reply_text(
-            f"Successfully connected to group **{chat_title}** (ID: `{config.GROUP_ID}`{topic_info}).\n"
+            f"Successfully connected to group **{chat_title}** (ID: `{target_group_id}`{topic_info}).\n"
             "A test verification message was sent to the group chat.",
             parse_mode=ParseMode.MARKDOWN
         )
     except Exception as e:
         await update.effective_message.reply_text(
-            f"Failed to connect to group (ID: `{config.GROUP_ID}`):\n`{e}`\n\n"
-            "Troubleshooting:\n"
-            "1. Make sure the bot is added as a member in the dorm group.\n"
-            "2. Make sure the bot has permission to send messages (or make it an Admin).\n"
-            "3. Verify that GROUP_ID in your cloud environment matches this group's ID.",
+            f"Failed to connect to group (ID: `{target_group_id}`):\n`{e}`",
             parse_mode=ParseMode.MARKDOWN
         )
 
 def register_admin_handlers(application: Application) -> None:
     """Attach admin command handlers."""
     application.add_handler(CommandHandler("markpaid", markpaid_command))
+    application.add_handler(CommandHandler("paid", markpaid_command))
     application.add_handler(CommandHandler("setid", setid_command))
     application.add_handler(CommandHandler("testgroup", testgroup_command))
