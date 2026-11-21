@@ -14,6 +14,7 @@ from telegram import (
     InlineKeyboardMarkup,
     KeyboardButton,
     ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
     Update,
 )
 from telegram.constants import ParseMode
@@ -442,10 +443,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                     reply_markup=get_main_menu_inline_keyboard(),
                     parse_mode=ParseMode.MARKDOWN
                 )
-                await update.effective_message.reply_text(
-                    "Use the bottom keyboard for quick navigation.",
-                    reply_markup=get_reply_keyboard()
-                )
                 return
 
     # Normal /start verification
@@ -513,7 +510,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         d_name = target_dorm["dorm_name"] if target_dorm else None
         welcome_text = get_main_menu_text(member_name, connected_info=conn_str, dorm_name=d_name)
         inline_markup = get_main_menu_inline_keyboard()
-        reply_markup = get_reply_keyboard()
 
         welcome_meme = config.get_meme_file("welcome")
         if welcome_meme:
@@ -522,13 +518,13 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                     await update.effective_message.reply_photo(
                         photo=photo,
                         caption=f"Welcome, {member_name}!",
+                        reply_markup=ReplyKeyboardRemove(),
                         parse_mode=ParseMode.MARKDOWN
                     )
             except Exception as e:
                 logger.warning("Could not send welcome meme: %s", e)
 
         await update.effective_message.reply_text(welcome_text, reply_markup=inline_markup, parse_mode=ParseMode.MARKDOWN)
-        await update.effective_message.reply_text("Buttons are also available below.", reply_markup=reply_markup)
     else:
         # In a group chat
         await update.effective_message.reply_text(
@@ -698,7 +694,7 @@ async def menu_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
 # Quick Reply Keyboard Handler
 # ---------------------------------------------------------------------------
 async def reply_keyboard_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Respond to clicks on the persistent bottom reply keyboard."""
+    """Respond to clicks on the persistent bottom reply keyboard and dismiss it."""
     user = update.effective_user
     msg = update.effective_message
     if not user or not msg or not msg.text:
@@ -707,6 +703,11 @@ async def reply_keyboard_text_handler(update: Update, context: ContextTypes.DEFA
     if not await check_member_permission(user.id):
         await reject_non_member(update)
         return
+
+    try:
+        await msg.reply_text("Switching to clean inline buttons...", reply_markup=ReplyKeyboardRemove())
+    except Exception:
+        pass
 
     text_lower = msg.text.strip().lower()
 
