@@ -178,30 +178,38 @@ MEMBERS, MEMBERS_BY_ID, MEMBERS_BY_NAME, PAIRS = load_and_validate_members()
 # ---------------------------------------------------------------------------
 # Environment and Schedule Settings
 # ---------------------------------------------------------------------------
-BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+BOT_TOKEN = (
+    os.getenv("BOT_TOKEN")
+    or os.getenv("TELEGRAM_BOT_TOKEN")
+    or os.getenv("TELEGRAM_TOKEN")
+    or os.getenv("TOKEN")
+    or ""
+).strip().strip('"').strip("'")
 
-raw_group_id = os.getenv("GROUP_ID", "").strip()
-raw_admin_id = os.getenv("ADMIN_ID", "").strip()
-raw_start_date = os.getenv("START_DATE", "").strip()
-raw_topic_id = os.getenv("TOPIC_ID", "").strip()
+raw_group_id = os.getenv("GROUP_ID", "").strip().strip('"').strip("'")
+raw_admin_id = os.getenv("ADMIN_ID", "").strip().strip('"').strip("'")
+raw_start_date = os.getenv("START_DATE", "").strip().strip('"').strip("'")
+raw_topic_id = os.getenv("TOPIC_ID", "").strip().strip('"').strip("'")
 
 if not BOT_TOKEN:
     logger.warning("BOT_TOKEN is not set in environment or .env file.")
 
 try:
     GROUP_ID = int(raw_group_id) if raw_group_id else 0
-except ValueError:
-    sys.exit(f"CRITICAL ERROR: GROUP_ID must be an integer, got: {raw_group_id}")
+except (ValueError, TypeError):
+    logger.warning("GROUP_ID is not a valid integer ('%s'). Defaulting to 0.", raw_group_id)
+    GROUP_ID = 0
 
 try:
     TOPIC_ID = int(raw_topic_id) if raw_topic_id else None
-except ValueError:
+except (ValueError, TypeError):
     TOPIC_ID = None
 
 try:
     ADMIN_ID = int(raw_admin_id) if raw_admin_id else 0
-except ValueError:
-    sys.exit(f"CRITICAL ERROR: ADMIN_ID must be an integer, got: {raw_admin_id}")
+except (ValueError, TypeError):
+    logger.warning("ADMIN_ID is not a valid integer ('%s'). Defaulting to 0.", raw_admin_id)
+    ADMIN_ID = 0
 
 def get_monday_of_week(d: datetime.date) -> datetime.date:
     """Return the Monday of the week containing date d."""

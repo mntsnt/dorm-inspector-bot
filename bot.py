@@ -41,6 +41,11 @@ logger = logging.getLogger("DormInspectorBot")
 # Lightweight HTTP Health Check Server (for Cloud Deployment / Readiness Probes)
 # ---------------------------------------------------------------------------
 class HealthCheckHandler(http.server.BaseHTTPRequestHandler):
+    def do_HEAD(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+
     def do_GET(self):
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -78,8 +83,11 @@ async def post_init(application: Application) -> None:
     logger.info("Initializing multi-tenant database...")
     await db.init_db()
 
-    bot_info = await application.bot.get_me()
-    logger.info("Bot authenticated successfully: @%s (ID: %s)", bot_info.username, bot_info.id)
+    try:
+        bot_info = await application.bot.get_me()
+        logger.info("Bot authenticated successfully: @%s (ID: %s)", bot_info.username, bot_info.id)
+    except Exception as e:
+        logger.warning("Could not fetch bot information in post_init: %s", e)
 
     # Automatically seed the default dorm if configured in environment
     if getattr(config, "GROUP_ID", 0) and getattr(config, "ADMIN_ID", 0):

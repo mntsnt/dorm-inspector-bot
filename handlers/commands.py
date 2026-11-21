@@ -613,19 +613,28 @@ async def members_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     connected_count, total_count, connected_members, pending_members = await db.get_connection_status(dorm_id)
     lines = [f"**{d_name} Members** ({connected_count}/{total_count} Connected):\n"]
 
-    members = await db.get_dorm_members(dorm_id)
-    connected_ids = {m["user_id"] for m in connected_members}
+    def _uid(item):
+        return getattr(item, "user_id", None) if not isinstance(item, dict) else item.get("user_id")
 
-    for m in members:
-        if m["user_id"] in connected_ids:
-            lines.append(f"• **{m['name']}**: Connected")
+    def _uname(item):
+        return getattr(item, "name", None) if not isinstance(item, dict) else item.get("name")
+
+    connected_ids = {_uid(m) for m in connected_members if _uid(m) is not None}
+    members = await db.get_dorm_members(dorm_id)
+    display_members = members if members else config.MEMBERS
+
+    for m in display_members:
+        mid = _uid(m)
+        mname = _uname(m) or f"ID {mid}"
+        if mid in connected_ids:
+            lines.append(f"• **{mname}**: Connected")
         else:
-            lines.append(f"• **{m['name']}**: Waiting to send /start")
+            lines.append(f"• **{mname}**: Waiting to send /start")
 
     if total_count >= 2 and connected_count >= total_count:
         lines.append("\nAll members are connected! The bot is fully functional.")
     elif pending_members:
-        pending_names = ", ".join(m["name"] for m in pending_members)
+        pending_names = ", ".join(_uname(m) or "Unknown" for m in pending_members)
         lines.append(f"\nWaiting for: {pending_names}")
 
     await update.effective_message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
