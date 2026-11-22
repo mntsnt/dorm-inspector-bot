@@ -148,7 +148,11 @@ async def get_status_content(user_id: Optional[int] = None, dorm_id: Optional[in
     elif dorm_id is not None and user_id is not None:
         member = await db.get_dorm_member(dorm_id, user_id)
         if not member:
-            return "You are not a member of this dorm.", keyboard
+            if config.is_member(user_id):
+                dorm_id = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+                member = await db.get_dorm_member(dorm_id, user_id)
+            if not member:
+                return "You are not a member of this dorm.", keyboard
 
     dorm = await db.get_dorm(dorm_id)
     if not dorm:
@@ -241,7 +245,11 @@ async def get_schedule_content(dorm_id: Optional[int] = None, user_id: Optional[
     elif dorm_id is not None and user_id is not None:
         member = await db.get_dorm_member(dorm_id, user_id)
         if not member:
-            return "You are not a member of this dorm.", keyboard
+            if config.is_member(user_id):
+                dorm_id = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+                member = await db.get_dorm_member(dorm_id, user_id)
+            if not member:
+                return "You are not a member of this dorm.", keyboard
         resolved_id = dorm_id
     else:
         resolved_id = dorm_id
@@ -305,7 +313,11 @@ async def get_fines_content(dorm_id: Optional[int] = None, user_id: Optional[int
     elif dorm_id is not None and user_id is not None:
         member = await db.get_dorm_member(dorm_id, user_id)
         if not member:
-            return "You are not a member of this dorm.", keyboard
+            if config.is_member(user_id):
+                dorm_id = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+                member = await db.get_dorm_member(dorm_id, user_id)
+            if not member:
+                return "You are not a member of this dorm.", keyboard
         resolved_id = dorm_id
     else:
         resolved_id = dorm_id
@@ -353,7 +365,11 @@ async def get_history_content(dorm_id: Optional[int] = None, user_id: Optional[i
     elif dorm_id is not None and user_id is not None:
         member = await db.get_dorm_member(dorm_id, user_id)
         if not member:
-            return "You are not a member of this dorm.", keyboard
+            if config.is_member(user_id):
+                dorm_id = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+                member = await db.get_dorm_member(dorm_id, user_id)
+            if not member:
+                return "You are not a member of this dorm.", keyboard
         resolved_id = dorm_id
     else:
         resolved_id = dorm_id
@@ -675,6 +691,8 @@ async def members_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     dorm_id = chat.id if chat.type in ("group", "supergroup") else None
+    default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+
     if dorm_id is None:
         dorm = await _resolve_user_dorm(user.id)
         if not dorm:
@@ -684,10 +702,22 @@ async def members_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     else:
         member = await db.get_dorm_member(dorm_id, user.id)
         if not member:
-            await update.effective_message.reply_text("You are not a member of this dorm.")
-            return
+            if config.is_member(user.id):
+                await db.seed_default_dorm()
+                member = await db.get_dorm_member(dorm_id, user.id)
+                if not member:
+                    dorm_id = default_gid
+                    member = await db.get_dorm_member(dorm_id, user.id)
+            if not member:
+                await update.effective_message.reply_text("You are not a member of this dorm.")
+                return
 
     dorm = await db.get_dorm(dorm_id)
+    if not dorm and config.is_member(user.id):
+        await db.seed_default_dorm()
+        dorm = await db.get_dorm(default_gid)
+        dorm_id = default_gid
+
     if not dorm:
         await update.effective_message.reply_text("Dorm not found.")
         return
@@ -821,6 +851,8 @@ async def reply_keyboard_text_handler(update: Update, context: ContextTypes.DEFA
         await fines_command(update, context)
     elif "history" in text_lower:
         await history_command(update, context)
+    elif "member" in text_lower:
+        await members_command(update, context)
     elif "help" in text_lower or "guide" in text_lower:
         await help_command(update, context)
     elif "main menu" in text_lower or "menu" in text_lower or "home" in text_lower:
@@ -889,7 +921,7 @@ def register_command_handlers(application: Application) -> None:
 
     application.add_handler(
         MessageHandler(
-            filters.TEXT & ~filters.COMMAND & filters.Regex(r"(?i)^(Status|Schedule|Submit Cleaning|Fines|History|Help|Main Menu|📋 Status|📅 Schedule|🧼 Submit Cleaning|💸 Fines|📜 History|ℹ️ Help|🏠 Main Menu)$"),
+            filters.TEXT & ~filters.COMMAND & filters.Regex(r"(?i)^(Status|Schedule|Submit Cleaning|Fines|History|Help|Main Menu|Members|👥 Members|📋 Status|📅 Schedule|🧼 Submit Cleaning|💸 Fines|📜 History|ℹ️ Help|🏠 Main Menu)$"),
             reply_keyboard_text_handler
         )
     )

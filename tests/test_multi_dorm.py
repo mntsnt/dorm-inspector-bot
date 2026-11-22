@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import config
 import db
-from handlers.commands import check_member_permission, start_command, claim_command
+from handlers.commands import check_member_permission, start_command, claim_command, members_command
 from handlers.setup import setup_command, reset_dorm_command
 from scheduler import get_dorm_week_info
 
@@ -190,10 +190,10 @@ class TestMultiDormPlatform(unittest.IsolatedAsyncioTestCase):
         """Default dorm is protected from being overwritten into 'setup' mode or reset."""
         await db.seed_default_dorm()
 
-        # Check initial connection status is 8/8
-        c_count, total, _, _ = await db.get_connection_status(config.DEFAULT_GROUP_ID)
-        self.assertEqual(c_count, 8)
+        # Check initial connection status reports total 8 members
+        c_count, total, _, pend_list = await db.get_connection_status(config.DEFAULT_GROUP_ID)
         self.assertEqual(total, 8)
+        self.assertEqual(c_count + len(pend_list), 8)
 
         # Calling /setup in default group chat does not downgrade to 'setup'
         update = MagicMock()
@@ -232,6 +232,28 @@ class TestMultiDormPlatform(unittest.IsolatedAsyncioTestCase):
         # Status still active
         dorm_after = await db.get_dorm(config.DEFAULT_GROUP_ID)
         self.assertEqual(dorm_after["status"], "active")
+
+    async def test_members_command_in_group_for_saved_dorm(self):
+        """Roommates typing /members in default group chat see full member list without permission error."""
+        await db.seed_default_dorm()
+
+        # Mintesnot calls /members in the group chat
+        update = MagicMock()
+        update.effective_chat.type = "supergroup"
+        update.effective_chat.id = config.DEFAULT_GROUP_ID
+        update.effective_user.id = config.ADMIN_ID
+        update.effective_message.reply_text = AsyncMock()
+
+        context = MagicMock()
+        await members_command(update, context)
+
+        self.assertTrue(update.effective_message.reply_text.called)
+        reply = update.effective_message.reply_text.call_args[0][0]
+        self.assertNotIn("You are not a member of this dorm", reply)
+        self.assertIn("Dorm Cleaning Schedule Members", reply)
+        self.assertIn("Mintesnot", reply)
+        self.assertIn("Bilisuma", reply)
+        self.assertIn("Nahom", reply)
 
 if __name__ == "__main__":
     unittest.main()

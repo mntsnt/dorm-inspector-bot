@@ -234,11 +234,20 @@ async def create_or_update_dorm(
     )
 
 def _get_dorm_sync(dorm_id: int) -> Optional[Dict[str, Any]]:
+    default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
     with _get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM dorms WHERE dorm_id = ?", (dorm_id,))
         row = cursor.fetchone()
-        return dict(row) if row else None
+        if row:
+            return dict(row)
+        if dorm_id in (default_gid, getattr(config, "GROUP_ID", 0), 0):
+            _seed_default_dorm_sync()
+            cursor.execute("SELECT * FROM dorms WHERE dorm_id = ?", (dorm_id,))
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+        return None
 
 async def get_dorm(dorm_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
     resolved_id = _resolve_dorm_id(dorm_id)
@@ -379,21 +388,50 @@ async def remove_dorm_member(dorm_id: int, user_id: int) -> None:
     await asyncio.to_thread(_remove_dorm_member_sync, dorm_id, user_id)
 
 def _get_dorm_members_sync(dorm_id: int) -> List[Dict[str, Any]]:
+    default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
     with _get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM dorm_members WHERE dorm_id = ? ORDER BY joined_at ASC", (dorm_id,))
-        return [dict(r) for r in cursor.fetchall()]
+        rows = cursor.fetchall()
+        if rows:
+            return [dict(r) for r in rows]
+        if dorm_id in (default_gid, getattr(config, "GROUP_ID", 0), 0):
+            _seed_default_dorm_sync()
+            cursor.execute("SELECT * FROM dorm_members WHERE dorm_id = ? ORDER BY joined_at ASC", (dorm_id,))
+            return [dict(r) for r in cursor.fetchall()]
+        return []
 
 async def get_dorm_members(dorm_id: Optional[int] = None) -> List[Dict[str, Any]]:
     resolved_id = _resolve_dorm_id(dorm_id)
     return await asyncio.to_thread(_get_dorm_members_sync, resolved_id)
 
 def _get_dorm_member_sync(dorm_id: int, user_id: int) -> Optional[Dict[str, Any]]:
+    default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
     with _get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM dorm_members WHERE dorm_id = ? AND user_id = ?", (dorm_id, user_id))
         row = cursor.fetchone()
-        return dict(row) if row else None
+        if row:
+            return dict(row)
+
+        if dorm_id in (default_gid, getattr(config, "GROUP_ID", 0), 0) or config.is_member(user_id):
+            cm = config.get_member(user_id)
+            if cm:
+                _seed_default_dorm_sync()
+                cursor.execute("SELECT * FROM dorm_members WHERE dorm_id = ? AND user_id = ?", (dorm_id, user_id))
+                row = cursor.fetchone()
+                if row:
+                    return dict(row)
+                return {
+                    "dorm_id": dorm_id,
+                    "user_id": cm.user_id,
+                    "name": cm.name,
+                    "is_admin": 1 if cm.user_id in (config.ADMIN_ID, 6163528558) else 0,
+                    "pair_number": None,
+                    "chat_id": cm.user_id,
+                    "username": None
+                }
+        return None
 
 async def get_dorm_member(dorm_id: Optional[int], user_id: int) -> Optional[Dict[str, Any]]:
     resolved_id = _resolve_dorm_id(dorm_id)
@@ -451,10 +489,18 @@ async def set_dorm_pairs(dorm_id: int, pairs: List[Tuple[int, int]]) -> None:
     await asyncio.to_thread(_set_dorm_pairs_sync, dorm_id, pairs)
 
 def _get_dorm_pairs_sync(dorm_id: int) -> List[Dict[str, Any]]:
+    default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
     with _get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM dorm_pairs WHERE dorm_id = ? ORDER BY pair_number ASC", (dorm_id,))
-        return [dict(r) for r in cursor.fetchall()]
+        rows = cursor.fetchall()
+        if rows:
+            return [dict(r) for r in rows]
+        if dorm_id in (default_gid, getattr(config, "GROUP_ID", 0), 0):
+            _seed_default_dorm_sync()
+            cursor.execute("SELECT * FROM dorm_pairs WHERE dorm_id = ? ORDER BY pair_number ASC", (dorm_id,))
+            return [dict(r) for r in cursor.fetchall()]
+        return []
 
 async def get_dorm_pairs(dorm_id: Optional[int] = None) -> List[Dict[str, Any]]:
     resolved_id = _resolve_dorm_id(dorm_id)
@@ -836,6 +882,17 @@ def _set_setting_sync(key: str, value: str) -> None:
 async def set_setting(key: str, value: str) -> None:
     await asyncio.to_thread(_set_setting_sync, key, value)
 
+class MemberItem(dict):
+    """Dictionary supporting both dict item lookup (m['user_id']) and attribute lookup (m.user_id)."""
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(f"'MemberItem' object has no attribute '{name}'")
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        self[name] = value
+
 async def get_connection_status(dorm_id: Optional[int] = None) -> tuple:
     """Return (connected_count, total_count, connected_members, pending_members)."""
     resolved_id = _resolve_dorm_id(dorm_id)
@@ -843,14 +900,14 @@ async def get_connection_status(dorm_id: Optional[int] = None) -> tuple:
     if not members:
         if resolved_id == getattr(config, "DEFAULT_GROUP_ID", -1002378440774):
             connected_ids = set(await get_connected_user_ids())
-            connected = [m for m in config.MEMBERS if m.user_id in connected_ids]
-            pending = [m for m in config.MEMBERS if m.user_id not in connected_ids]
+            connected = [MemberItem(m) if isinstance(m, dict) else m for m in config.MEMBERS if m.user_id in connected_ids]
+            pending = [MemberItem(m) if isinstance(m, dict) else m for m in config.MEMBERS if m.user_id not in connected_ids]
             return len(connected), len(config.MEMBERS), connected, pending
         return 0, 0, [], []
 
     connected_ids = set(await get_connected_user_ids())
-    connected_list = [m for m in members if m["user_id"] in connected_ids]
-    pending_list = [m for m in members if m["user_id"] not in connected_ids]
+    connected_list = [MemberItem(m) if isinstance(m, dict) else m for m in members if (m["user_id"] if isinstance(m, dict) else m.user_id) in connected_ids]
+    pending_list = [MemberItem(m) if isinstance(m, dict) else m for m in members if (m["user_id"] if isinstance(m, dict) else m.user_id) not in connected_ids]
     return len(connected_list), len(members), connected_list, pending_list
 
 def _update_member_id_sync(old_id: int, new_id: int) -> None:
@@ -915,15 +972,14 @@ def _seed_default_dorm_sync() -> None:
                     is_admin = CASE WHEN excluded.is_admin = 1 THEN 1 ELSE dorm_members.is_admin END;
             """, (group_id, m.user_id, m.name, is_adm))
 
-            # Also ensure users table has each member so connected status reports 8/8
+            # Ensure users table has each member tracked
             conn.execute("""
-                INSERT INTO users (user_id, name, chat_id, updated_at)
-                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                INSERT INTO users (user_id, name, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(user_id) DO UPDATE SET
                     name = excluded.name,
-                    chat_id = COALESCE(users.chat_id, excluded.chat_id),
                     updated_at = CURRENT_TIMESTAMP;
-            """, (m.user_id, m.name, m.user_id))
+            """, (m.user_id, m.name))
 
         # Enforce exact saved pairs from members.json / config.PAIRS for default dorm:
         # Pair 1: Bilisuma & Nahom
