@@ -33,7 +33,7 @@ async def handle_ai_mention(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     text = message.text.strip()
 
     if is_group:
-        if bot_username and f"@{bot_username}" in text.lower():
+        if (bot_username and f"@{bot_username}" in text.lower()) or "@inspector" in text.lower():
             is_mention = True
         elif (
             message.reply_to_message
@@ -51,10 +51,11 @@ async def handle_ai_mention(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         if not user_dorms and not config.is_member(user.id) and user.id != getattr(config, "ADMIN_ID", 6163528558):
             return
 
-    # Strip @bot_username from prompt text
+    # Strip @bot_username and @inspector from prompt text
     cleaned_prompt = text
     if bot_username:
-        cleaned_prompt = re.sub(rf"@{re.escape(bot_username)}", "", cleaned_prompt, flags=re.IGNORECASE).strip()
+        cleaned_prompt = re.sub(rf"@{re.escape(bot_username)}\b", "", cleaned_prompt, flags=re.IGNORECASE)
+    cleaned_prompt = re.sub(r"@inspector\b", "", cleaned_prompt, flags=re.IGNORECASE).strip()
     if not cleaned_prompt:
         cleaned_prompt = "Hello!"
 

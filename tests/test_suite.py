@@ -765,6 +765,18 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
             update.effective_message.reply_text.assert_called_once()
             self.assertIn("Pair 1 is cleaning", update.effective_message.reply_text.call_args[0][0])
 
+        # Case 3: Mentioning @inspector -> Triggers AI as well
+        update.effective_message.reply_text.reset_mock()
+        update.effective_message.text = "@inspector who is the approver?"
+        with patch("handlers.ai_chat.ask_ai", new_callable=AsyncMock) as mock_ask:
+            mock_ask.return_value = "Approver is assigned!"
+            await ai_chat.handle_ai_mention(update, context)
+            mock_ask.assert_called_once()
+            # Verify @inspector was cleaned from prompt
+            self.assertEqual(mock_ask.call_args[0][0], "who is the approver?")
+            update.effective_message.reply_text.assert_called_once()
+            self.assertIn("Approver is assigned", update.effective_message.reply_text.call_args[0][0])
+
     async def test_per_dorm_ai_key_isolation(self):
         """Verify strict per-dorm AI key isolation (secondary dorms cannot use primary dorm key)."""
         from services import ai_service
