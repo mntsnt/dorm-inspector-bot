@@ -884,6 +884,16 @@ def _seed_default_dorm_sync() -> None:
         return
 
     with _get_connection() as conn:
+        # Migrate any legacy placeholder ID 111111111 for Bilisuma to 7220854785
+        conn.execute("UPDATE dorm_members SET user_id = 7220854785 WHERE user_id = 111111111;")
+        conn.execute("UPDATE dorm_pairs SET cleaner1_id = 7220854785 WHERE cleaner1_id = 111111111;")
+        conn.execute("UPDATE dorm_pairs SET cleaner2_id = 7220854785 WHERE cleaner2_id = 111111111;")
+        conn.execute("UPDATE weeks SET cleaner1_id = 7220854785 WHERE cleaner1_id = 111111111;")
+        conn.execute("UPDATE weeks SET cleaner2_id = 7220854785 WHERE cleaner2_id = 111111111;")
+        conn.execute("UPDATE weeks SET approver_id = 7220854785 WHERE approver_id = 111111111;")
+        conn.execute("UPDATE users SET user_id = 7220854785 WHERE user_id = 111111111;")
+        conn.execute("UPDATE fines SET user_id = 7220854785 WHERE user_id = 111111111;")
+
         # Upsert dorm so topic_id and status are always correct and active
         conn.execute("""
             INSERT INTO dorms (dorm_id, topic_id, admin_id, dorm_name, fine_amount, start_date, status, updated_at)
@@ -896,7 +906,7 @@ def _seed_default_dorm_sync() -> None:
 
         # Seed pre-configured members from config.MEMBERS
         for m in getattr(config, "MEMBERS", []):
-            is_adm = 1 if m.user_id in (admin_id, 111111111, 6163528558) else 0
+            is_adm = 1 if m.user_id in (admin_id, 7220854785, 6163528558) else 0
             conn.execute("""
                 INSERT INTO dorm_members (dorm_id, user_id, name, is_admin)
                 VALUES (?, ?, ?, ?)

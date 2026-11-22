@@ -71,13 +71,18 @@ class TestMultiDormPlatform(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pair_names[3], ("Ahmed", "Yonatan"))
 
     async def test_existing_member_permission_and_start(self):
-        """Pre-configured roommates (e.g. Nahom 1758752115) are recognized and can /start."""
+        """Pre-configured roommates (e.g. Nahom 1758752115, Bilisuma 7220854785) are recognized and can /start."""
         await db.seed_default_dorm()
 
         # Nahom is in members.json
         nahom_id = 1758752115
         has_perm = await check_member_permission(nahom_id)
         self.assertTrue(has_perm)
+
+        # Bilisuma with real ID 7220854785 is recognized directly without needing /claim
+        bilisuma_id = 7220854785
+        has_perm_b = await check_member_permission(bilisuma_id)
+        self.assertTrue(has_perm_b)
 
         # Mock /start message
         update = MagicMock()
@@ -122,10 +127,13 @@ class TestMultiDormPlatform(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/setup", reply)
 
     async def test_claim_command_for_bilisuma(self):
-        """Bilisuma can claim their placeholder slot using /claim Bilisuma."""
+        """A placeholder member slot can be claimed using /claim <Name>."""
+        # Temporarily set placeholder ID for test
+        config.update_member_id("Bilisuma", 111111111)
         await db.seed_default_dorm()
+        await db.update_member_id_in_db(old_id=7220854785, new_id=111111111)
 
-        bilisuma_real_id = 888123456
+        bilisuma_real_id = 7220854785
         update = MagicMock()
         update.effective_user.id = bilisuma_real_id
         update.effective_user.first_name = "Bilisuma"
@@ -144,8 +152,8 @@ class TestMultiDormPlatform(unittest.IsolatedAsyncioTestCase):
             db_member = await db.get_dorm_member_by_name(config.DEFAULT_GROUP_ID, "Bilisuma")
             self.assertEqual(db_member["user_id"], bilisuma_real_id)
         finally:
-            # Restore placeholder ID for subsequent tests
-            config.update_member_id("Bilisuma", 111111111)
+            # Restore real ID for subsequent tests
+            config.update_member_id("Bilisuma", 7220854785)
 
     async def test_independent_multi_dorm_scheduling(self):
         """A second dorm created via onboarding operates independently from the default dorm."""

@@ -270,11 +270,11 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
 
     def test_member_lookup_helpers(self):
         """Verify is_member, get_member, and get_member_by_name."""
-        self.assertTrue(config.is_member(111111111))
+        self.assertTrue(config.is_member(7220854785))
         self.assertTrue(config.is_member(1359460823), "Hasan's real Telegram ID")
         self.assertFalse(config.is_member(999999999))
 
-        m = config.get_member(111111111)
+        m = config.get_member(7220854785)
         self.assertIsNotNone(m)
         self.assertEqual(m.name, "Bilisuma")
 
@@ -286,7 +286,7 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         # Case-insensitive name lookup
         m_name = config.get_member_by_name("bilisuma")
         self.assertIsNotNone(m_name)
-        self.assertEqual(m_name.user_id, 111111111)
+        self.assertEqual(m_name.user_id, 7220854785)
 
         # Lookup with single 's' "Hasan" alias
         m_hasan_alias = config.get_member_by_name("hasan")
@@ -303,8 +303,8 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         """Test dynamic updating of member user_id in config and db."""
         await db.init_db()
 
-        # Temporarily update Bilisuma's placeholder ID
-        orig_id = 111111111
+        # Temporarily update Bilisuma's ID
+        orig_id = 7220854785
         temp_id = 999111999
 
         # Record a test fine with orig_id
@@ -458,7 +458,7 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Main Menu", reply_texts)
 
         # 4. Status view has Forward (Schedule) and Back (Menu)
-        status_text, status_kb = await commands.get_status_content(111111111)
+        status_text, status_kb = await commands.get_status_content(7220854785)
         status_callbacks = [btn.callback_data for row in status_kb.inline_keyboard for btn in row]
         self.assertIn("menu_schedule", status_callbacks, "Forward to schedule")
         self.assertIn("menu_home", status_callbacks, "Back to main menu")
