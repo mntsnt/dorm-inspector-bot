@@ -915,6 +915,16 @@ def _seed_default_dorm_sync() -> None:
                     is_admin = CASE WHEN excluded.is_admin = 1 THEN 1 ELSE dorm_members.is_admin END;
             """, (group_id, m.user_id, m.name, is_adm))
 
+            # Also ensure users table has each member so connected status reports 8/8
+            conn.execute("""
+                INSERT INTO users (user_id, name, chat_id, updated_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    name = excluded.name,
+                    chat_id = COALESCE(users.chat_id, excluded.chat_id),
+                    updated_at = CURRENT_TIMESTAMP;
+            """, (m.user_id, m.name, m.user_id))
+
         # Enforce exact saved pairs from members.json / config.PAIRS for default dorm:
         # Pair 1: Bilisuma & Nahom
         # Pair 2: Hassan & Mintesnot
@@ -937,6 +947,18 @@ def _seed_default_dorm_sync() -> None:
                 "UPDATE dorm_members SET pair_number = ? WHERE dorm_id = ? AND user_id IN (?, ?)",
                 (idx, group_id, c1_id, c2_id)
             )
+
+        # Pre-create Week 1 record in weeks table if not present so Week 1 duty is immediately active
+        cursor.execute("SELECT * FROM weeks WHERE dorm_id = ? AND week_start = ?", (group_id, "2026-11-23"))
+        if not cursor.fetchone():
+            conn.execute("""
+                INSERT INTO weeks (
+                    dorm_id, week_start, week_number, cleaner1_id, cleaner2_id,
+                    approver_id, announced, reminder_sent, done_reported, photo_status,
+                    check_sent, final_status, timeout_processed, created_at
+                )
+                VALUES (?, '2026-11-23', 1, 7220854785, 1758752115, 1359460823, 0, 0, 0, 'none', 0, 'pending', 0, CURRENT_TIMESTAMP);
+            """, (group_id,))
 
         # Update legacy records in weeks and fines to have group_id
         conn.execute("UPDATE weeks SET dorm_id = ? WHERE dorm_id = 0", (group_id,))

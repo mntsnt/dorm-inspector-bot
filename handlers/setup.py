@@ -50,12 +50,27 @@ async def new_chat_members_handler(update: Update, context: ContextTypes.DEFAULT
         return
 
     chat = update.effective_chat
+    thread_id = msg.message_thread_id
+
+    if chat.id == getattr(config, "DEFAULT_GROUP_ID", -1002378440774):
+        greeting = (
+            "👋 **Hi everyone! I am Dorm Inspector Bot.**\n\n"
+            "Dorm cleaning schedule is active and running for this dorm!\n\n"
+            "Use /status to view duty, or /schedule to see upcoming pairs."
+        )
+        await context.bot.send_message(
+            chat_id=chat.id,
+            message_thread_id=thread_id or getattr(config, "DEFAULT_TOPIC_ID", 2031),
+            text=greeting,
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
     greeting = (
         "👋 **Hi everyone! I am Dorm Inspector Bot.**\n\n"
         "I automate weekly cleaning schedules, send reminders, collect photo proofs with memes, and track fines.\n\n"
         "To set up this room, the room admin can tap /setup here."
     )
-    thread_id = msg.message_thread_id
     await context.bot.send_message(
         chat_id=chat.id,
         message_thread_id=thread_id,
@@ -90,6 +105,33 @@ async def setup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     # Default next Monday as starting date
     start_monday = _get_next_or_current_monday()
     start_monday_str = start_monday.strftime("%Y-%m-%d")
+
+    # The default saved dorm is always active and protected
+    if dorm_id == getattr(config, "DEFAULT_GROUP_ID", -1002378440774):
+        await db.seed_default_dorm()
+        dorm = await db.get_dorm(dorm_id)
+        pairs = await db.get_dorm_pairs(dorm_id)
+        members = await db.get_dorm_members(dorm_id)
+        members_by_id = {m["user_id"]: m["name"] for m in members}
+
+        pair_lines = []
+        for p in pairs:
+            c1_id = p["cleaner1_id"]
+            c2_id = p["cleaner2_id"]
+            c1_name = members_by_id.get(c1_id, f"ID {c1_id}")
+            c2_name = members_by_id.get(c2_id, f"ID {c2_id}")
+            pair_lines.append(f"• Week {p['pair_number']}: **{c1_name}** & **{c2_name}**")
+        pairs_str = "\n".join(pair_lines)
+
+        await msg.reply_text(
+            f"🧼 **{dorm['dorm_name']}** is already set up and active!\n\n"
+            f"All 8 roommates and pairs are configured:\n{pairs_str}\n\n"
+            f"• Default Fine: 100 ETB total (50 ETB each)\n"
+            f"• Forum Topic: Dorm Cleaning Schedule (2031)\n\n"
+            "Use /status to view duty, or /schedule to see upcoming weeks.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
 
     # Create or update dorm record in database
     existing_dorm = await db.get_dorm(dorm_id)
@@ -372,6 +414,10 @@ async def reset_dorm_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user = update.effective_user
 
     if not chat or not user or chat.type not in ("group", "supergroup"):
+        return
+
+    if chat.id == getattr(config, "DEFAULT_GROUP_ID", -1002378440774):
+        await update.effective_message.reply_text("The default dorm schedule and pairs are permanent and cannot be reset.")
         return
 
     dorm = await db.get_dorm(chat.id)

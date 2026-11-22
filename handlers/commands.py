@@ -184,8 +184,8 @@ async def get_status_content(user_id: Optional[int] = None, dorm_id: Optional[in
     else:
         approver_name = "Not yet assigned"
 
-    if not week_record or not week_record.get("announced"):
-        duty_state = "Not announced yet."
+    if not week_record:
+        duty_state = "In progress (deadline Friday 8:00 PM)."
     else:
         final_status = week_record.get("final_status", "pending")
         photo_status = week_record.get("photo_status", "none")

@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import config
 import db
 from handlers.commands import check_member_permission, start_command, claim_command
+from handlers.setup import setup_command, reset_dorm_command
 from scheduler import get_dorm_week_info
 
 class TestMultiDormPlatform(unittest.IsolatedAsyncioTestCase):
@@ -184,6 +185,53 @@ class TestMultiDormPlatform(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(week_info)
         self.assertEqual(week_info.cleaner1_name, "Abebe")
         self.assertEqual(week_info.cleaner2_name, "Kebede")
+
+    async def test_default_dorm_setup_protection_and_persistence(self):
+        """Default dorm is protected from being overwritten into 'setup' mode or reset."""
+        await db.seed_default_dorm()
+
+        # Check initial connection status is 8/8
+        c_count, total, _, _ = await db.get_connection_status(config.DEFAULT_GROUP_ID)
+        self.assertEqual(c_count, 8)
+        self.assertEqual(total, 8)
+
+        # Calling /setup in default group chat does not downgrade to 'setup'
+        update = MagicMock()
+        update.effective_chat.type = "supergroup"
+        update.effective_chat.id = config.DEFAULT_GROUP_ID
+        update.effective_chat.title = "Dorm Cleaning Schedule"
+        update.effective_user.id = config.ADMIN_ID
+        update.effective_message.message_thread_id = config.DEFAULT_TOPIC_ID
+        update.effective_message.reply_text = AsyncMock()
+
+        context = MagicMock()
+        await setup_command(update, context)
+
+        # Verify reply confirms already active and lists pairs
+        self.assertTrue(update.effective_message.reply_text.called)
+        reply = update.effective_message.reply_text.call_args[0][0]
+        self.assertIn("already set up and active", reply)
+        self.assertIn("Bilisuma", reply)
+        self.assertIn("Nahom", reply)
+
+        # Dorm status remains active
+        dorm = await db.get_dorm(config.DEFAULT_GROUP_ID)
+        self.assertEqual(dorm["status"], "active")
+
+        # Members count remains 8
+        members = await db.get_dorm_members(config.DEFAULT_GROUP_ID)
+        self.assertEqual(len(members), 8)
+
+        # Calling /resetdorm in default group is rejected
+        update.effective_message.reply_text.reset_mock()
+        await reset_dorm_command(update, context)
+        self.assertTrue(update.effective_message.reply_text.called)
+        reset_reply = update.effective_message.reply_text.call_args[0][0]
+        self.assertIn("permanent and cannot be reset", reset_reply)
+
+        # Status still active
+        dorm_after = await db.get_dorm(config.DEFAULT_GROUP_ID)
+        self.assertEqual(dorm_after["status"], "active")
 
 if __name__ == "__main__":
     unittest.main()
