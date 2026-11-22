@@ -171,15 +171,33 @@ async def query_openai(api_key: str, user_prompt: str, dorm_context: str, user_n
     return "I couldn't generate a response right now. Please try again in a moment!"
 
 async def ask_ai(user_prompt: str, dorm_id: int, user_name: str = "Roommate") -> str:
-    """Main entry point to query the AI assistant with live dorm context."""
-    provider = get_active_provider()
-    key = get_api_key()
+    """
+    Main entry point to query the AI assistant with live dorm context.
+    Enforces strict multi-tenant isolation:
+    - Checks if the dorm has its own configured API key in the database.
+    - Only the default/system dorm falls back to .env GEMINI_API_KEY.
+    - Other dorms must provide their own API key via /set_ai_key.
+    """
+    default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
 
-    if not provider or not key:
+    # 1. Fetch this specific dorm's configured API key
+    key = await db.get_dorm_ai_key(dorm_id)
+
+    # 2. Only fallback to .env key for the primary/default dorm (protects admin quota)
+    if not key and (dorm_id in (default_gid, getattr(config, "GROUP_ID", 0), 0)):
+        key = get_api_key()
+
+    # 3. If no key is configured for this dorm, instruct dorm admin to provide one
+    if not key:
         return (
-            "🤖 **AI is not enabled yet!**\n\n"
-            "Please configure `GEMINI_API_KEY` (from Google AI Studio) or `OPENAI_API_KEY` in your `.env` file to chat with me."
+            "🤖 **AI is not enabled for this dorm yet.**\n\n"
+            "Each dorm uses its own dedicated AI key so admins stay in control.\n\n"
+            "To activate AI in this group:\n"
+            "1. The dorm admin creates a free key at [Google AI Studio](https://aistudio.google.com/)\n"
+            "2. Send `/set_ai_key <your_api_key>` in this chat or in private DM with the bot."
         )
+
+    provider = "openai" if key.startswith("sk-") else "gemini"
 
     try:
         dorm_context = await build_dorm_context(dorm_id)

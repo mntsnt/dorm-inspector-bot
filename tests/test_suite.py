@@ -765,5 +765,62 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
             update.effective_message.reply_text.assert_called_once()
             self.assertIn("Pair 1 is cleaning", update.effective_message.reply_text.call_args[0][0])
 
+    async def test_per_dorm_ai_key_isolation(self):
+        """Verify strict per-dorm AI key isolation (secondary dorms cannot use primary dorm key)."""
+        from services import ai_service
+        from handlers import admin
+        from unittest.mock import AsyncMock, MagicMock, patch
+        import os
+
+        await db.init_db()
+
+        # Set a global key simulating user's primary dorm key
+        orig_gemini = os.environ.get("GEMINI_API_KEY")
+        os.environ["GEMINI_API_KEY"] = "AIzaSyPrimaryAdminKey"
+
+        try:
+            primary_dorm_id = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+            secondary_dorm_id = -100999888777
+
+            await db.create_or_update_dorm(dorm_id=secondary_dorm_id, admin_id=777, dorm_name="Secondary Dorm")
+
+            # 1. Secondary dorm has NO key configured -> Must be refused and instruct them to set a key
+            with patch("services.ai_service.query_gemini", new_callable=AsyncMock) as mock_query:
+                resp = await ai_service.ask_ai("Hello", dorm_id=secondary_dorm_id)
+                self.assertIn("AI is not enabled for this dorm yet", resp)
+                mock_query.assert_not_called()
+
+            # 2. Secondary dorm admin configures their own key
+            await db.set_dorm_ai_key(secondary_dorm_id, "AIzaSySecondaryKey999")
+            saved_key = await db.get_dorm_ai_key(secondary_dorm_id)
+            self.assertEqual(saved_key, "AIzaSySecondaryKey999")
+
+            with patch("services.ai_service.query_gemini", new_callable=AsyncMock) as mock_query:
+                mock_query.return_value = "Hello from secondary dorm AI!"
+                resp = await ai_service.ask_ai("Hello", dorm_id=secondary_dorm_id)
+                mock_query.assert_called_once()
+                # Verify that it called with the secondary dorm's own key, NOT the primary key!
+                self.assertEqual(mock_query.call_args[0][0], "AIzaSySecondaryKey999")
+                self.assertEqual(resp, "Hello from secondary dorm AI!")
+
+            # 3. Test non-admin rejection on set_ai_key_command
+            update = MagicMock()
+            update.effective_user.id = 888  # Non-admin
+            update.effective_chat.id = secondary_dorm_id
+            update.effective_chat.type = "supergroup"
+            update.effective_message.reply_text = AsyncMock()
+
+            context = MagicMock()
+            context.args = ["AIzaSyHackerKey"]
+
+            await admin.set_ai_key_command(update, context)
+            update.effective_message.reply_text.assert_called_once_with("Only the dorm admin can configure the AI API key.")
+
+        finally:
+            if orig_gemini:
+                os.environ["GEMINI_API_KEY"] = orig_gemini
+            elif "GEMINI_API_KEY" in os.environ:
+                os.environ.pop("GEMINI_API_KEY")
+
 if __name__ == "__main__":
     unittest.main()

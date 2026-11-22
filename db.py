@@ -60,6 +60,7 @@ def _init_db_sync(db_path: Optional[Path] = None) -> None:
                 fine_amount INTEGER DEFAULT 100,
                 start_date TEXT NOT NULL,
                 status TEXT DEFAULT 'active',
+                ai_api_key TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
@@ -153,6 +154,12 @@ def _init_db_sync(db_path: Optional[Path] = None) -> None:
         dm_cols = [r["name"] for r in cursor.fetchall()]
         if "tsidat_balance" not in dm_cols:
             cursor.execute("ALTER TABLE dorm_members ADD COLUMN tsidat_balance INTEGER DEFAULT 0;")
+
+        # Migration check: Ensure ai_api_key exists on dorms table
+        cursor.execute("PRAGMA table_info(dorms);")
+        dorm_cols = [r["name"] for r in cursor.fetchall()]
+        if "ai_api_key" not in dorm_cols:
+            cursor.execute("ALTER TABLE dorms ADD COLUMN ai_api_key TEXT;")
 
         # 6. Fines Ledger Table (Multi-tenant fines ledger)
         cursor.execute("""
@@ -314,6 +321,26 @@ async def update_dorm_settings(
     start_date: Optional[str] = None,
 ) -> None:
     await asyncio.to_thread(_update_dorm_settings_sync, dorm_id, dorm_name, fine_amount, topic_id, start_date)
+
+def _set_dorm_ai_key_sync(dorm_id: int, api_key: Optional[str]) -> None:
+    with _get_connection() as conn:
+        conn.execute("UPDATE dorms SET ai_api_key = ?, updated_at = CURRENT_TIMESTAMP WHERE dorm_id = ?", (api_key, dorm_id))
+        conn.commit()
+
+async def set_dorm_ai_key(dorm_id: int, api_key: Optional[str]) -> None:
+    await asyncio.to_thread(_set_dorm_ai_key_sync, dorm_id, api_key)
+
+def _get_dorm_ai_key_sync(dorm_id: int) -> Optional[str]:
+    with _get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT ai_api_key FROM dorms WHERE dorm_id = ?", (dorm_id,))
+        row = cursor.fetchone()
+        if row and row["ai_api_key"]:
+            return row["ai_api_key"].strip()
+        return None
+
+async def get_dorm_ai_key(dorm_id: int) -> Optional[str]:
+    return await asyncio.to_thread(_get_dorm_ai_key_sync, dorm_id)
 
 # ---------------------------------------------------------------------------
 # User & Member Management Operations

@@ -245,9 +245,87 @@ async def testgroup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             parse_mode=ParseMode.MARKDOWN
         )
 
+async def set_ai_key_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin command to configure a dedicated AI API key for their dorm."""
+    user = update.effective_user
+    chat = update.effective_chat
+    message = update.effective_message
+    if not user or not chat or not message:
+        return
+
+    # Determine target dorm
+    target_dorm_id: Optional[int] = None
+    if chat.type in ("group", "supergroup"):
+        target_dorm_id = chat.id
+    else:
+        user_dorms = await db.get_user_dorms(user.id)
+        admin_dorms = [d for d in user_dorms if d.get("user_is_admin") == 1 or d.get("admin_id") == user.id]
+        if admin_dorms:
+            target_dorm_id = admin_dorms[0]["dorm_id"]
+        elif user.id == getattr(config, "ADMIN_ID", 0):
+            target_dorm_id = getattr(config, "GROUP_ID", 0)
+
+    if not target_dorm_id:
+        await message.reply_text("Could not determine which dorm to configure.")
+        return
+
+    dorm = await db.get_dorm(target_dorm_id)
+    dorm_admin_id = dorm["admin_id"] if dorm else getattr(config, "ADMIN_ID", 0)
+
+    # Permission check: User must be this dorm's admin or global ADMIN_ID
+    if user.id != dorm_admin_id and user.id != getattr(config, "ADMIN_ID", 0):
+        await message.reply_text("Only the dorm admin can configure the AI API key.")
+        return
+
+    if not context.args or len(context.args) < 1:
+        current_key = await db.get_dorm_ai_key(target_dorm_id)
+        status_str = f"Active (`...{current_key[-4:]}`)" if current_key else "Not configured"
+        await message.reply_text(
+            f"🔑 **Dorm AI Configuration**\n\n"
+            f"Current Status: **{status_str}**\n\n"
+            f"Usage: `/set_ai_key <your_api_key>`\n"
+            f"To remove: `/set_ai_key remove`\n\n"
+            f"💡 *Tip:* Free Google Gemini keys can be generated at [Google AI Studio](https://aistudio.google.com/).",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    api_key_input = context.args[0].strip()
+
+    # If sent in group chat, attempt to delete message to protect the secret key from roommates
+    if chat.type in ("group", "supergroup"):
+        try:
+            await message.delete()
+        except Exception:
+            pass
+
+    if api_key_input.lower() in ("remove", "delete", "clear", "none"):
+        await db.set_dorm_ai_key(target_dorm_id, None)
+        await chat.send_message("🗑️ AI API key removed. AI responses are now disabled for this dorm.")
+        return
+
+    if len(api_key_input) < 10:
+        await chat.send_message("⚠️ That doesn't look like a valid API key. Please check and try again.")
+        return
+
+    provider_name = "OpenAI" if api_key_input.startswith("sk-") else "Google Gemini"
+    await db.set_dorm_ai_key(target_dorm_id, api_key_input)
+
+    masked_key = f"{api_key_input[:4]}...{api_key_input[-4:]}"
+    d_name = dorm.get("dorm_name") if dorm else "Your dorm"
+    success_text = (
+        f"✅ **{provider_name} API Key Activated for {d_name}!**\n\n"
+        f"Key: `{masked_key}`\n\n"
+        f"Roommates can now @mention the bot or reply to bot messages to chat with the AI! 🤖✨"
+    )
+    await chat.send_message(success_text, parse_mode=ParseMode.MARKDOWN)
+
 def register_admin_handlers(application: Application) -> None:
     """Attach admin command handlers."""
     application.add_handler(CommandHandler("markpaid", markpaid_command))
     application.add_handler(CommandHandler("paid", markpaid_command))
     application.add_handler(CommandHandler("setid", setid_command))
     application.add_handler(CommandHandler("testgroup", testgroup_command))
+    application.add_handler(CommandHandler("set_ai_key", set_ai_key_command))
+    application.add_handler(CommandHandler("setaikey", set_ai_key_command))
+    application.add_handler(CommandHandler("aikey", set_ai_key_command))
