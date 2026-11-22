@@ -1013,5 +1013,28 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
             result = await ai_service.query_gemini("fake-api-key", "How is the room?", "context", "Student")
             self.assertEqual(result, "Floors look clean.")
 
+    def test_sanitize_ai_response_removes_emojis_and_symbol_spam(self):
+        """Verify sanitize_ai_response strips all emojis, bold clutter, and repeated symbols."""
+        from services.ai_service import sanitize_ai_response
+
+        raw = "🤖 **Hello!** Clean the floor right now!! 🧹✨ Who is next???... Let me check."
+        sanitized = sanitize_ai_response(raw)
+
+        # No emojis
+        self.assertNotIn("🤖", sanitized)
+        self.assertNotIn("🧹", sanitized)
+        self.assertNotIn("✨", sanitized)
+
+        # No bold markdown markers
+        self.assertNotIn("**", sanitized)
+
+        # No multiple punctuation marks
+        self.assertNotIn("!!", sanitized)
+        self.assertNotIn("???", sanitized)
+        self.assertNotIn("...", sanitized)
+
+        # Clean natural phrasing
+        self.assertEqual(sanitized, "Hello! Clean the floor right now! Who is next?. Let me check.")
+
 if __name__ == "__main__":
     unittest.main()

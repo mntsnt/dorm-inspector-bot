@@ -82,19 +82,14 @@ async def handle_ai_mention(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     response_text = await ask_ai(cleaned_prompt, dorm_id=dorm_id, user_name=user_name)
 
-    # Reply to the user's message
+    # Reply to the user's message as clean natural text
     try:
-        await message.reply_text(
-            response_text,
-            reply_to_message_id=message.message_id,
-            parse_mode=ParseMode.MARKDOWN
-        )
-    except Exception as e:
-        logger.warning("Markdown reply failed (%s), falling back to plain text", e)
         await message.reply_text(
             response_text,
             reply_to_message_id=message.message_id
         )
+    except Exception as e:
+        logger.warning("Could not send AI chat reply: %s", e)
 
 def register_ai_handlers(application: Application) -> None:
     """Register AI chat handler for group mentions and replies."""

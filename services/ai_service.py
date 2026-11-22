@@ -5,6 +5,7 @@ Supports Google Gemini and OpenAI REST APIs with live dorm context.
 
 import logging
 import os
+import re
 from typing import Any, Dict, List, Optional
 import httpx
 
@@ -123,21 +124,52 @@ async def build_dorm_context(dorm_id: int) -> str:
         f"/swap <name> allows a cleaner to swap duty with a roommate for that week only."
     )
 
+def sanitize_ai_response(text: str) -> str:
+    """Ensure response looks strictly human: strip all emojis, repeated symbols, and markdown noise."""
+    if not text:
+        return ""
+
+    # Strip emoji Unicode ranges
+    emoji_pattern = re.compile(
+        "["
+        "\U00010000-\U0010ffff"  # Supplemental symbols, pictographs, emojis
+        "\u2600-\u27bf"          # Misc symbols & dingbats
+        "\u2300-\u23ff"          # Misc technical
+        "\u2b50-\u2b55"          # Stars & shapes
+        "\ufe00-\ufe0f"          # Variation selectors
+        "\u200d"                 # Zero-width joiner
+        "]+",
+        flags=re.UNICODE
+    )
+    cleaned = emoji_pattern.sub("", text)
+
+    # Remove markdown bold/italic/code clutter to look natural and human
+    cleaned = cleaned.replace("**", "").replace("__", "").replace("`", "")
+
+    # Collapse multiple punctuation symbols (e.g. "!!" -> "!", "??" -> "?", "..." -> ".")
+    cleaned = re.sub(r"!{2,}", "!", cleaned)
+    cleaned = re.sub(r"\?{2,}", "?", cleaned)
+    cleaned = re.sub(r"\.{2,}", ".", cleaned)
+    cleaned = re.sub(r"-{2,}", "-", cleaned)
+    cleaned = re.sub(r"={2,}", "", cleaned)
+    cleaned = re.sub(r"\*{2,}", "", cleaned)
+
+    # Collapse extra whitespace
+    cleaned = re.sub(r"[ \t]+", " ", cleaned)
+    cleaned = re.sub(r"\n\s*\n+", "\n", cleaned)
+    return cleaned.strip()
+
 SYSTEM_PROMPT = (
-    "You are The Inspector — the veteran Chief Dorm Inspector of this dorm room.\n"
-    "You are NOT a robot, AI model, or virtual assistant. You are a real human inspector carrying a clipboard, "
-    "keeping this dorm clean and orderly.\n\n"
-    "YOUR PERSONALITY & CORE TRAITS:\n"
-    "• A Man of Few Words: You are on active inspection rounds. You do NOT talk too much, lecture, or ramble.\n"
-    "• Strict Brevity: Deliver your answer in strictly 1 to 2 short sentences (under 30 words total). No one is going to read multiple lines.\n"
-    "• Minimal Emojis: Use AT MOST 1 emoji per response, or NO emojis at all. NEVER use emoji spam or clusters.\n"
-    "• Busy Inspector Attitude: When someone idles or chats, cut it short: 'I have rounds to make. Less talking, more sweeping.'\n"
-    "• Accurate on Live Data: Use the live dorm facts provided in the prompt context (cleaners, approvers, Tsidat tokens, fines, schedule) with 100% precision.\n"
-    "• Dry Wit: Keep humor sharp, blunt, and dry, then move on.\n\n"
-    "CONSTRAINTS:\n"
-    "1. NEVER say 'I am an AI' or sound robotic/corporate.\n"
-    "2. STRICT BREVITY: Maximum 1 to 2 very short sentences. Never write multiple paragraphs or walls of text.\n"
-    "3. No emoji clusters (at most 1 emoji total)."
+    "You are The Inspector, the university dorm inspector.\n"
+    "You are a real human writing a message in a Telegram dorm group chat. You are NOT an AI, bot, or virtual assistant.\n\n"
+    "STRICT RULES:\n"
+    "1. NO EMOJIS: Never use any emojis under any circumstances. Zero emojis allowed.\n"
+    "2. HUMAN-LIKE AND NATURAL: Write normally like a real person sending a message. No bot greetings, bullet points, headers, or corporate phrasing.\n"
+    "3. NO MULTIPLE SYMBOLS: Never repeat punctuation marks (no '!!', '???', '...'). Do not use asterisks, bold tags, or markdown styling.\n"
+    "4. STRICT BREVITY: Answer in 1 or 2 short sentences only (under 25 words). Never write multiple lines or paragraphs.\n"
+    "5. BUSY INSPECTOR TONE: You are on rounds. You speak directly, bluntly, and with dry wit. "
+    "If someone asks idle questions or stalls: 'Less talking, go clean the room.' or 'I have rounds to make.'\n"
+    "6. ACCURATE FACTS: Use the dorm context accurately for names, duty, tokens, and fines."
 )
 
 async def query_gemini(api_key: str, user_prompt: str, dorm_context: str, user_name: str) -> str:
@@ -275,9 +307,10 @@ async def ask_ai(user_prompt: str, dorm_id: int, user_name: str = "Roommate") ->
     try:
         dorm_context = await build_dorm_context(dorm_id)
         if provider == "gemini":
-            return await query_gemini(key, user_prompt, dorm_context, user_name)
+            raw_result = await query_gemini(key, user_prompt, dorm_context, user_name)
         else:
-            return await query_openai(key, user_prompt, dorm_context, user_name)
+            raw_result = await query_openai(key, user_prompt, dorm_context, user_name)
+        return sanitize_ai_response(raw_result)
     except httpx.HTTPStatusError as e:
         err_msg = ""
         try:
