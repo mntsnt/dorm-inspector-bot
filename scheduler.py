@@ -245,6 +245,21 @@ async def monday_announcement_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             except Exception as e:
                 logger.error("Failed to post Monday announcement to dorm %s: %s", dorm_id, e)
 
+            # Follow-up reaction meme: "{cleaner1} and {cleaner2} be like:"
+            me_meme = config.get_meme_file("me")
+            if me_meme:
+                try:
+                    with open(me_meme, "rb") as photo:
+                        await context.bot.send_photo(
+                            chat_id=dorm_id,
+                            message_thread_id=topic_id,
+                            photo=photo,
+                            caption=f"**{c1_name} and {c2_name} be like:**",
+                            parse_mode=ParseMode.MARKDOWN
+                        )
+                except Exception as me_err:
+                    logger.warning("Could not send me.jpg meme to dorm %s: %s", dorm_id, me_err)
+
             # 2. Private DM to Cleaner 1 & Cleaner 2 (scoped callback)
             cleaner_btn = InlineKeyboardMarkup([
                 [InlineKeyboardButton("We cleaned", callback_data=f"cleaned_{dorm_id}_{week_info.week_start}")]

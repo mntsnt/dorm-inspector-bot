@@ -1,5 +1,6 @@
 # Put your meme images here:
 # - suspicious_dog.jpg (or .png)
+# - me.jpg (or .png)
 # - announcement.jpg (or .png)
 # - rejected.jpg (or .png)
 # - approved.jpg (or .png)
