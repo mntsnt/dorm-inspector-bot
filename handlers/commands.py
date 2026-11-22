@@ -430,9 +430,6 @@ def get_help_content() -> Tuple[str, InlineKeyboardMarkup]:
         "• /spin [task]: Spin Dorm Roulette to pick a roommate for a chore!\n"
         "• /tsidat: View Tsidat token leaderboard & balances\n"
         "• /swap <name>: Request a temporary duty swap for this week only\n"
-        "• /split <amount> <item>: Split shared dorm expenses evenly across roommates\n"
-        "• /expenses: View active shared expenses and who owes what\n"
-        "• /settle: Clear your reimbursed dorm expense shares\n"
         "• /roast: View the weekly AI dorm awards & lighthearted roast"
     )
     return help_text, keyboard

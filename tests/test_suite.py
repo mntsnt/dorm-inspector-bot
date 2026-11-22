@@ -886,45 +886,6 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(w5_info.cleaner1_name, "Swap_Cleaner_A")
         self.assertEqual(w5_info.cleaner2_name, "Swap_Cleaner_B")
 
-    async def test_expense_splitter_flow(self):
-        """Verify recording shared dorm purchases, splitting debt, and settling reimbursements."""
-        await db.init_db()
-        test_dorm_id = -1004445556
-        await db.create_or_update_dorm(dorm_id=test_dorm_id, admin_id=2001, dorm_name="Expense Dorm")
-        await db.add_dorm_member(test_dorm_id, 2001, "Buyer_A")
-        await db.add_dorm_member(test_dorm_id, 2002, "Roommate_B")
-        await db.add_dorm_member(test_dorm_id, 2003, "Roommate_C")
-        await db.add_dorm_member(test_dorm_id, 2004, "Roommate_D")
-
-        # Buyer_A buys Omo and sponge for 120 ETB (split across 4 members = 30 ETB each)
-        exp = await db.create_expense(
-            dorm_id=test_dorm_id,
-            payer_id=2001,
-            payer_name="Buyer_A",
-            total_amount=120.0,
-            description="Omo detergent and sponge"
-        )
-        self.assertEqual(exp["split_amount"], 30.0)
-        self.assertEqual(exp["count"], 4)
-
-        # Check active expenses
-        active = await db.get_active_expenses(test_dorm_id)
-        self.assertEqual(len(active), 1)
-        self.assertEqual(active[0]["description"], "Omo detergent and sponge")
-        self.assertEqual(len(active[0]["splits"]), 3)  # Roommate B, C, D owe money
-
-        # Roommate B reimburses Buyer_A
-        settled_count = await db.settle_debtor_split(test_dorm_id, debtor_id=2002)
-        self.assertEqual(settled_count, 1)
-
-        # Verify Roommate B is marked paid, while C and D remain unpaid
-        updated_active = await db.get_active_expenses(test_dorm_id)
-        splits = updated_active[0]["splits"]
-        paid_map = {s["debtor_id"]: s["is_paid"] for s in splits}
-        self.assertEqual(paid_map[2002], 1)
-        self.assertEqual(paid_map[2003], 0)
-        self.assertEqual(paid_map[2004], 0)
-
     async def test_dorm_roast_generation(self):
         """Verify generate_dorm_roast produces engaging, witty awards and roast text."""
         from services import ai_service

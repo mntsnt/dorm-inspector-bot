@@ -15,7 +15,6 @@ from .ai_chat import register_ai_handlers
 from .approval import register_approval_handlers
 from .cleaning import register_cleaning_handlers
 from .commands import register_command_handlers
-from .expenses import register_expense_handlers
 from .setup import register_setup_handlers
 from .swap import register_swap_handlers
 
@@ -28,4 +27,3 @@ def register_all_handlers(application: Application) -> None:
     register_admin_handlers(application)
     register_ai_handlers(application)
     register_swap_handlers(application)
-    register_expense_handlers(application)
