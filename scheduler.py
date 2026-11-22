@@ -217,9 +217,12 @@ async def monday_announcement_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
             # 1. Post in the dorm group chat
             group_text = (
+                f"📢 **Week {week_info.week_number} Duty Announcement!**\n\n"
                 f"Cleaners this week: **{c1_name}** & **{c2_name}**\n"
                 f"Approver: **{approver_name}**\n"
-                f"Deadline: Friday 8:00 PM"
+                f"Deadline: Friday 8:00 PM\n\n"
+                f"💬 Roommates, let's encourage **{c1_name}** and **{c2_name}** to keep them motivated! "
+                f"Feel free to help them with cleaning if you like. 🙌"
             )
             announcement_meme = config.get_meme_file("announcement")
             try:
