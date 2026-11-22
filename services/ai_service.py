@@ -145,24 +145,25 @@ SYSTEM_PROMPT = (
 )
 
 async def query_gemini(api_key: str, user_prompt: str, dorm_context: str, user_name: str) -> str:
-    """Send question to Google Gemini API (gemini-1.5-flash)."""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+    """Send question to Google Gemini API with fallback models and clean key normalization."""
+    clean_key = api_key.strip().strip('"').strip("'").replace(" ", "").replace("\r", "").replace("\n", "")
+
+    headers = {
+        "Content-Type": "application/json"
+    }
+
+    prompt_text = (
+        f"{SYSTEM_PROMPT}\n\n"
+        f"=== LIVE DORM CONTEXT ===\n"
+        f"{dorm_context}\n"
+        f"=========================\n\n"
+        f"Roommate '{user_name}' asks: {user_prompt}"
+    )
+
     payload = {
-        "system_instruction": {
-            "parts": [{"text": SYSTEM_PROMPT}]
-        },
         "contents": [
             {
-                "parts": [
-                    {
-                        "text": (
-                            f"=== LIVE DORM CONTEXT ===\n"
-                            f"{dorm_context}\n"
-                            f"=========================\n\n"
-                            f"Roommate '{user_name}' asks: {user_prompt}"
-                        )
-                    }
-                ]
+                "parts": [{"text": prompt_text}]
             }
         ],
         "generationConfig": {
@@ -170,15 +171,35 @@ async def query_gemini(api_key: str, user_prompt: str, dorm_context: str, user_n
             "maxOutputTokens": 600
         }
     }
+
+    models_to_try = ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-2.5-flash"]
+    last_resp = None
+
     async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.post(url, json=payload)
-        resp.raise_for_status()
-        data = resp.json()
-        candidates = data.get("candidates", [])
-        if candidates and "content" in candidates[0]:
-            parts = candidates[0]["content"].get("parts", [])
-            if parts and "text" in parts[0]:
-                return parts[0]["text"].strip()
+        for model in models_to_try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={clean_key}"
+            try:
+                resp = await client.post(url, headers=headers, json=payload)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    candidates = data.get("candidates", [])
+                    if candidates and "content" in candidates[0]:
+                        parts = candidates[0]["content"].get("parts", [])
+                        if parts and "text" in parts[0]:
+                            return parts[0]["text"].strip()
+                last_resp = resp
+                if resp.status_code == 404:
+                    # Try next model if this one is not found
+                    continue
+                else:
+                    # 400, 403, 429: break and report Google's exact error
+                    break
+            except Exception as e:
+                logger.warning("Attempt with model %s failed: %s", model, e)
+
+        if last_resp is not None:
+            last_resp.raise_for_status()
+
     return "My clipboard is a bit smudged at the moment. Give me a second and ask me again!"
 
 async def query_openai(api_key: str, user_prompt: str, dorm_context: str, user_name: str) -> str:
@@ -243,8 +264,18 @@ async def ask_ai(user_prompt: str, dorm_id: int, user_name: str = "Roommate") ->
         else:
             return await query_openai(key, user_prompt, dorm_context, user_name)
     except httpx.HTTPStatusError as e:
-        logger.error("AI API HTTP error: %s - %s", e.response.status_code, e.response.text)
-        return "⚠️ Failed to reach the AI service (invalid API key or quota exceeded). Please verify your API key."
+        err_msg = ""
+        try:
+            err_data = e.response.json()
+            err_msg = err_data.get("error", {}).get("message", e.response.text[:200])
+        except Exception:
+            err_msg = e.response.text[:200]
+        logger.error("AI API HTTP error: %s - %s", e.response.status_code, err_msg)
+        return (
+            f"⚠️ **Google AI Error ({e.response.status_code}):**\n\n"
+            f"`{err_msg}`\n\n"
+            "💡 *Tip:* Check your API key at [Google AI Studio](https://aistudio.google.com/) or verify your cloud environment variable."
+        )
     except Exception as e:
         logger.error("AI API call error: %s", e)
         return "⚠️ Sorry, I encountered an error while thinking. Please try again!"
