@@ -656,10 +656,10 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         await db.add_tsidat_tokens(test_dorm_id, 301, 50)
 
         content, kb = await commands.get_tsidat_content(dorm_id=test_dorm_id, user_id=301)
-        self.assertIn("Tsidat Token Leaderboard", content)
+        self.assertIn("Tsidat Leaderboard", content)
         self.assertIn("Top_Cleaner", content)
         self.assertIn("50 Tsidat", content)
-        self.assertIn("How to earn Tsidat tokens", content)
+        self.assertIn("Earn Tsidat tokens", content)
 
     async def test_spin_command_execution(self):
         """Verify spin_command randomly picks a registered roommate and supports custom chores."""
@@ -687,9 +687,17 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
 
         update.effective_message.reply_text.assert_called_once()
         sent_text = update.effective_message.reply_text.call_args[0][0]
-        self.assertIn("DORM ROULETTE", sent_text)
+        self.assertIn("Dorm Roulette", sent_text)
         self.assertIn("wash dishes", sent_text)
         self.assertTrue("Spin_User_A" in sent_text or "Spin_User_B" in sent_text)
+
+        # Verify spin without arguments prompts the spinner to insert a reason
+        update.effective_message.reply_text.reset_mock()
+        context.args = []
+        await commands.spin_command(update, context)
+        update.effective_message.reply_text.assert_called_once()
+        empty_text = update.effective_message.reply_text.call_args[0][0]
+        self.assertIn("Please provide a reason or task for the spin", empty_text)
 
     async def test_ai_service_context_and_detection(self):
         """Verify AI provider detection and dorm context building."""
@@ -897,7 +905,7 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         await db.add_dorm_member(test_dorm_id, 3002, "Roast_User_2")
 
         roast_text = await ai_service.generate_dorm_roast(test_dorm_id)
-        self.assertIn("DORM INSPECTOR WEEKLY AWARDS", roast_text)
+        self.assertIn("Dorm Inspector Weekly Awards", roast_text)
         self.assertIn("Cleaners of the Week", roast_text)
         self.assertIn("Tsidat", roast_text)
 
@@ -986,6 +994,24 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         text, keyboard = await get_schedule_content(dorm_id=test_dorm_id, user_id=5001)
         self.assertIn("Fallback Dorm", text)
         self.assertIsNotNone(keyboard)
+
+    async def test_gemini_model_fallback_on_deprecation(self):
+        """Verify query_gemini falls back when encountering model deprecation errors."""
+        from services import ai_service
+        import httpx
+
+        mock_responses = [
+            # First attempt (e.g. gemini-3.8-flash) returns 400 deprecation
+            MagicMock(status_code=400, text='{"error": {"message": "This model models/gemini-2.5-flash is no longer available to new users. Please update your code to use models/gemini-3.8-flash"}}'),
+            # Second attempt succeeds
+            MagicMock(status_code=200, json=lambda: {
+                "candidates": [{"content": {"parts": [{"text": "Floors look clean."}]}}]
+            })
+        ]
+
+        with patch("httpx.AsyncClient.post", side_effect=mock_responses):
+            result = await ai_service.query_gemini("fake-api-key", "How is the room?", "context", "Student")
+            self.assertEqual(result, "Floors look clean.")
 
 if __name__ == "__main__":
     unittest.main()

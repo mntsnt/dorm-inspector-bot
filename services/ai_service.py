@@ -128,18 +128,16 @@ SYSTEM_PROMPT = (
     "You are NOT a robot, AI model, or virtual assistant. You are a real human inspector carrying a clipboard, "
     "keeping this dorm clean and orderly.\n\n"
     "YOUR PERSONALITY & CORE TRAITS:\n"
-    "• A Man of Few Words (Does NOT talk too much): You are on active inspection rounds with a tight schedule and dozens "
-    "of other dorms to check. You do NOT have time for long speeches, rambling, or idle chit-chat.\n"
-    "• Brief, Sharp & Direct: Deliver your answer in strictly 1 to 3 short sentences (under 60 words total). No filler.\n"
-    "• Busy Inspector Attitude: When someone tries to idle-chat or drag out small talk, cut it short with dry humor: "
-    "'I have other rooms waiting — ask what you need or pick up the broom.' or 'Less talking, more sweeping.'\n"
-    "• Accurate on Live Data: Use the live dorm facts provided in the prompt context (cleaners, approvers, Tsidat tokens, fines, schedule) "
-    "with 100% precision.\n"
-    "• Occasional Dry Wit: Keep humor brief, natural, and dry. A quick sharp remark, then back to inspection duty.\n\n"
+    "• A Man of Few Words: You are on active inspection rounds. You do NOT talk too much, lecture, or ramble.\n"
+    "• Strict Brevity: Deliver your answer in strictly 1 to 2 short sentences (under 30 words total). No one is going to read multiple lines.\n"
+    "• Minimal Emojis: Use AT MOST 1 emoji per response, or NO emojis at all. NEVER use emoji spam or clusters.\n"
+    "• Busy Inspector Attitude: When someone idles or chats, cut it short: 'I have rounds to make. Less talking, more sweeping.'\n"
+    "• Accurate on Live Data: Use the live dorm facts provided in the prompt context (cleaners, approvers, Tsidat tokens, fines, schedule) with 100% precision.\n"
+    "• Dry Wit: Keep humor sharp, blunt, and dry, then move on.\n\n"
     "CONSTRAINTS:\n"
-    "1. NEVER say 'I am an AI', 'As an AI language model', or sound robotic/corporate.\n"
-    "2. STRICT BREVITY: Maximum 1 to 3 concise sentences. Never write long essays or multiple paragraphs.\n"
-    "3. Be crisp, authoritative, and move on."
+    "1. NEVER say 'I am an AI' or sound robotic/corporate.\n"
+    "2. STRICT BREVITY: Maximum 1 to 2 very short sentences. Never write multiple paragraphs or walls of text.\n"
+    "3. No emoji clusters (at most 1 emoji total)."
 )
 
 async def query_gemini(api_key: str, user_prompt: str, dorm_context: str, user_name: str) -> str:
@@ -166,11 +164,16 @@ async def query_gemini(api_key: str, user_prompt: str, dorm_context: str, user_n
         ],
         "generationConfig": {
             "temperature": 0.7,
-            "maxOutputTokens": 200
+            "maxOutputTokens": 60
         }
     }
 
-    models_to_try = ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-2.5-flash"]
+    models_to_try = [
+        "gemini-3.8-flash",
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+    ]
     last_resp = None
 
     async with httpx.AsyncClient(timeout=15.0) as client:
@@ -186,11 +189,25 @@ async def query_gemini(api_key: str, user_prompt: str, dorm_context: str, user_n
                         if parts and "text" in parts[0]:
                             return parts[0]["text"].strip()
                 last_resp = resp
-                if resp.status_code == 404:
-                    # Try next model if this one is not found
+                err_text = ""
+                try:
+                    err_text = resp.text.lower()
+                except Exception:
+                    pass
+
+                # If model is deprecated (400) or not found (404), fall back to the next model
+                if resp.status_code == 404 or (
+                    resp.status_code == 400 and (
+                        "no longer available" in err_text
+                        or "not found" in err_text
+                        or "model" in err_text
+                        or "deprecated" in err_text
+                    )
+                ):
+                    logger.warning("Model %s unavailable (%s: %s). Trying next fallback model...", model, resp.status_code, err_text[:120])
                     continue
                 else:
-                    # 400, 403, 429: break and report Google's exact error
+                    # 401/403 or 429: break and report
                     break
             except Exception as e:
                 logger.warning("Attempt with model %s failed: %s", model, e)
@@ -198,7 +215,7 @@ async def query_gemini(api_key: str, user_prompt: str, dorm_context: str, user_n
         if last_resp is not None:
             last_resp.raise_for_status()
 
-    return "My clipboard is a bit smudged at the moment. Give me a second and ask me again!"
+    return "My clipboard is a bit smudged. Ask again in a second."
 
 async def query_openai(api_key: str, user_prompt: str, dorm_context: str, user_name: str) -> str:
     """Send question to OpenAI API (gpt-4o-mini)."""
@@ -214,7 +231,7 @@ async def query_openai(api_key: str, user_prompt: str, dorm_context: str, user_n
             {"role": "system", "content": system_content},
             {"role": "user", "content": f"{user_name} asks: {user_prompt}"}
         ],
-        "max_tokens": 200,
+        "max_tokens": 60,
         "temperature": 0.7
     }
     async with httpx.AsyncClient(timeout=15.0) as client:
@@ -224,7 +241,7 @@ async def query_openai(api_key: str, user_prompt: str, dorm_context: str, user_n
         choices = data.get("choices", [])
         if choices and "message" in choices[0]:
             return choices[0]["message"]["content"].strip()
-    return "My clipboard is a bit smudged at the moment. Give me a second and ask me again!"
+    return "My clipboard is a bit smudged. Ask again in a second."
 
 async def ask_ai(user_prompt: str, dorm_id: int, user_name: str = "Roommate") -> str:
     """
@@ -287,13 +304,11 @@ async def generate_dorm_roast(dorm_id: int) -> str:
 
     dorm_context = await build_dorm_context(dorm_id)
     roast_prompt = (
-        "Write a hilarious, good-natured, and culturally relatable university dorm weekly awards ceremony and roast "
-        "for the roommates based on this week's cleaning performance.\n"
-        "1. Announce 'Cleaners of the Week' with grand praise for the cleaners.\n"
-        "2. Deliver a witty, lighthearted roast about typical dorm life (e.g. piles of clothes on chairs, mysterious socks, dust bunnies under the bed, unwashed shai/coffee mugs, sleeping in until noon).\n"
-        "3. Hand out a silly fictional award (e.g. 'The Golden Mop Award', 'Most Creative Excuse Award', or 'Master of Broom Physics').\n"
-        "4. Mention Tsidat tokens earned.\n"
-        "Keep it fun, 2-3 short paragraphs, formatted with Markdown and emojis!"
+        "Write a short, hilarious, and punchy dorm weekly roast & award for the roommates based on cleaning.\n"
+        "1. Praise the cleaners in 1 short sentence.\n"
+        "2. Deliver a witty, dry roast about dorm life in 1-2 short sentences.\n"
+        "3. Hand out one funny fictional award.\n"
+        "Keep it very brief (under 60 words total). At most 1-2 emojis total. No emoji spam or walls of text."
     )
 
     if key:
@@ -305,16 +320,10 @@ async def generate_dorm_roast(dorm_id: int) -> str:
         except Exception as e:
             logger.warning("AI roast generation failed (%s), falling back to witty template", e)
 
-    # Built-in hilarious fallback roast if AI key is offline or unconfigured
+    # Built-in short fallback roast if AI key is offline or unconfigured
     return (
-        "🏆 **DORM INSPECTOR WEEKLY AWARDS & ROAST** 🏆\n\n"
-        "🌟 **Cleaners of the Week:**\n"
-        "Shoutout to this week's cleaning warriors for facing the dust storms and surviving! "
-        "The floors actually shine, and the room smells less like socks and more like civilized living. 🍋✨ "
-        "Tsidat tokens have been proudly added to your balances!\n\n"
-        "🧽 **The Weekly Dorm Roast:**\n"
-        "To the roommate who swept dust *under the rug* hoping gravity would dissolve it: "
-        "you have been awarded the **'Master of Broom Physics 2026'** 🏅. "
-        "Also, whoever left the half-empty shai mug on the shelf — science called, your tea has developed its own ecosystem. 🫖🦠\n\n"
-        "Keep the dorm clean, guard your Tsidat tokens, and may the broom be with you! 🧹⚡"
+        "🏆 **Dorm Inspector Weekly Awards**\n\n"
+        "Cleaners of the Week: Good job keeping the room civilized. Tsidat tokens awarded.\n\n"
+        "Roast: To whoever swept the dust under the bed hoping it would vanish: "
+        "you earned the **'Master of Broom Physics'** badge. Less stalling, more sweeping."
     )

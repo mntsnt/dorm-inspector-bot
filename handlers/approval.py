@@ -193,19 +193,19 @@ async def approve_photo_callback(update: Update, context: ContextTypes.DEFAULT_T
     await _safe_edit_message(query, prompt_text, reply_markup=star_keyboard)
 
 RATING_COMMENTS = {
-    5: "Sparkling clean! 5-star hotel standard. 🌟✨",
-    4: "Great job! Room looks and smells fresh. 🍋",
-    3: "Good effort! Passed inspection cleanly. 👍",
-    2: "Acceptable, but room needs a deeper scrub next time. 🧹",
-    1: "Barely passed. The broom was barely awake! 😅"
+    5: "Sparkling clean! 5-star hotel standard.",
+    4: "Great job! Room looks and smells fresh.",
+    3: "Good effort! Passed inspection cleanly.",
+    2: "Acceptable, but room needs a deeper scrub next time.",
+    1: "Barely passed. The broom was barely awake!"
 }
 
 RATING_STARS_DISPLAY = {
-    5: "⭐⭐⭐⭐⭐ (5/5 Stars)",
-    4: "⭐⭐⭐⭐☆ (4/5 Stars)",
-    3: "⭐⭐⭐☆☆ (3/5 Stars)",
-    2: "⭐⭐☆☆☆ (2/5 Stars)",
-    1: "⭐☆☆☆☆ (1/5 Stars)"
+    5: "⭐⭐⭐⭐⭐ (5/5)",
+    4: "⭐⭐⭐⭐☆ (4/5)",
+    3: "⭐⭐⭐☆☆ (3/5)",
+    2: "⭐⭐☆☆☆ (2/5)",
+    1: "⭐☆☆☆☆ (1/5)"
 }
 
 async def rate_photo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -290,22 +290,18 @@ async def rate_photo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     # 3. Update approver's message in DM
     confirmation_text = (
-        f"✅ **Inspection Approved!**\n\n"
+        f"✅ **Inspection Approved**\n\n"
         f"Rating: {stars_display}\n"
-        f"Review: _{review_comment}_\n\n"
-        f"🪙 Both cleaners received **+{tokens_earned} Tsidat tokens**!\n"
-        f"🪙 You received **+5 Tsidat tokens** for completing inspection."
+        f"Cleaners received **+{tokens_earned} Tsidat tokens** (+5 for you)."
     )
     await _safe_edit_message(query, confirmation_text)
 
     # 4. Post in dorm group chat (with approved meme)
     group_msg = (
-        f"🌟 **Room Inspection Review!**\n\n"
+        f"⭐ **Room Inspection Review**\n\n"
         f"Approver: **{approver_name}**\n"
-        f"Rating: {stars_display}\n"
-        f"Review: _{review_comment}_\n\n"
-        f"Cleaners **{c1_name}** & **{c2_name}** completed duty for the week!\n"
-        f"🎉 Reward: **+{tokens_earned} Tsidat Tokens** awarded to each cleaner! 🪙✨"
+        f"Rating: {stars_display} — _{review_comment}_\n"
+        f"Cleaners **{c1_name}** & **{c2_name}** completed duty (+{tokens_earned} Tsidat tokens)."
     )
     approved_meme = config.get_meme_file("approved")
     try:
@@ -330,12 +326,10 @@ async def rate_photo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     # 5. Notify cleaners in private DM
     dm_text = (
-        f"🌟 **Inspection Passed!**\n\n"
-        f"Approver **{approver_name}** rated your cleaning:\n"
-        f"Rating: {stars_display}\n"
-        f"Review: _{review_comment}_\n\n"
-        f"🪙 You earned **+{tokens_earned} Tsidat tokens**!\n"
-        "Check dorm rankings with `/tsidat`."
+        f"⭐ **Inspection Passed**\n\n"
+        f"Approver: **{approver_name}**\n"
+        f"Rating: {stars_display} — _{review_comment}_\n"
+        f"Earned: **+{tokens_earned} Tsidat tokens**."
     )
     await _notify_cleaner(context, c1_id, c1_name, dm_text, photo_path=approved_meme, dorm_id=dorm_id, topic_id=topic_id)
     await _notify_cleaner(context, c2_id, c2_name, dm_text, photo_path=approved_meme, dorm_id=dorm_id, topic_id=topic_id)
