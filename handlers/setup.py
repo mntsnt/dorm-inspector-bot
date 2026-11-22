@@ -106,10 +106,12 @@ async def setup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     start_monday = _get_next_or_current_monday()
     start_monday_str = start_monday.strftime("%Y-%m-%d")
 
-    # The default saved dorm is always active and protected
-    if dorm_id == getattr(config, "DEFAULT_GROUP_ID", -1002378440774):
-        await db.seed_default_dorm()
-        dorm = await db.get_dorm(dorm_id)
+    default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+    is_main_admin_or_member = (user.id == getattr(config, "ADMIN_ID", 6163528558) or config.is_member(user.id))
+
+    # The default saved dorm is always active and protected against resetting
+    if dorm_id == default_gid or is_main_admin_or_member:
+        dorm = await db.seed_default_dorm_for_group(dorm_id)
         pairs = await db.get_dorm_pairs(dorm_id)
         members = await db.get_dorm_members(dorm_id)
         members_by_id = {m["user_id"]: m["name"] for m in members}
@@ -123,11 +125,12 @@ async def setup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             pair_lines.append(f"• Week {p['pair_number']}: **{c1_name}** & **{c2_name}**")
         pairs_str = "\n".join(pair_lines)
 
+        topic_display = dorm.get("topic_id") or getattr(config, "TOPIC_ID", 2031)
         await msg.reply_text(
             f"🧼 **{dorm['dorm_name']}** is already set up and active!\n\n"
             f"All 8 roommates and pairs are configured:\n{pairs_str}\n\n"
             f"• Default Fine: 100 ETB total (50 ETB each)\n"
-            f"• Forum Topic: Dorm Cleaning Schedule (2031)\n\n"
+            f"• Forum Topic: Dorm Cleaning Schedule ({topic_display})\n\n"
             "Use /status to view duty, or /schedule to see upcoming weeks.",
             parse_mode=ParseMode.MARKDOWN
         )

@@ -250,10 +250,27 @@ class TestMultiDormPlatform(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(update.effective_message.reply_text.called)
         reply = update.effective_message.reply_text.call_args[0][0]
         self.assertNotIn("You are not a member of this dorm", reply)
+        self.assertNotIn("Dorm not found", reply)
         self.assertIn("Dorm Cleaning Schedule Members", reply)
+        self.assertIn("8/8 Connected", reply)
         self.assertIn("Mintesnot", reply)
         self.assertIn("Bilisuma", reply)
         self.assertIn("Nahom", reply)
+        self.assertIn("All members are connected", reply)
+
+        # Also test in an alternate group chat ID where roommate calls members
+        update2 = MagicMock()
+        update2.effective_chat.type = "supergroup"
+        update2.effective_chat.id = -2378440774
+        update2.effective_user.id = 1758752115  # Nahom
+        update2.effective_message.reply_text = AsyncMock()
+
+        await members_command(update2, context)
+        self.assertTrue(update2.effective_message.reply_text.called)
+        reply2 = update2.effective_message.reply_text.call_args[0][0]
+        self.assertNotIn("Dorm not found", reply2)
+        self.assertNotIn("not a member of this dorm", reply2)
+        self.assertIn("8/8 Connected", reply2)
 
 if __name__ == "__main__":
     unittest.main()

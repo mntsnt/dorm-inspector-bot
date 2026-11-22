@@ -336,23 +336,35 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         """Verify tracking of connected members and idempotent settings."""
         await db.init_db()
 
-        # Initially 0 connected
+        # Default dorm has all 8 confirmed roommates pre-connected from start
         count, total, conn_list, pend_list = await db.get_connection_status()
-        self.assertEqual(count, 0)
+        self.assertEqual(count, 8)
         self.assertEqual(total, 8)
-        self.assertEqual(len(pend_list), 8)
+        self.assertEqual(len(conn_list), 8)
+        self.assertEqual(len(pend_list), 0)
 
-        # Connect 1 member
-        m1 = config.MEMBERS[0]
-        await db.upsert_user(m1.user_id, m1.name, chat_id=12345)
-        count, total, conn_list, pend_list = await db.get_connection_status()
-        self.assertEqual(count, 1)
-        self.assertEqual(conn_list[0].user_id, m1.user_id)
+        # For a new onboarding dorm, connection status tracks dynamically
+        test_dorm_id = -100888999777
+        await db.create_or_update_dorm(test_dorm_id, admin_id=9001, dorm_name="New Dorm")
+        await db.add_dorm_member(test_dorm_id, user_id=9001, name="Student1", chat_id=None)
+        await db.add_dorm_member(test_dorm_id, user_id=9002, name="Student2", chat_id=None)
+
+        d_count, d_total, d_conn, d_pend = await db.get_connection_status(test_dorm_id)
+        self.assertEqual(d_count, 0)
+        self.assertEqual(d_total, 2)
+        self.assertEqual(len(d_pend), 2)
+
+        # Student1 connects
+        await db.upsert_user(9001, "Student1", chat_id=9001)
+        d_count, d_total, d_conn, d_pend = await db.get_connection_status(test_dorm_id)
+        self.assertEqual(d_count, 1)
+        self.assertEqual(d_total, 2)
+        self.assertEqual(d_conn[0].user_id, 9001)
 
         # Settings key-value test
-        self.assertIsNone(await db.get_setting("all_connected_announced"))
-        await db.set_setting("all_connected_announced", "1")
-        self.assertEqual(await db.get_setting("all_connected_announced"), "1")
+        self.assertIsNone(await db.get_setting("test_setting_key"))
+        await db.set_setting("test_setting_key", "1")
+        self.assertEqual(await db.get_setting("test_setting_key"), "1")
 
     async def test_multi_tenant_dorm_isolation(self):
         """Verify that multiple dorms operate completely independently without leaking data."""

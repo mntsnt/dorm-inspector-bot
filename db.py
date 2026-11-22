@@ -235,15 +235,20 @@ async def create_or_update_dorm(
 
 def _get_dorm_sync(dorm_id: int) -> Optional[Dict[str, Any]]:
     default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+    group_variants = (default_gid, getattr(config, "GROUP_ID", 0), 0, -2378440774, 2378440774)
     with _get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM dorms WHERE dorm_id = ?", (dorm_id,))
         row = cursor.fetchone()
         if row:
             return dict(row)
-        if dorm_id in (default_gid, getattr(config, "GROUP_ID", 0), 0):
+        if dorm_id in group_variants:
             _seed_default_dorm_sync()
             cursor.execute("SELECT * FROM dorms WHERE dorm_id = ?", (dorm_id,))
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+            cursor.execute("SELECT * FROM dorms WHERE dorm_id = ?", (default_gid,))
             row = cursor.fetchone()
             if row:
                 return dict(row)
@@ -961,25 +966,37 @@ def _seed_default_dorm_sync() -> None:
                 updated_at = CURRENT_TIMESTAMP;
         """, (group_id, topic_id, admin_id, fine_amount, start_date))
 
-        # Seed pre-configured members from config.MEMBERS
+        # Seed pre-configured members from config.MEMBERS as already connected
         for m in getattr(config, "MEMBERS", []):
             is_adm = 1 if m.user_id in (admin_id, 7220854785, 6163528558) else 0
             conn.execute("""
-                INSERT INTO dorm_members (dorm_id, user_id, name, is_admin)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO dorm_members (dorm_id, user_id, name, chat_id, is_admin)
+                VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(dorm_id, user_id) DO UPDATE SET
                     name = excluded.name,
+                    chat_id = COALESCE(dorm_members.chat_id, excluded.chat_id, excluded.user_id),
                     is_admin = CASE WHEN excluded.is_admin = 1 THEN 1 ELSE dorm_members.is_admin END;
-            """, (group_id, m.user_id, m.name, is_adm))
+            """, (group_id, m.user_id, m.name, m.user_id, is_adm))
 
-            # Ensure users table has each member tracked
+            # Ensure users table has each member tracked as connected
             conn.execute("""
-                INSERT INTO users (user_id, name, updated_at)
-                VALUES (?, ?, CURRENT_TIMESTAMP)
+                INSERT INTO users (user_id, name, chat_id, updated_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(user_id) DO UPDATE SET
                     name = excluded.name,
+                    chat_id = COALESCE(users.chat_id, excluded.chat_id, excluded.user_id),
                     updated_at = CURRENT_TIMESTAMP;
-            """, (m.user_id, m.name))
+            """, (m.user_id, m.name, m.user_id))
+
+            conn.execute("UPDATE dorm_members SET chat_id = ? WHERE dorm_id = ? AND user_id = ? AND chat_id IS NULL", (m.user_id, group_id, m.user_id))
+            conn.execute("UPDATE users SET chat_id = ? WHERE user_id = ? AND chat_id IS NULL", (m.user_id, m.user_id))
+
+        # Mark all_connected milestone as achieved for default dorm so it never starts over
+        conn.execute("""
+            INSERT INTO settings (key, value, updated_at)
+            VALUES (?, '1', CURRENT_TIMESTAMP)
+            ON CONFLICT(key) DO UPDATE SET value = '1', updated_at = CURRENT_TIMESTAMP;
+        """, (f"all_connected_{group_id}",))
 
         # Enforce exact saved pairs from members.json / config.PAIRS for default dorm:
         # Pair 1: Bilisuma & Nahom
@@ -1025,3 +1042,79 @@ def _seed_default_dorm_sync() -> None:
 
 async def seed_default_dorm() -> None:
     await asyncio.to_thread(_seed_default_dorm_sync)
+
+def _seed_default_dorm_for_group_sync(group_id: int) -> Dict[str, Any]:
+    """Seed the saved default dorm members, pairs, and settings to a specific group chat ID."""
+    _seed_default_dorm_sync()
+    admin_id = getattr(config, "ADMIN_ID", 6163528558)
+    topic_id = getattr(config, "TOPIC_ID", 2031)
+    start_date = getattr(config, "START_DATE_STR", "2026-11-23")
+    fine_amount = getattr(config, "FINE_TOTAL", 100)
+
+    with _get_connection() as conn:
+        conn.execute("""
+            INSERT INTO dorms (dorm_id, topic_id, admin_id, dorm_name, fine_amount, start_date, status, updated_at)
+            VALUES (?, ?, ?, 'Dorm Cleaning Schedule', ?, ?, 'active', CURRENT_TIMESTAMP)
+            ON CONFLICT(dorm_id) DO UPDATE SET
+                topic_id = COALESCE(excluded.topic_id, dorms.topic_id),
+                status = 'active',
+                updated_at = CURRENT_TIMESTAMP;
+        """, (group_id, topic_id, admin_id, fine_amount, start_date))
+
+        for m in getattr(config, "MEMBERS", []):
+            is_adm = 1 if m.user_id in (admin_id, 7220854785, 6163528558) else 0
+            conn.execute("""
+                INSERT INTO dorm_members (dorm_id, user_id, name, chat_id, is_admin)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(dorm_id, user_id) DO UPDATE SET
+                    name = excluded.name,
+                    chat_id = COALESCE(dorm_members.chat_id, excluded.chat_id, excluded.user_id),
+                    is_admin = CASE WHEN excluded.is_admin = 1 THEN 1 ELSE dorm_members.is_admin END;
+            """, (group_id, m.user_id, m.name, m.user_id, is_adm))
+
+            conn.execute("""
+                INSERT INTO users (user_id, name, chat_id, updated_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    name = excluded.name,
+                    chat_id = COALESCE(users.chat_id, excluded.chat_id, excluded.user_id),
+                    updated_at = CURRENT_TIMESTAMP;
+            """, (m.user_id, m.name, m.user_id))
+
+        pairs = getattr(config, "PAIRS", [])
+        conn.execute("DELETE FROM dorm_pairs WHERE dorm_id = ?", (group_id,))
+        for idx, (p1, p2) in enumerate(pairs, start=1):
+            conn.execute("""
+                INSERT INTO dorm_pairs (dorm_id, pair_number, cleaner1_id, cleaner2_id)
+                VALUES (?, ?, ?, ?);
+            """, (group_id, idx, p1.user_id, p2.user_id))
+            conn.execute(
+                "UPDATE dorm_members SET pair_number = ? WHERE dorm_id = ? AND user_id IN (?, ?)",
+                (idx, group_id, p1.user_id, p2.user_id)
+            )
+
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM weeks WHERE dorm_id = ? AND week_start = ?", (group_id, "2026-11-23"))
+        if not cursor.fetchone():
+            conn.execute("""
+                INSERT INTO weeks (
+                    dorm_id, week_start, week_number, cleaner1_id, cleaner2_id,
+                    approver_id, announced, reminder_sent, done_reported, photo_status,
+                    check_sent, final_status, timeout_processed, created_at
+                )
+                VALUES (?, '2026-11-23', 1, 7220854785, 1758752115, 1359460823, 0, 0, 0, 'none', 0, 'pending', 0, CURRENT_TIMESTAMP);
+            """, (group_id,))
+
+        conn.execute("""
+            INSERT INTO settings (key, value, updated_at)
+            VALUES (?, '1', CURRENT_TIMESTAMP)
+            ON CONFLICT(key) DO UPDATE SET value = '1', updated_at = CURRENT_TIMESTAMP;
+        """, (f"all_connected_{group_id}",))
+
+        conn.commit()
+
+        cursor.execute("SELECT * FROM dorms WHERE dorm_id = ?", (group_id,))
+        return dict(cursor.fetchone())
+
+async def seed_default_dorm_for_group(group_id: int) -> Dict[str, Any]:
+    return await asyncio.to_thread(_seed_default_dorm_for_group_sync, group_id)

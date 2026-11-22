@@ -35,11 +35,14 @@ logger = logging.getLogger(__name__)
 
 async def check_member_permission(user_id: int, dorm_id: Optional[int] = None) -> bool:
     """Return True if user is a registered member of the dorm or platform."""
-    if config.is_member(user_id):
+    if config.is_member(user_id) or user_id == getattr(config, "ADMIN_ID", 6163528558):
         return True
     if dorm_id:
         member = await db.get_dorm_member(dorm_id, user_id)
         if member:
+            return True
+        dorm = await db.get_dorm(dorm_id)
+        if dorm and dorm.get("status") == "active":
             return True
     user_dorms = await db.get_user_dorms(user_id)
     return len(user_dorms) > 0
@@ -62,10 +65,37 @@ async def _resolve_user_dorm(user_id: int) -> Optional[Dict[str, Any]]:
     user_dorms = await db.get_user_dorms(user_id)
     if user_dorms:
         return user_dorms[0]
-    if config.is_member(user_id) and getattr(config, "GROUP_ID", 0):
-        await db.seed_default_dorm()
-        return await db.get_dorm(config.GROUP_ID)
+    default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+    if config.is_member(user_id) or user_id == getattr(config, "ADMIN_ID", 6163528558):
+        dorm = await db.get_dorm(default_gid)
+        if not dorm:
+            await db.seed_default_dorm()
+            dorm = await db.get_dorm(default_gid)
+        return dorm
     return None
+
+async def _resolve_target_dorm(dorm_id: Optional[int] = None, user_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
+    """Reliably resolve the active dorm for a group chat or user command."""
+    default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+    target_id = dorm_id
+
+    if target_id is not None:
+        dorm = await db.get_dorm(target_id)
+        if dorm:
+            return dorm
+        if target_id in (default_gid, -2378440774, 2378440774) or (user_id and (config.is_member(user_id) or user_id == getattr(config, "ADMIN_ID", 6163528558))):
+            return await db.seed_default_dorm_for_group(target_id)
+
+    if user_id is not None:
+        dorm = await _resolve_user_dorm(user_id)
+        if dorm:
+            return dorm
+
+    dorm = await db.get_dorm(default_gid)
+    if not dorm:
+        await db.seed_default_dorm()
+        dorm = await db.get_dorm(default_gid)
+    return dorm
 
 # ---------------------------------------------------------------------------
 # Keyboards & Navigation Builders
@@ -137,29 +167,18 @@ async def get_status_content(user_id: Optional[int] = None, dorm_id: Optional[in
         ]
     ])
 
-    if dorm_id is None and user_id is None:
-        dorm_id = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
-    elif dorm_id is None and user_id is not None:
-        dorm = await _resolve_user_dorm(user_id)
-        if dorm:
-            dorm_id = dorm["dorm_id"]
-        else:
-            return "You are not registered in any active dorm.", keyboard
-    elif dorm_id is not None and user_id is not None:
+    if user_id is not None and dorm_id is not None:
         member = await db.get_dorm_member(dorm_id, user_id)
         if not member:
-            if config.is_member(user_id):
-                dorm_id = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
-                member = await db.get_dorm_member(dorm_id, user_id)
-            if not member:
-                return "You are not a member of this dorm.", keyboard
+            return "You are not a member of this dorm.", keyboard
 
-    dorm = await db.get_dorm(dorm_id)
+    dorm = await _resolve_target_dorm(dorm_id=dorm_id, user_id=user_id)
     if not dorm:
-        return "No dorm found.", keyboard
+        return "No active cleaning schedule found. Send /setup to configure your dorm.", keyboard
 
-    pairs = await db.get_dorm_pairs(dorm_id)
-    members = await db.get_dorm_members(dorm_id)
+    resolved_id = dorm["dorm_id"]
+    pairs = await db.get_dorm_pairs(resolved_id)
+    members = await db.get_dorm_members(resolved_id)
     members_by_id = {m["user_id"]: m["name"] for m in members}
 
     from scheduler import get_dorm_week_info
@@ -179,7 +198,7 @@ async def get_status_content(user_id: Optional[int] = None, dorm_id: Optional[in
         )
         return msg, keyboard
 
-    week_record = await db.get_week(week_info.week_start, dorm_id=dorm_id)
+    week_record = await db.get_week(week_info.week_start, dorm_id=resolved_id)
     c1_name = week_info.cleaner1_name
     c2_name = week_info.cleaner2_name
 
@@ -234,27 +253,16 @@ async def get_schedule_content(dorm_id: Optional[int] = None, user_id: Optional[
         ]
     ])
 
-    if dorm_id is None and user_id is None:
-        resolved_id = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
-    elif dorm_id is None and user_id is not None:
-        dorm = await _resolve_user_dorm(user_id)
-        if dorm:
-            resolved_id = dorm["dorm_id"]
-        else:
-            return "You are not registered in any active dorm.", keyboard
-    elif dorm_id is not None and user_id is not None:
+    if user_id is not None and dorm_id is not None:
         member = await db.get_dorm_member(dorm_id, user_id)
         if not member:
-            if config.is_member(user_id):
-                dorm_id = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
-                member = await db.get_dorm_member(dorm_id, user_id)
-            if not member:
-                return "You are not a member of this dorm.", keyboard
-        resolved_id = dorm_id
-    else:
-        resolved_id = dorm_id
+            return "You are not a member of this dorm.", keyboard
 
-    dorm = await db.get_dorm(resolved_id)
+    dorm = await _resolve_target_dorm(dorm_id=dorm_id, user_id=user_id)
+    if not dorm:
+        return "No active cleaning schedule found. Send /setup to configure your dorm.", keyboard
+
+    resolved_id = dorm["dorm_id"]
     pairs = await db.get_dorm_pairs(resolved_id)
     members = await db.get_dorm_members(resolved_id)
     members_by_id = {m["user_id"]: m["name"] for m in members}
@@ -302,27 +310,16 @@ async def get_fines_content(dorm_id: Optional[int] = None, user_id: Optional[int
         ]
     ])
 
-    if dorm_id is None and user_id is None:
-        resolved_id = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
-    elif dorm_id is None and user_id is not None:
-        dorm = await _resolve_user_dorm(user_id)
-        if dorm:
-            resolved_id = dorm["dorm_id"]
-        else:
-            return "You are not registered in any active dorm.", keyboard
-    elif dorm_id is not None and user_id is not None:
+    if user_id is not None and dorm_id is not None:
         member = await db.get_dorm_member(dorm_id, user_id)
         if not member:
-            if config.is_member(user_id):
-                dorm_id = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
-                member = await db.get_dorm_member(dorm_id, user_id)
-            if not member:
-                return "You are not a member of this dorm.", keyboard
-        resolved_id = dorm_id
-    else:
-        resolved_id = dorm_id
+            return "You are not a member of this dorm.", keyboard
 
-    dorm = await db.get_dorm(resolved_id)
+    dorm = await _resolve_target_dorm(dorm_id=dorm_id, user_id=user_id)
+    if not dorm:
+        return "No active cleaning schedule found. Send /setup to configure your dorm.", keyboard
+
+    resolved_id = dorm["dorm_id"]
     unpaid_summary = await db.get_unpaid_fines_summary(dorm_id=resolved_id)
 
     prefix = f"**{dorm['dorm_name']}** — " if dorm else ""
@@ -354,27 +351,16 @@ async def get_history_content(dorm_id: Optional[int] = None, user_id: Optional[i
         ]
     ])
 
-    if dorm_id is None and user_id is None:
-        resolved_id = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
-    elif dorm_id is None and user_id is not None:
-        dorm = await _resolve_user_dorm(user_id)
-        if dorm:
-            resolved_id = dorm["dorm_id"]
-        else:
-            return "You are not registered in any active dorm.", keyboard
-    elif dorm_id is not None and user_id is not None:
+    if user_id is not None and dorm_id is not None:
         member = await db.get_dorm_member(dorm_id, user_id)
         if not member:
-            if config.is_member(user_id):
-                dorm_id = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
-                member = await db.get_dorm_member(dorm_id, user_id)
-            if not member:
-                return "You are not a member of this dorm.", keyboard
-        resolved_id = dorm_id
-    else:
-        resolved_id = dorm_id
+            return "You are not a member of this dorm.", keyboard
 
-    dorm = await db.get_dorm(resolved_id)
+    dorm = await _resolve_target_dorm(dorm_id=dorm_id, user_id=user_id)
+    if not dorm:
+        return "No active cleaning schedule found. Send /setup to configure your dorm.", keyboard
+
+    resolved_id = dorm["dorm_id"]
     members = await db.get_dorm_members(resolved_id)
     members_by_id = {m["user_id"]: m["name"] for m in members}
 
@@ -390,11 +376,10 @@ async def get_history_content(dorm_id: Optional[int] = None, user_id: Optional[i
         w_start = r["week_start"]
         c1_name = members_by_id.get(r["cleaner1_id"], f"ID {r['cleaner1_id']}")
         c2_name = members_by_id.get(r["cleaner2_id"], f"ID {r['cleaner2_id']}")
-
-        status = r.get("final_status", "pending")
-        if status == "completed":
-            badge = "Cleaned"
-        elif status == "fined":
+        f_status = r.get("final_status", "pending")
+        if f_status == "completed":
+            badge = "Completed"
+        elif f_status == "fined":
             badge = "Fined"
         else:
             badge = "Pending"
@@ -638,7 +623,9 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     """Show current week's cleaners, approver, and duty status."""
     user = update.effective_user
     chat = update.effective_chat
-    if not user or not await check_member_permission(user.id):
+    if not user or not chat:
+        return
+    if chat.type == "private" and not await check_member_permission(user.id):
         await reject_non_member(update)
         return
 
@@ -650,7 +637,9 @@ async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     """Show the next 4 weeks of cleaning pairs."""
     user = update.effective_user
     chat = update.effective_chat
-    if not user or not await check_member_permission(user.id):
+    if not user or not chat:
+        return
+    if chat.type == "private" and not await check_member_permission(user.id):
         await reject_non_member(update)
         return
 
@@ -662,7 +651,9 @@ async def fines_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     """Show unpaid fine totals."""
     user = update.effective_user
     chat = update.effective_chat
-    if not user or not await check_member_permission(user.id):
+    if not user or not chat:
+        return
+    if chat.type == "private" and not await check_member_permission(user.id):
         await reject_non_member(update)
         return
 
@@ -674,7 +665,9 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     """Show last 8 weeks of cleaning results."""
     user = update.effective_user
     chat = update.effective_chat
-    if not user or not await check_member_permission(user.id):
+    if not user or not chat:
+        return
+    if chat.type == "private" and not await check_member_permission(user.id):
         await reject_non_member(update)
         return
 
@@ -686,45 +679,33 @@ async def members_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     """Show connection status of dorm members."""
     user = update.effective_user
     chat = update.effective_chat
-    if not user or not await check_member_permission(user.id):
-        await reject_non_member(update)
+    if not user or not chat:
         return
 
-    dorm_id = chat.id if chat.type in ("group", "supergroup") else None
+    is_group = chat.type in ("group", "supergroup")
+    dorm_id = chat.id if is_group else None
     default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
 
-    if dorm_id is None:
-        dorm = await _resolve_user_dorm(user.id)
-        if not dorm:
-            await update.effective_message.reply_text("You are not registered in any active dorm.")
-            return
-        dorm_id = dorm["dorm_id"]
-    else:
-        member = await db.get_dorm_member(dorm_id, user.id)
-        if not member:
-            if config.is_member(user.id):
-                await db.seed_default_dorm()
-                member = await db.get_dorm_member(dorm_id, user.id)
-                if not member:
-                    dorm_id = default_gid
-                    member = await db.get_dorm_member(dorm_id, user.id)
-            if not member:
-                await update.effective_message.reply_text("You are not a member of this dorm.")
-                return
-
-    dorm = await db.get_dorm(dorm_id)
-    if not dorm and config.is_member(user.id):
-        await db.seed_default_dorm()
-        dorm = await db.get_dorm(default_gid)
-        dorm_id = default_gid
-
+    dorm = await _resolve_target_dorm(dorm_id=dorm_id, user_id=user.id)
     if not dorm:
-        await update.effective_message.reply_text("Dorm not found.")
+        if is_group:
+            await update.effective_message.reply_text(
+                "🧼 This group doesn't have an active cleaning schedule yet.\n"
+                "Send `/setup` to initialize Dorm Inspector for this room!",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        else:
+            await reject_non_member(update)
         return
 
-    d_name = dorm["dorm_name"]
+    target_dorm_id = dorm["dorm_id"]
+    d_name = dorm.get("dorm_name") or "Dorm Cleaning Schedule"
 
-    connected_count, total_count, connected_members, pending_members = await db.get_connection_status(dorm_id)
+    connected_count, total_count, connected_members, pending_members = await db.get_connection_status(target_dorm_id)
+    if total_count == 0 and target_dorm_id != default_gid:
+        connected_count, total_count, connected_members, pending_members = await db.get_connection_status(default_gid)
+        target_dorm_id = default_gid
+
     lines = [f"**{d_name} Members** ({connected_count}/{total_count} Connected):\n"]
 
     def _uid(item):
@@ -734,13 +715,11 @@ async def members_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return getattr(item, "name", None) if not isinstance(item, dict) else item.get("name")
 
     connected_ids = {_uid(m) for m in connected_members if _uid(m) is not None}
-    members = await db.get_dorm_members(dorm_id)
-    if dorm_id == getattr(config, "DEFAULT_GROUP_ID", -1002378440774):
-        display_members = members if members else config.MEMBERS
-    else:
-        display_members = members
+    members = await db.get_dorm_members(target_dorm_id)
+    if not members:
+        members = config.MEMBERS
 
-    for m in display_members:
+    for m in members:
         mid = _uid(m)
         mname = _uname(m) or f"ID {mid}"
         if mid in connected_ids:
@@ -824,14 +803,16 @@ async def reply_keyboard_text_handler(update: Update, context: ContextTypes.DEFA
     if not user or not msg or not msg.text:
         return
 
-    if not await check_member_permission(user.id):
+    chat = update.effective_chat
+    if chat and chat.type == "private" and not await check_member_permission(user.id):
         await reject_non_member(update)
         return
 
-    try:
-        await msg.reply_text("Switching to clean inline buttons...", reply_markup=ReplyKeyboardRemove())
-    except Exception:
-        pass
+    if chat and chat.type == "private":
+        try:
+            await msg.reply_text("Switching to clean inline buttons...", reply_markup=ReplyKeyboardRemove())
+        except Exception:
+            pass
 
     text_lower = msg.text.strip().lower()
 
