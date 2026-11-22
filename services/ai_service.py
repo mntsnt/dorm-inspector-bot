@@ -90,15 +90,37 @@ async def build_dorm_context(dorm_id: int) -> str:
     fine_entries = [f"{f['user_name']}: {f['total_unpaid']} ETB" for f in fines if f.get('total_unpaid', 0) > 0]
     fines_str = ", ".join(fine_entries) if fine_entries else "No unpaid fines! Everyone is clean."
 
+    # All Registered Roommates
+    all_roommates_str = ", ".join(m["name"] for m in members) if members else "None"
+
+    # Today's Date and Upcoming Schedule (Next 3 weeks)
+    today = config.get_current_date()
+    today_str = today.strftime("%A, %b %d, %Y")
+
+    from datetime import timedelta
+    upcoming_lines = []
+    if dorm and pairs:
+        current_monday = config.get_monday_of_week(today)
+        for i in range(1, 4):
+            fut_monday = current_monday + timedelta(weeks=i)
+            fw = get_dorm_week_info(dorm, pairs, members_by_id, target_date=fut_monday)
+            if fw:
+                upcoming_lines.append(f"Week {fw.week_number} ({fw.monday_date.strftime('%b %d')}): {fw.cleaner1_name} & {fw.cleaner2_name}")
+    upcoming_str = "; ".join(upcoming_lines) if upcoming_lines else "Schedule starting soon"
+
     return (
         f"Dorm: {d_name}\n"
+        f"Today's Date: {today_str}\n"
+        f"All Roommates: {all_roommates_str}\n"
         f"Current Week: {week_str}\n"
         f"Current Duty: {duty_str}\n"
+        f"Upcoming Weeks: {upcoming_str}\n"
         f"Fine Amount: {fine_amt} ETB per missed week (split 50/50 between cleaners)\n"
         f"Tsidat Tokens Leaderboard: {lb_str}\n"
         f"Unpaid Fines: {fines_str}\n"
         f"Rules: Duty announced Monday 8:00 AM. Deadline Friday 8:00 PM. Photo proof required. "
-        f"Approver rates 1-5 stars; cleaners earn up to +25 Tsidat tokens. Room roulette /spin picks roommates for chores."
+        f"Approver rates 1-5 stars; cleaners earn up to +25 Tsidat tokens. Room roulette /spin picks roommates for chores. "
+        f"/swap <name> allows a cleaner to swap duty with a roommate for that week only."
     )
 
 SYSTEM_PROMPT = (
