@@ -11,7 +11,7 @@ from typing import Optional, Tuple
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
-from telegram.error import TelegramError
+from telegram.error import BadRequest, TelegramError
 from telegram.ext import Application, CallbackQueryHandler, ContextTypes
 
 import config
@@ -97,13 +97,36 @@ async def _notify_cleaner(
         except Exception as ge:
             logger.error("Failed to send fallback message to group: %s", ge)
 
+async def _safe_edit_message(
+    query,
+    text: str,
+    reply_markup: Optional[InlineKeyboardMarkup] = None,
+    parse_mode: Optional[str] = ParseMode.MARKDOWN
+) -> None:
+    """Safely edit query message regardless of whether it contains photo or text, ignoring unmodified errors."""
+    if not query.message:
+        return
+    try:
+        if query.message.photo:
+            await query.edit_message_caption(caption=text, reply_markup=reply_markup, parse_mode=parse_mode)
+        else:
+            await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
+    except BadRequest as e:
+        if "Message is not modified" in str(e):
+            pass
+        else:
+            logger.warning("BadRequest editing message: %s", e)
+    except Exception as e:
+        logger.warning("Error editing message: %s", e)
+
 # ---------------------------------------------------------------------------
 # Photo Review Callbacks: Approve / Reject
 # ---------------------------------------------------------------------------
 async def approve_photo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Approver approves the cleaning photo."""
     query = update.callback_query
-    await query.answer()
+    if not query:
+        return
     user = query.from_user
 
     dorm_id, week_start = _parse_callback_dorm_and_week(query.data)
@@ -139,6 +162,11 @@ async def approve_photo_callback(update: Update, context: ContextTypes.DEFAULT_T
         await query.answer("Cleaning is already completed.", show_alert=True)
         return
 
+    try:
+        await query.answer()
+    except Exception:
+        pass
+
     c1 = await db.get_dorm_member(dorm_id, week_record["cleaner1_id"])
     c2 = await db.get_dorm_member(dorm_id, week_record["cleaner2_id"])
     c1_name = c1["name"] if c1 else f"ID {week_record['cleaner1_id']}"
@@ -162,10 +190,7 @@ async def approve_photo_callback(update: Update, context: ContextTypes.DEFAULT_T
         "Choose a 1 to 5 star rating for room inspection.\n"
         "Cleaners will receive **Tsidat tokens** based on your rating! 🪙"
     )
-    if query.message and query.message.photo:
-        await query.edit_message_caption(caption=prompt_text, reply_markup=star_keyboard, parse_mode=ParseMode.MARKDOWN)
-    elif query.message:
-        await query.edit_message_text(text=prompt_text, reply_markup=star_keyboard, parse_mode=ParseMode.MARKDOWN)
+    await _safe_edit_message(query, prompt_text, reply_markup=star_keyboard)
 
 RATING_COMMENTS = {
     5: "Sparkling clean! 5-star hotel standard. 🌟✨",
@@ -186,7 +211,8 @@ RATING_STARS_DISPLAY = {
 async def rate_photo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Approver submits a 1-5 star rating and review for the cleaning photo."""
     query = update.callback_query
-    await query.answer()
+    if not query:
+        return
     user = query.from_user
 
     parts = query.data.split("_")
@@ -230,6 +256,11 @@ async def rate_photo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.answer("Cleaning is already completed.", show_alert=True)
         return
 
+    try:
+        await query.answer()
+    except Exception:
+        pass
+
     stars_clamped = max(1, min(5, stars))
     review_comment = RATING_COMMENTS.get(stars_clamped, "Passed inspection.")
     stars_display = RATING_STARS_DISPLAY.get(stars_clamped, f"{stars_clamped} Stars")
@@ -265,13 +296,7 @@ async def rate_photo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"🪙 Both cleaners received **+{tokens_earned} Tsidat tokens**!\n"
         f"🪙 You received **+5 Tsidat tokens** for completing inspection."
     )
-    try:
-        if query.message and query.message.photo:
-            await query.edit_message_caption(caption=confirmation_text, parse_mode=ParseMode.MARKDOWN)
-        elif query.message:
-            await query.edit_message_text(text=confirmation_text, parse_mode=ParseMode.MARKDOWN)
-    except Exception as edit_err:
-        logger.warning("Could not edit approver message: %s", edit_err)
+    await _safe_edit_message(query, confirmation_text)
 
     # 4. Post in dorm group chat (with approved meme)
     group_msg = (
@@ -318,7 +343,8 @@ async def rate_photo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def reject_photo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Approver rejects the cleaning photo."""
     query = update.callback_query
-    await query.answer()
+    if not query:
+        return
     user = query.from_user
 
     dorm_id, week_start = _parse_callback_dorm_and_week(query.data)
@@ -350,6 +376,11 @@ async def reject_photo_callback(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return
 
+    try:
+        await query.answer()
+    except Exception:
+        pass
+
     # Update database: mark rejected
     await db.update_photo_status(week_start, status="rejected", dorm_id=dorm_id)
 
@@ -359,10 +390,7 @@ async def reject_photo_callback(update: Update, context: ContextTypes.DEFAULT_TY
     c2_name = c2["name"] if c2 else f"ID {week_record['cleaner2_id']}"
 
     # Update approver's message
-    await query.edit_message_caption(
-        caption="You rejected the cleaning photo. Cleaners have been notified.",
-        parse_mode=ParseMode.MARKDOWN
-    )
+    await _safe_edit_message(query, "You rejected the cleaning photo. Cleaners have been notified.")
 
     # Post in group chat (with rejected meme)
     group_msg = (
@@ -404,7 +432,8 @@ async def reject_photo_callback(update: Update, context: ContextTypes.DEFAULT_TY
 async def confirm_cleaned_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Approver confirms the final result: Cleaned."""
     query = update.callback_query
-    await query.answer()
+    if not query:
+        return
     user = query.from_user
 
     dorm_id, week_start = _parse_callback_dorm_and_week(query.data)
@@ -440,6 +469,11 @@ async def confirm_cleaned_callback(update: Update, context: ContextTypes.DEFAULT
         await query.answer("Status has already been decided.", show_alert=True)
         return
 
+    try:
+        await query.answer()
+    except Exception:
+        pass
+
     # Record approver decision with 5-star rating and Tsidat tokens
     await db.record_approver_decision(
         week_start,
@@ -462,7 +496,7 @@ async def confirm_cleaned_callback(update: Update, context: ContextTypes.DEFAULT
     c2_name = c2["name"] if c2 else f"ID {c2_id}"
 
     # Edit approver message
-    await query.edit_message_text("You confirmed the dorm was cleaned. Both cleaners earned +25 Tsidat tokens! 🪙")
+    await _safe_edit_message(query, "You confirmed the dorm was cleaned. Both cleaners earned +25 Tsidat tokens! 🪙")
 
     # Post in group chat (with approved meme)
     group_msg = (
@@ -500,7 +534,8 @@ async def confirm_cleaned_callback(update: Update, context: ContextTypes.DEFAULT
 async def confirm_not_cleaned_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Approver confirms the final result: Not Cleaned (Fines recorded)."""
     query = update.callback_query
-    await query.answer()
+    if not query:
+        return
     user = query.from_user
 
     dorm_id, week_start = _parse_callback_dorm_and_week(query.data)
@@ -538,6 +573,11 @@ async def confirm_not_cleaned_callback(update: Update, context: ContextTypes.DEF
         await query.answer("Status has already been decided.", show_alert=True)
         return
 
+    try:
+        await query.answer()
+    except Exception:
+        pass
+
     # Record approver decision
     await db.record_approver_decision(week_start, decision="not_cleaned", final_status="fined", dorm_id=dorm_id)
 
@@ -558,7 +598,8 @@ async def confirm_not_cleaned_callback(update: Update, context: ContextTypes.DEF
     )
 
     # Edit approver message
-    await query.edit_message_text(
+    await _safe_edit_message(
+        query,
         f"You confirmed the dorm was NOT cleaned. Fine: {fine_total} ETB total."
     )
 

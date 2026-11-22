@@ -6,7 +6,7 @@ Idempotent and resilient against bot downtime and restarts.
 """
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -32,14 +32,14 @@ class DormWeekInfo:
     cleaner2_id: int
     cleaner1_name: str
     cleaner2_name: str
-    monday_date: datetime.date
-    friday_date: datetime.date
+    monday_date: date
+    friday_date: date
 
 def get_dorm_week_info(
     dorm: Dict[str, Any],
     pairs: List[Dict[str, Any]],
     members_by_id: Dict[int, str],
-    target_date: Optional[datetime.date] = None,
+    target_date: Optional[date] = None,
 ) -> Optional[DormWeekInfo]:
     """Calculate the weekly cleaning duty for a specific dorm based on its start_date and pairs."""
     if not pairs:
@@ -52,7 +52,7 @@ def get_dorm_week_info(
     try:
         start_date_obj = datetime.strptime(start_date_str, "%Y-%m-%d").date()
     except Exception:
-        start_date_obj = getattr(config, "START_BASE_MONDAY", datetime.date(2026, 11, 23))
+        start_date_obj = getattr(config, "START_BASE_MONDAY", date(2026, 11, 23))
 
     start_base_monday = config.get_monday_of_week(start_date_obj)
     target_monday = config.get_monday_of_week(target_date)

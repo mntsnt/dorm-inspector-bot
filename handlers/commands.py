@@ -5,7 +5,7 @@ plus interactive inline buttons and persistent mobile keyboard.
 Seamlessly handles both group-scoped commands and private DM interactions.
 """
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 import logging
 import random
 from typing import Any, Dict, List, Optional, Tuple
@@ -19,7 +19,7 @@ from telegram import (
     Update,
 )
 from telegram.constants import ParseMode
-from telegram.error import BadRequest
+from telegram.error import BadRequest, TelegramError
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -906,7 +906,6 @@ async def menu_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
     if not query:
         return
 
-    await query.answer()
     user = query.from_user
     if not user:
         return
@@ -936,6 +935,10 @@ async def menu_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
     elif action == "menu_schedule":
         text, keyboard = await get_schedule_content(dorm_id=dorm_id, user_id=user.id)
     elif action == "menu_done":
+        try:
+            await query.answer()
+        except Exception:
+            pass
         from handlers.cleaning import handle_cleaner_done
         await handle_cleaner_done(update, context, user.id, dorm_id=dorm_id)
         return
@@ -983,9 +986,15 @@ async def menu_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     try:
-        await query.edit_message_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
-    except BadRequest:
+        await query.answer()
+    except Exception:
         pass
+
+    try:
+        await query.edit_message_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+    except BadRequest as be:
+        if "Message is not modified" not in str(be):
+            logger.warning("BadRequest editing menu message: %s", be)
     except Exception as e:
         logger.warning("Could not edit message for action %s: %s", action, e)
 

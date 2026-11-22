@@ -15,7 +15,7 @@ import threading
 import time
 
 from telegram import Update
-from telegram.ext import Application, ApplicationBuilder
+from telegram.ext import Application, ApplicationBuilder, ContextTypes
 
 import config
 import db
@@ -76,6 +76,13 @@ def start_health_server() -> None:
         logger.warning("Could not start health check server on port %d: %s", port, e)
 
 # ---------------------------------------------------------------------------
+# Global Error Handler
+# ---------------------------------------------------------------------------
+async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log uncaught errors gracefully to prevent update processor disruptions."""
+    logger.error("Global exception caught handling update: %s", context.error, exc_info=context.error)
+
+# ---------------------------------------------------------------------------
 # Startup Post-Init Hook
 # ---------------------------------------------------------------------------
 async def post_init(application: Application) -> None:
@@ -134,6 +141,9 @@ def main() -> None:
 
     # Register handlers
     register_all_handlers(app)
+
+    # Register global error handler
+    app.add_error_handler(global_error_handler)
 
     # Setup scheduled jobs
     setup_scheduler(app)

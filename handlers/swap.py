@@ -8,6 +8,7 @@ import logging
 from typing import Optional
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
+from telegram.error import BadRequest, TelegramError
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
 import config
@@ -145,7 +146,6 @@ async def swap_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
     if not query or not query.data:
         return
 
-    await query.answer()
     user = query.from_user
     data = query.data
 
@@ -179,6 +179,11 @@ async def swap_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
         await query.answer(f"This swap was already {swap_req['status']}.", show_alert=True)
         return
 
+    try:
+        await query.answer()
+    except Exception:
+        pass
+
     target_member = await db.get_dorm_member(dorm_id, target_id)
     requester_member = await db.get_dorm_member(dorm_id, requester_id)
     t_name = target_member["name"] if target_member else user.first_name
@@ -205,7 +210,10 @@ async def swap_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
             f"_(Normal rotation pairings will resume as usual next cycle)._"
         )
         if query.message:
-            await query.edit_message_text(result_text, parse_mode=ParseMode.MARKDOWN)
+            try:
+                await query.edit_message_text(result_text, parse_mode=ParseMode.MARKDOWN)
+            except (BadRequest, TelegramError):
+                pass
 
     elif action == "dec":
         await db.decline_swap(swap_id)
@@ -215,7 +223,10 @@ async def swap_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
             f"**{r_name}** remains scheduled for cleaning duty."
         )
         if query.message:
-            await query.edit_message_text(decline_text, parse_mode=ParseMode.MARKDOWN)
+            try:
+                await query.edit_message_text(decline_text, parse_mode=ParseMode.MARKDOWN)
+            except (BadRequest, TelegramError):
+                pass
 
 def register_swap_handlers(application: Application) -> None:
     """Attach duty swap command and callback handlers."""

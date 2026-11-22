@@ -10,6 +10,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import AsyncMock, MagicMock, patch
 
 # Ensure project root is in sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -899,6 +900,92 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         self.assertIn("DORM INSPECTOR WEEKLY AWARDS", roast_text)
         self.assertIn("Cleaners of the Week", roast_text)
         self.assertIn("Tsidat", roast_text)
+
+    async def test_safe_edit_message_swallows_message_not_modified(self):
+        """Verify _safe_edit_message gracefully swallows 'Message is not modified' error."""
+        from handlers.approval import _safe_edit_message
+        from telegram.error import BadRequest
+
+        mock_query = MagicMock()
+        mock_msg = MagicMock()
+        mock_msg.photo = []
+        mock_query.message = mock_msg
+        mock_query.edit_message_text = AsyncMock(side_effect=BadRequest("Message is not modified: specified new message content and reply markup are exactly the same"))
+
+        # Should execute without raising BadRequest
+        await _safe_edit_message(mock_query, "Same text")
+        mock_query.edit_message_text.assert_awaited_once()
+
+    def test_parse_callback_dorm_and_week_formats(self):
+        """Verify callback parser accurately decodes negative supergroup IDs across diverse prefixes."""
+        from handlers.approval import _parse_callback_dorm_and_week as app_parse
+        from handlers.cleaning import _parse_callback_dorm_and_week as clean_parse
+
+        supergroup_id = -1002378440774
+        week = "2026-11-23"
+
+        # 4-part fconfirm
+        d_id, w_str = app_parse(f"fconfirm_clean_{supergroup_id}_{week}")
+        self.assertEqual(d_id, supergroup_id)
+        self.assertEqual(w_str, week)
+
+        d_id2, w_str2 = app_parse(f"fconfirm_notclean_{supergroup_id}_{week}")
+        self.assertEqual(d_id2, supergroup_id)
+        self.assertEqual(w_str2, week)
+
+        # 3-part approve/reject/rate
+        d_id3, w_str3 = app_parse(f"approve_{supergroup_id}_{week}")
+        self.assertEqual(d_id3, supergroup_id)
+        self.assertEqual(w_str3, week)
+
+        # 4-part fcheck
+        d_id4, w_str4 = clean_parse(f"fcheck_yes_{supergroup_id}_{week}")
+        self.assertEqual(d_id4, supergroup_id)
+        self.assertEqual(w_str4, week)
+
+        # 3-part cleaned
+        d_id5, w_str5 = clean_parse(f"cleaned_{supergroup_id}_{week}")
+        self.assertEqual(d_id5, supergroup_id)
+        self.assertEqual(w_str5, week)
+
+    async def test_handle_cleaner_done_group_chat_redirect(self):
+        """Verify cleaner done in group chat directs cleaner to DM with URL button."""
+        from handlers.cleaning import handle_cleaner_done
+
+        mock_update = MagicMock()
+        mock_msg = MagicMock()
+        mock_chat = MagicMock()
+        mock_chat.type = "supergroup"
+        mock_chat.id = -1002378440774
+        mock_msg.chat = mock_chat
+        mock_msg.reply_text = AsyncMock()
+        mock_update.effective_message = mock_msg
+
+        mock_context = MagicMock()
+        mock_bot = MagicMock()
+        mock_bot.get_me = AsyncMock(return_value=MagicMock(username="TestInspectorBot"))
+        mock_context.bot = mock_bot
+
+        await handle_cleaner_done(mock_update, mock_context, user_id=101)
+        mock_msg.reply_text.assert_awaited_once()
+        call_args = mock_msg.reply_text.call_args
+        self.assertIn("Photo submissions are handled in private chat", call_args[0][0])
+        self.assertIsNotNone(call_args[1].get("reply_markup"))
+
+    async def test_schedule_content_date_fallback(self):
+        """Verify get_schedule_content renders schedule correctly with fallback date handling."""
+        from handlers.commands import get_schedule_content
+        await db.init_db()
+
+        test_dorm_id = -100999111
+        await db.create_or_update_dorm(dorm_id=test_dorm_id, admin_id=5001, dorm_name="Fallback Dorm", start_date="invalid-date")
+        await db.add_dorm_member(test_dorm_id, 5001, "Member_A")
+        await db.add_dorm_member(test_dorm_id, 5002, "Member_B")
+        await db.set_dorm_pairs(test_dorm_id, [(5001, 5002)])
+
+        text, keyboard = await get_schedule_content(dorm_id=test_dorm_id, user_id=5001)
+        self.assertIn("Fallback Dorm", text)
+        self.assertIsNotNone(keyboard)
 
 if __name__ == "__main__":
     unittest.main()

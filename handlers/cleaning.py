@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
-from telegram.error import TelegramError
+from telegram.error import BadRequest, TelegramError
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -23,6 +23,28 @@ import config
 import db
 
 logger = logging.getLogger(__name__)
+
+async def _safe_edit_message(
+    query,
+    text: str,
+    reply_markup: Optional[InlineKeyboardMarkup] = None,
+    parse_mode: Optional[str] = ParseMode.MARKDOWN
+) -> None:
+    """Safely edit query message handling photo captions and suppressing Message is not modified."""
+    if not query or not query.message:
+        return
+    try:
+        if query.message.photo:
+            await query.edit_message_caption(caption=text, reply_markup=reply_markup, parse_mode=parse_mode)
+        else:
+            await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
+    except BadRequest as e:
+        if "Message is not modified" in str(e):
+            pass
+        else:
+            logger.warning("BadRequest editing message: %s", e)
+    except Exception as e:
+        logger.warning("Error editing message: %s", e)
 
 async def _is_member(user_id: int) -> bool:
     """Return True if user is a member in config or any active dorm."""
@@ -119,7 +141,8 @@ async def done_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def cleaned_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Cleaner clicks 'We cleaned' button."""
     query = update.callback_query
-    await query.answer()
+    if not query:
+        return
     user = query.from_user
 
     dorm_id, week_start = _parse_callback_dorm_and_week(query.data)
@@ -132,6 +155,11 @@ async def cleaned_button_callback(update: Update, context: ContextTypes.DEFAULT_
         await query.answer("You are not a member of this dorm.", show_alert=True)
         return
 
+    try:
+        await query.answer()
+    except Exception:
+        pass
+
     await handle_cleaner_done(update, context, user.id, dorm_id=dorm_id, week_start=week_start)
 
 async def handle_cleaner_done(
@@ -143,6 +171,24 @@ async def handle_cleaner_done(
 ) -> None:
     """Common logic for initiating cleaning submission."""
     msg = update.effective_message
+    if not msg:
+        return
+
+    # Check if this was triggered in a group chat — photo submissions must occur in private DM
+    if msg.chat and msg.chat.type in ("group", "supergroup"):
+        bot_info = await context.bot.get_me()
+        bot_user = bot_info.username or "DormInspectorBot"
+        dm_url = f"https://t.me/{bot_user}?start=submit"
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📸 Open Bot in DM to Submit", url=dm_url)]
+        ])
+        await msg.reply_text(
+            "📸 **Photo submissions are handled in private chat with the bot.**\n\n"
+            f"Please message @{bot_user} in DM to submit your inspection photo!",
+            reply_markup=keyboard,
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
 
     if dorm_id is None:
         resolved = await _resolve_user_active_dorm(user_id)
@@ -359,7 +405,8 @@ async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
 async def friday_check_yes_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Cleaner answered YES to Friday check."""
     query = update.callback_query
-    await query.answer()
+    if not query:
+        return
     user = query.from_user
 
     dorm_id, week_start = _parse_callback_dorm_and_week(query.data)
@@ -383,6 +430,11 @@ async def friday_check_yes_callback(update: Update, context: ContextTypes.DEFAUL
     if user.id not in (week_record["cleaner1_id"], week_record["cleaner2_id"]):
         await query.answer("Only assigned cleaners can answer this check.", show_alert=True)
         return
+
+    try:
+        await query.answer()
+    except Exception:
+        pass
 
     member_name = member["name"] if member else user.first_name
 
@@ -393,30 +445,39 @@ async def friday_check_yes_callback(update: Update, context: ContextTypes.DEFAUL
     photo_status = week_record.get("photo_status", "none")
 
     if photo_status == "approved":
-        await query.edit_message_text(
+        await _safe_edit_message(
+            query,
             "You confirmed you cleaned, and your photo was approved. All done!"
         )
-        await context.bot.send_message(
-            chat_id=dorm_id,
-            message_thread_id=topic_id,
-            text=f"Friday Check: **{member_name}** confirmed they cleaned (photo already approved).",
-            parse_mode=ParseMode.MARKDOWN
-        )
+        try:
+            await context.bot.send_message(
+                chat_id=dorm_id,
+                message_thread_id=topic_id,
+                text=f"Friday Check: **{member_name}** confirmed they cleaned (photo already approved).",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        except Exception as e:
+            logger.warning("Could not send group message for Friday check: %s", e)
     else:
-        await query.edit_message_text(
+        await _safe_edit_message(
+            query,
             "You answered YES, but no approved photo on record yet. Please send the photo now!"
         )
-        await context.bot.send_message(
-            chat_id=dorm_id,
-            message_thread_id=topic_id,
-            text=f"Friday Check: **{member_name}** answered YES, but no photo approved yet.",
-            parse_mode=ParseMode.MARKDOWN
-        )
+        try:
+            await context.bot.send_message(
+                chat_id=dorm_id,
+                message_thread_id=topic_id,
+                text=f"Friday Check: **{member_name}** answered YES, but no photo approved yet.",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        except Exception as e:
+            logger.warning("Could not send group message for Friday check: %s", e)
 
 async def friday_check_no_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Cleaner answered NO to Friday check."""
     query = update.callback_query
-    await query.answer()
+    if not query:
+        return
     user = query.from_user
 
     dorm_id, week_start = _parse_callback_dorm_and_week(query.data)
@@ -441,17 +502,25 @@ async def friday_check_no_callback(update: Update, context: ContextTypes.DEFAULT
         await query.answer("Only assigned cleaners can answer this check.", show_alert=True)
         return
 
+    try:
+        await query.answer()
+    except Exception:
+        pass
+
     member_name = member["name"] if member else user.first_name
 
     await db.record_cleaner_response(week_start, user.id, "no", dorm_id=dorm_id)
 
-    await query.edit_message_text("Recorded. The approver will make the final decision.")
-    await context.bot.send_message(
-        chat_id=dorm_id,
-        message_thread_id=topic_id,
-        text=f"Friday Check: **{member_name}** answered that they did NOT clean.",
-        parse_mode=ParseMode.MARKDOWN
-    )
+    await _safe_edit_message(query, "Recorded. The approver will make the final decision.")
+    try:
+        await context.bot.send_message(
+            chat_id=dorm_id,
+            message_thread_id=topic_id,
+            text=f"Friday Check: **{member_name}** answered that they did NOT clean.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.warning("Could not send group message for Friday check: %s", e)
 
 def register_cleaning_handlers(application: Application) -> None:
     """Attach cleaning duty and photo submission handlers."""

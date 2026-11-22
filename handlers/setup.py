@@ -10,7 +10,7 @@ from typing import Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
-from telegram.error import TelegramError
+from telegram.error import BadRequest, TelegramError
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -197,7 +197,8 @@ async def setup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 async def setup_members_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show the list of members who have joined so far."""
     query = update.callback_query
-    await query.answer()
+    if not query:
+        return
     user = query.from_user
 
     parts = query.data.split("_")
@@ -223,8 +224,9 @@ async def setup_members_callback(update: Update, context: ContextTypes.DEFAULT_T
 async def setup_settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Allow admin to toggle settings like fine amounts."""
     query = update.callback_query
+    if not query:
+        return
     user = query.from_user
-    await query.answer()
 
     parts = query.data.split("_")
     dorm_id = int(parts[2])
@@ -237,6 +239,11 @@ async def setup_settings_callback(update: Update, context: ContextTypes.DEFAULT_
     if user.id != dorm["admin_id"]:
         await query.answer("Only the dorm admin can change settings.", show_alert=True)
         return
+
+    try:
+        await query.answer()
+    except Exception:
+        pass
 
     current_fine = dorm.get("fine_amount", 100)
     settings_text = (
@@ -257,13 +264,19 @@ async def setup_settings_callback(update: Update, context: ContextTypes.DEFAULT_
         [InlineKeyboardButton("« Back to Setup", callback_data=f"setup_back_{dorm_id}")]
     ])
 
-    await query.edit_message_text(settings_text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+    try:
+        await query.edit_message_text(settings_text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+    except BadRequest:
+        pass
+    except Exception as e:
+        logger.warning("Could not edit settings message: %s", e)
 
 async def setfine_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Update fine amount."""
     query = update.callback_query
+    if not query:
+        return
     user = query.from_user
-    await query.answer()
 
     parts = query.data.split("_")
     dorm_id = int(parts[1])
@@ -275,7 +288,10 @@ async def setfine_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
 
     await db.update_dorm_settings(dorm_id, fine_amount=new_fine)
-    await query.answer(f"Fine updated to {new_fine} ETB total!", show_alert=True)
+    try:
+        await query.answer(f"Fine updated to {new_fine} ETB total!", show_alert=True)
+    except Exception:
+        pass
 
     # Return to setup card
     await _render_setup_card(query, context, dorm_id)
@@ -283,7 +299,12 @@ async def setfine_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def setup_back_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Return to main setup card."""
     query = update.callback_query
-    await query.answer()
+    if not query:
+        return
+    try:
+        await query.answer()
+    except Exception:
+        pass
 
     parts = query.data.split("_")
     dorm_id = int(parts[2])
@@ -324,7 +345,12 @@ async def _render_setup_card(query, context, dorm_id: int) -> None:
         [InlineKeyboardButton("🚀 Auto-Pair & Launch", callback_data=f"setup_launch_{dorm_id}")]
     ])
 
-    await query.edit_message_text(setup_text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+    try:
+        await query.edit_message_text(setup_text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+    except BadRequest:
+        pass
+    except Exception as e:
+        logger.warning("Could not render setup card: %s", e)
 
 # ---------------------------------------------------------------------------
 # Launch & Auto-Pair Handler
@@ -332,6 +358,8 @@ async def _render_setup_card(query, context, dorm_id: int) -> None:
 async def setup_launch_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Auto-pair members and officially activate the dorm schedule."""
     query = update.callback_query
+    if not query:
+        return
     user = query.from_user
 
     parts = query.data.split("_")
@@ -352,7 +380,10 @@ async def setup_launch_callback(update: Update, context: ContextTypes.DEFAULT_TY
         await query.answer("You need at least 2 connected roommates to create pairs!", show_alert=True)
         return
 
-    await query.answer()
+    try:
+        await query.answer()
+    except Exception:
+        pass
 
     # Generate pairs automatically
     pairs = await db.auto_generate_dorm_pairs(dorm_id)
@@ -403,10 +434,16 @@ async def setup_launch_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 parse_mode=ParseMode.MARKDOWN
             )
         # Edit the setup message to show launched
-        await query.edit_message_text(f"✅ Setup complete! Cleaning schedule has launched in the group.")
+        try:
+            await query.edit_message_text("✅ Setup complete! Cleaning schedule has launched in the group.")
+        except (BadRequest, TelegramError):
+            pass
     except Exception as e:
         logger.error("Failed to post launch message for dorm %s: %s", dorm_id, e)
-        await query.edit_message_text(launch_msg, parse_mode=ParseMode.MARKDOWN)
+        try:
+            await query.edit_message_text(launch_msg, parse_mode=ParseMode.MARKDOWN)
+        except (BadRequest, TelegramError):
+            pass
 
 # ---------------------------------------------------------------------------
 # Reset Dorm Command
