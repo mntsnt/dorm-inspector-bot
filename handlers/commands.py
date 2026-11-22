@@ -428,7 +428,12 @@ def get_help_content() -> Tuple[str, InlineKeyboardMarkup]:
         "• /history: See past week records & 5-star reviews\n"
         "• /members: See who is connected\n"
         "• /spin [task]: Spin Dorm Roulette to pick a roommate for a chore!\n"
-        "• /tsidat: View Tsidat token leaderboard & balances"
+        "• /tsidat: View Tsidat token leaderboard & balances\n"
+        "• /swap <name>: Request a temporary duty swap for this week only\n"
+        "• /split <amount> <item>: Split shared dorm expenses evenly across roommates\n"
+        "• /expenses: View active shared expenses and who owes what\n"
+        "• /settle: Clear your reimbursed dorm expense shares\n"
+        "• /roast: View the weekly AI dorm awards & lighthearted roast"
     )
     return help_text, keyboard
 
@@ -866,6 +871,35 @@ async def tsidat_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     text, keyboard = await get_tsidat_content(dorm_id=dorm_id, user_id=user.id)
     await update.effective_message.reply_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
 
+async def roast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Deliver a witty, hilarious dorm roast & awards ceremony based on this week's cleaning."""
+    user = update.effective_user
+    chat = update.effective_chat
+    if not user or not chat:
+        return
+
+    is_group = chat.type in ("group", "supergroup")
+    dorm_id = chat.id if is_group else None
+
+    if chat.type == "private" and not await check_member_permission(user.id):
+        await reject_non_member(update)
+        return
+
+    dorm = await _resolve_target_dorm(dorm_id=dorm_id, user_id=user.id)
+    if not dorm:
+        await update.effective_message.reply_text("🧼 No active dorm schedule found.")
+        return
+
+    try:
+        from telegram.constants import ChatAction
+        await context.bot.send_chat_action(chat.id, ChatAction.TYPING)
+    except Exception:
+        pass
+
+    from services.ai_service import generate_dorm_roast
+    roast_text = await generate_dorm_roast(dorm["dorm_id"])
+    await update.effective_message.reply_text(roast_text, parse_mode=ParseMode.MARKDOWN)
+
 # ---------------------------------------------------------------------------
 # Interactive Inline Menu Callback Handler
 # ---------------------------------------------------------------------------
@@ -1071,6 +1105,8 @@ def register_command_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("tsidat", tsidat_command))
     application.add_handler(CommandHandler("tokens", tsidat_command))
     application.add_handler(CommandHandler("leaderboard", tsidat_command))
+    application.add_handler(CommandHandler("roast", roast_command))
+    application.add_handler(CommandHandler("awards", roast_command))
 
     application.add_handler(CallbackQueryHandler(menu_callback_handler, pattern=r"^menu_"))
 

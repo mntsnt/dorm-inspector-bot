@@ -211,3 +211,44 @@ async def ask_ai(user_prompt: str, dorm_id: int, user_name: str = "Roommate") ->
     except Exception as e:
         logger.error("AI API call error: %s", e)
         return "⚠️ Sorry, I encountered an error while thinking. Please try again!"
+
+async def generate_dorm_roast(dorm_id: int) -> str:
+    """Generate a witty, harmless, and hilarious university dorm roast & awards ceremony."""
+    default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+    key = await db.get_dorm_ai_key(dorm_id)
+    if not key and (dorm_id in (default_gid, getattr(config, "GROUP_ID", 0), 0)):
+        key = get_api_key()
+
+    dorm_context = await build_dorm_context(dorm_id)
+    roast_prompt = (
+        "Write a hilarious, good-natured, and culturally relatable university dorm weekly awards ceremony and roast "
+        "for the roommates based on this week's cleaning performance.\n"
+        "1. Announce 'Cleaners of the Week' with grand praise for the cleaners.\n"
+        "2. Deliver a witty, lighthearted roast about typical dorm life (e.g. piles of clothes on chairs, mysterious socks, dust bunnies under the bed, unwashed shai/coffee mugs, sleeping in until noon).\n"
+        "3. Hand out a silly fictional award (e.g. 'The Golden Mop Award', 'Most Creative Excuse Award', or 'Master of Broom Physics').\n"
+        "4. Mention Tsidat tokens earned.\n"
+        "Keep it fun, 2-3 short paragraphs, formatted with Markdown and emojis!"
+    )
+
+    if key:
+        try:
+            if key.startswith("sk-"):
+                return await query_openai(key, roast_prompt, dorm_context, "Dorm Reporter")
+            else:
+                return await query_gemini(key, roast_prompt, dorm_context, "Dorm Reporter")
+        except Exception as e:
+            logger.warning("AI roast generation failed (%s), falling back to witty template", e)
+
+    # Built-in hilarious fallback roast if AI key is offline or unconfigured
+    return (
+        "🏆 **DORM INSPECTOR WEEKLY AWARDS & ROAST** 🏆\n\n"
+        "🌟 **Cleaners of the Week:**\n"
+        "Shoutout to this week's cleaning warriors for facing the dust storms and surviving! "
+        "The floors actually shine, and the room smells less like socks and more like civilized living. 🍋✨ "
+        "Tsidat tokens have been proudly added to your balances!\n\n"
+        "🧽 **The Weekly Dorm Roast:**\n"
+        "To the roommate who swept dust *under the rug* hoping gravity would dissolve it: "
+        "you have been awarded the **'Master of Broom Physics 2026'** 🏅. "
+        "Also, whoever left the half-empty shai mug on the shelf — science called, your tea has developed its own ecosystem. 🫖🦠\n\n"
+        "Keep the dorm clean, guard your Tsidat tokens, and may the broom be with you! 🧹⚡"
+    )

@@ -193,6 +193,49 @@ def _init_db_sync(db_path: Optional[Path] = None) -> None:
             );
         """)
 
+        # 8. Peer Swap Requests Table (One-week temporary duty swaps)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS swap_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dorm_id INTEGER NOT NULL,
+                week_start TEXT NOT NULL,
+                requester_id INTEGER NOT NULL,
+                target_id INTEGER NOT NULL,
+                status TEXT DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+
+        # 9. Expenses Table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS expenses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dorm_id INTEGER NOT NULL,
+                payer_id INTEGER NOT NULL,
+                payer_name TEXT NOT NULL,
+                total_amount REAL NOT NULL,
+                split_amount REAL NOT NULL,
+                description TEXT NOT NULL,
+                status TEXT DEFAULT 'active',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+
+        # 10. Expense Splits Table (Per-Roommate Debtors)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS expense_splits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                expense_id INTEGER NOT NULL,
+                dorm_id INTEGER NOT NULL,
+                debtor_id INTEGER NOT NULL,
+                debtor_name TEXT NOT NULL,
+                amount REAL NOT NULL,
+                is_paid INTEGER DEFAULT 0,
+                paid_at TIMESTAMP,
+                FOREIGN KEY (expense_id) REFERENCES expenses(id)
+            );
+        """)
+
         conn.commit()
     logger.info("Database schema initialized and verified successfully at %s", target_path)
 
@@ -1250,3 +1293,174 @@ def _seed_default_dorm_for_group_sync(group_id: int) -> Dict[str, Any]:
 
 async def seed_default_dorm_for_group(group_id: int) -> Dict[str, Any]:
     return await asyncio.to_thread(_seed_default_dorm_for_group_sync, group_id)
+
+# ---------------------------------------------------------------------------
+# Peer Duty Swap Operations (One-Week Temporary Overrides)
+# ---------------------------------------------------------------------------
+def _create_swap_request_sync(dorm_id: int, week_start: str, requester_id: int, target_id: int) -> int:
+    with _get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE swap_requests SET status = 'cancelled'
+            WHERE dorm_id = ? AND week_start = ? AND requester_id = ? AND status = 'pending';
+        """, (dorm_id, week_start, requester_id))
+        cursor.execute("""
+            INSERT INTO swap_requests (dorm_id, week_start, requester_id, target_id, status)
+            VALUES (?, ?, ?, ?, 'pending');
+        """, (dorm_id, week_start, requester_id, target_id))
+        conn.commit()
+        return cursor.lastrowid
+
+async def create_swap_request(dorm_id: int, week_start: str, requester_id: int, target_id: int) -> int:
+    return await asyncio.to_thread(_create_swap_request_sync, dorm_id, week_start, requester_id, target_id)
+
+def _get_swap_request_sync(swap_id: int) -> Optional[Dict[str, Any]]:
+    with _get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM swap_requests WHERE id = ?", (swap_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+async def get_swap_request(swap_id: int) -> Optional[Dict[str, Any]]:
+    return await asyncio.to_thread(_get_swap_request_sync, swap_id)
+
+def _execute_swap_sync(swap_id: int) -> Tuple[bool, str]:
+    """Execute swap in weeks table for that specific week ONLY."""
+    with _get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM swap_requests WHERE id = ?", (swap_id,))
+        req = cursor.fetchone()
+        if not req or req["status"] != "pending":
+            return False, "Swap request is no longer pending."
+
+        dorm_id = req["dorm_id"]
+        week_start = req["week_start"]
+        requester_id = req["requester_id"]
+        target_id = req["target_id"]
+
+        cursor.execute("SELECT * FROM weeks WHERE dorm_id = ? AND week_start = ?", (dorm_id, week_start))
+        w = cursor.fetchone()
+        if not w:
+            return False, "Week record not found."
+
+        # Replace requester with target in cleaner1 or cleaner2 for this single week only
+        if w["cleaner1_id"] == requester_id:
+            cursor.execute("UPDATE weeks SET cleaner1_id = ? WHERE dorm_id = ? AND week_start = ?", (target_id, dorm_id, week_start))
+        elif w["cleaner2_id"] == requester_id:
+            cursor.execute("UPDATE weeks SET cleaner2_id = ? WHERE dorm_id = ? AND week_start = ?", (target_id, dorm_id, week_start))
+        else:
+            return False, "Requester is not currently assigned to clean this week."
+
+        cursor.execute("UPDATE swap_requests SET status = 'accepted' WHERE id = ?", (swap_id,))
+        conn.commit()
+        return True, "Swap completed successfully."
+
+async def execute_swap(swap_id: int) -> Tuple[bool, str]:
+    return await asyncio.to_thread(_execute_swap_sync, swap_id)
+
+def _decline_swap_sync(swap_id: int) -> bool:
+    with _get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE swap_requests SET status = 'declined' WHERE id = ? AND status = 'pending'", (swap_id,))
+        conn.commit()
+        return cursor.rowcount > 0
+
+async def decline_swap(swap_id: int) -> bool:
+    return await asyncio.to_thread(_decline_swap_sync, swap_id)
+
+# ---------------------------------------------------------------------------
+# Dorm Expense Splitter Operations
+# ---------------------------------------------------------------------------
+def _create_expense_sync(dorm_id: int, payer_id: int, payer_name: str, total_amount: float, description: str) -> Dict[str, Any]:
+    with _get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT user_id, name FROM dorm_members WHERE dorm_id = ?", (dorm_id,))
+        members = cursor.fetchall()
+        if not members:
+            members = [{"user_id": m.user_id, "name": m.name} for m in getattr(config, "MEMBERS", [])]
+
+        count = len(members) if members else 1
+        split_amount = round(total_amount / count, 2)
+
+        cursor.execute("""
+            INSERT INTO expenses (dorm_id, payer_id, payer_name, total_amount, split_amount, description, status)
+            VALUES (?, ?, ?, ?, ?, ?, 'active');
+        """, (dorm_id, payer_id, payer_name, total_amount, split_amount, description))
+        expense_id = cursor.lastrowid
+
+        for m in members:
+            uid = m["user_id"]
+            uname = m["name"]
+            if uid != payer_id:
+                cursor.execute("""
+                    INSERT INTO expense_splits (expense_id, dorm_id, debtor_id, debtor_name, amount, is_paid)
+                    VALUES (?, ?, ?, ?, ?, 0);
+                """, (expense_id, dorm_id, uid, uname, split_amount))
+
+        conn.commit()
+        return {
+            "expense_id": expense_id,
+            "total_amount": total_amount,
+            "split_amount": split_amount,
+            "count": count,
+            "description": description,
+            "payer_name": payer_name
+        }
+
+async def create_expense(dorm_id: int, payer_id: int, payer_name: str, total_amount: float, description: str) -> Dict[str, Any]:
+    return await asyncio.to_thread(_create_expense_sync, dorm_id, payer_id, payer_name, total_amount, description)
+
+def _get_active_expenses_sync(dorm_id: int) -> List[Dict[str, Any]]:
+    with _get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT e.*, 
+                   COUNT(s.id) AS total_debtors,
+                   SUM(CASE WHEN s.is_paid = 1 THEN 1 ELSE 0 END) AS paid_debtors
+            FROM expenses e
+            LEFT JOIN expense_splits s ON e.id = s.expense_id
+            WHERE e.dorm_id = ? AND e.status = 'active'
+            GROUP BY e.id
+            ORDER BY e.created_at DESC;
+        """, (dorm_id,))
+        expenses = [dict(r) for r in cursor.fetchall()]
+        for exp in expenses:
+            cursor.execute("""
+                SELECT debtor_id, debtor_name, amount, is_paid, paid_at
+                FROM expense_splits
+                WHERE expense_id = ?;
+            """, (exp["id"],))
+            exp["splits"] = [dict(r) for r in cursor.fetchall()]
+        return expenses
+
+async def get_active_expenses(dorm_id: int) -> List[Dict[str, Any]]:
+    return await asyncio.to_thread(_get_active_expenses_sync, dorm_id)
+
+def _settle_debtor_split_sync(dorm_id: int, debtor_id: int, expense_id: Optional[int] = None) -> int:
+    with _get_connection() as conn:
+        cursor = conn.cursor()
+        if expense_id is not None:
+            cursor.execute("""
+                UPDATE expense_splits
+                SET is_paid = 1, paid_at = CURRENT_TIMESTAMP
+                WHERE dorm_id = ? AND debtor_id = ? AND expense_id = ? AND is_paid = 0;
+            """, (dorm_id, debtor_id, expense_id))
+        else:
+            cursor.execute("""
+                UPDATE expense_splits
+                SET is_paid = 1, paid_at = CURRENT_TIMESTAMP
+                WHERE dorm_id = ? AND debtor_id = ? AND is_paid = 0;
+            """, (dorm_id, debtor_id))
+        settled_count = cursor.rowcount
+
+        cursor.execute("""
+            UPDATE expenses
+            SET status = 'settled'
+            WHERE dorm_id = ? AND status = 'active'
+              AND id NOT IN (SELECT expense_id FROM expense_splits WHERE is_paid = 0);
+        """, (dorm_id,))
+        conn.commit()
+        return settled_count
+
+async def settle_debtor_split(dorm_id: int, debtor_id: int, expense_id: Optional[int] = None) -> int:
+    return await asyncio.to_thread(_settle_debtor_split_sync, dorm_id, debtor_id, expense_id)
