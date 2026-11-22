@@ -183,6 +183,7 @@ async def setid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     old_id = member["user_id"]
+    config.update_member_id(member["name"], new_id)
     await db.update_member_id_in_db(old_id=old_id, new_id=new_id)
     await update.effective_message.reply_text(
         f"Updated **{member['name']}**'s ID to `{new_id}` (was `{old_id}`).",

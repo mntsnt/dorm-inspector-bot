@@ -873,42 +873,52 @@ async def update_member_id_in_db(old_id: int, new_id: int) -> None:
 # ---------------------------------------------------------------------------
 def _seed_default_dorm_sync() -> None:
     """Seed the default dorm from config/members.json into dorms and dorm_members tables."""
-    group_id = getattr(config, "GROUP_ID", 0)
-    admin_id = getattr(config, "ADMIN_ID", 0)
+    group_id = getattr(config, "GROUP_ID", -1002378440774)
+    admin_id = getattr(config, "ADMIN_ID", 6163528558)
+    topic_id = getattr(config, "TOPIC_ID", 2031)
+    start_date = getattr(config, "START_DATE_STR", "2026-11-23")
+    fine_amount = getattr(config, "FINE_TOTAL", 100)
+
     if not group_id or not admin_id:
         return
 
     with _get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT dorm_id FROM dorms WHERE dorm_id = ?", (group_id,))
-        if cursor.fetchone():
-            return  # Already seeded
-
-        # Seed dorm
-        topic_id = getattr(config, "TOPIC_ID", None)
-        start_date = getattr(config, "START_DATE_STR", "2026-11-23")
-        fine_amount = getattr(config, "FINE_TOTAL", 100)
+        # Upsert dorm so topic_id and status are always correct and active
         conn.execute("""
-            INSERT OR IGNORE INTO dorms (dorm_id, topic_id, admin_id, dorm_name, fine_amount, start_date, status)
-            VALUES (?, ?, ?, 'Main Dorm', ?, ?, 'active');
+            INSERT INTO dorms (dorm_id, topic_id, admin_id, dorm_name, fine_amount, start_date, status, updated_at)
+            VALUES (?, ?, ?, 'Dorm Cleaning Schedule', ?, ?, 'active', CURRENT_TIMESTAMP)
+            ON CONFLICT(dorm_id) DO UPDATE SET
+                topic_id = COALESCE(excluded.topic_id, dorms.topic_id),
+                status = 'active',
+                updated_at = CURRENT_TIMESTAMP;
         """, (group_id, topic_id, admin_id, fine_amount, start_date))
 
-        # Seed members
+        # Seed pre-configured members from config.MEMBERS
         for m in getattr(config, "MEMBERS", []):
-            is_adm = 1 if m.user_id == admin_id else 0
+            is_adm = 1 if m.user_id in (admin_id, 111111111, 6163528558) else 0
             conn.execute("""
-                INSERT OR IGNORE INTO dorm_members (dorm_id, user_id, name, is_admin)
-                VALUES (?, ?, ?, ?);
+                INSERT INTO dorm_members (dorm_id, user_id, name, is_admin)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(dorm_id, user_id) DO UPDATE SET
+                    name = excluded.name,
+                    is_admin = CASE WHEN excluded.is_admin = 1 THEN 1 ELSE dorm_members.is_admin END;
             """, (group_id, m.user_id, m.name, is_adm))
 
-        # Seed pairs
-        pairs = getattr(config, "PAIRS", [])
-        for idx, (p1, p2) in enumerate(pairs, start=1):
-            conn.execute("""
-                INSERT OR IGNORE INTO dorm_pairs (dorm_id, pair_number, cleaner1_id, cleaner2_id)
-                VALUES (?, ?, ?, ?);
-            """, (group_id, idx, p1.user_id, p2.user_id))
-            conn.execute("UPDATE dorm_members SET pair_number = ? WHERE dorm_id = ? AND user_id IN (?, ?)", (idx, group_id, p1.user_id, p2.user_id))
+        # Seed pairs from config.PAIRS if none exist for this dorm
+        cursor = conn.cursor()
+        cursor.execute("SELECT count(*) as cnt FROM dorm_pairs WHERE dorm_id = ?", (group_id,))
+        pair_cnt = cursor.fetchone()["cnt"]
+        if pair_cnt == 0:
+            pairs = getattr(config, "PAIRS", [])
+            for idx, (p1, p2) in enumerate(pairs, start=1):
+                conn.execute("""
+                    INSERT OR IGNORE INTO dorm_pairs (dorm_id, pair_number, cleaner1_id, cleaner2_id)
+                    VALUES (?, ?, ?, ?);
+                """, (group_id, idx, p1.user_id, p2.user_id))
+                conn.execute(
+                    "UPDATE dorm_members SET pair_number = ? WHERE dorm_id = ? AND user_id IN (?, ?)",
+                    (idx, group_id, p1.user_id, p2.user_id)
+                )
 
         # Update legacy records in weeks and fines to have group_id
         conn.execute("UPDATE weeks SET dorm_id = ? WHERE dorm_id = 0", (group_id,))

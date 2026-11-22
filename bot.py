@@ -89,11 +89,10 @@ async def post_init(application: Application) -> None:
     except Exception as e:
         logger.warning("Could not fetch bot information in post_init: %s", e)
 
-    # Automatically seed the default dorm if configured in environment
-    if getattr(config, "GROUP_ID", 0) and getattr(config, "ADMIN_ID", 0):
-        await db.seed_default_dorm()
-        logger.info("Default Dorm Group ID: %s (Topic ID: %s)", config.GROUP_ID, config.TOPIC_ID if config.TOPIC_ID is not None else "None/General")
-        logger.info("Default Admin User ID: %s", config.ADMIN_ID)
+    # Automatically seed the default dorm so it is always active
+    await db.seed_default_dorm()
+    logger.info("Default Dorm Group ID: %s (Topic ID: %s)", config.GROUP_ID, config.TOPIC_ID if config.TOPIC_ID is not None else "None/General")
+    logger.info("Default Admin User ID: %s", config.ADMIN_ID)
 
     active_dorms = await db.get_all_active_dorms()
     logger.info("Universal Multi-Tenant Platform active with %d registered dorm(s).", len(active_dorms))

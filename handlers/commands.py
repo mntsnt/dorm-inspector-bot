@@ -445,6 +445,24 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 )
                 return
 
+    # Auto-claim placeholder member if first name, username, or arg matches (e.g. Bilisuma with placeholder ID 111111111)
+    if not await check_member_permission(user.id):
+        fname = (user.first_name or "").strip().lower()
+        uname = (user.username or "").strip().lower()
+        for m in getattr(config, "MEMBERS", []):
+            if m.user_id == 111111111:
+                m_name = m.name.strip().lower()
+                is_claim_arg = (
+                    context.args
+                    and len(context.args) > 0
+                    and context.args[0].lower() in (f"claim_{m_name}", m_name)
+                )
+                if m_name in (fname, uname) or is_claim_arg:
+                    logger.info("Auto-linking placeholder member %s to user ID %s", m.name, user.id)
+                    config.update_member_id(m.name, user.id)
+                    await db.update_member_id_in_db(old_id=m.user_id, new_id=user.id)
+                    break
+
     # Normal /start verification
     if not await check_member_permission(user.id):
         await reject_non_member(update)
@@ -730,12 +748,57 @@ async def reply_keyboard_text_handler(update: Update, context: ContextTypes.DEFA
         await start_command(update, context)
 
 # ---------------------------------------------------------------------------
+# Roommate Slot Claim Command
+# ---------------------------------------------------------------------------
+async def claim_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Allow a roommate with a placeholder ID (e.g. Bilisuma) to link their Telegram account."""
+    user = update.effective_user
+    if not user:
+        return
+
+    if not context.args or len(context.args) < 1:
+        await update.effective_message.reply_text(
+            "Usage: `/claim <YourName>`\nExample: `/claim Bilisuma`",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    name_input = context.args[0].strip().lower()
+    target_member = None
+    for m in getattr(config, "MEMBERS", []):
+        if m.user_id == 111111111 and m.name.strip().lower() == name_input:
+            target_member = m
+            break
+
+    if not target_member:
+        await update.effective_message.reply_text(
+            f"No unlinked member found matching '{context.args[0]}'. "
+            "If your name is already claimed or registered, send /start to see your menu.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    old_id = target_member.user_id
+    config.update_member_id(target_member.name, user.id)
+    await db.update_member_id_in_db(old_id=old_id, new_id=user.id)
+    logger.info("User %s (%s) claimed member slot %s", user.first_name, user.id, target_member.name)
+
+    await update.effective_message.reply_text(
+        f"🎉 Welcome **{target_member.name}**!\n\n"
+        f"Your Telegram account (ID: `{user.id}`) is now linked to your dorm cleaning schedule.\n"
+        "Tap below to view your schedule and status.",
+        reply_markup=get_main_menu_inline_keyboard(),
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+# ---------------------------------------------------------------------------
 # Handler Registration
 # ---------------------------------------------------------------------------
 def register_command_handlers(application: Application) -> None:
     """Attach general command, inline callback, and reply keyboard handlers."""
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("menu", start_command))
+    application.add_handler(CommandHandler("claim", claim_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("status", status_command))
     application.add_handler(CommandHandler("schedule", schedule_command))

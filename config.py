@@ -186,6 +186,13 @@ BOT_TOKEN = (
     or ""
 ).strip().strip('"').strip("'")
 
+# Default settings for the saved Main Dorm
+DEFAULT_GROUP_ID = -1002378440774
+DEFAULT_TOPIC_ID = 2031
+DEFAULT_ADMIN_ID = 6163528558
+DEFAULT_START_DATE = "2026-11-23"
+DEFAULT_FINE_TOTAL = 100
+
 raw_group_id = os.getenv("GROUP_ID", "").strip().strip('"').strip("'")
 raw_admin_id = os.getenv("ADMIN_ID", "").strip().strip('"').strip("'")
 raw_start_date = os.getenv("START_DATE", "").strip().strip('"').strip("'")
@@ -195,28 +202,28 @@ if not BOT_TOKEN:
     logger.warning("BOT_TOKEN is not set in environment or .env file.")
 
 try:
-    GROUP_ID = int(raw_group_id) if raw_group_id else 0
+    GROUP_ID = int(raw_group_id) if raw_group_id else DEFAULT_GROUP_ID
 except (ValueError, TypeError):
-    logger.warning("GROUP_ID is not a valid integer ('%s'). Defaulting to 0.", raw_group_id)
-    GROUP_ID = 0
+    logger.warning("GROUP_ID is not a valid integer ('%s'). Defaulting to %s.", raw_group_id, DEFAULT_GROUP_ID)
+    GROUP_ID = DEFAULT_GROUP_ID
 
 try:
-    TOPIC_ID = int(raw_topic_id) if raw_topic_id else None
+    TOPIC_ID = int(raw_topic_id) if raw_topic_id else DEFAULT_TOPIC_ID
 except (ValueError, TypeError):
-    TOPIC_ID = None
+    TOPIC_ID = DEFAULT_TOPIC_ID
 
 try:
-    ADMIN_ID = int(raw_admin_id) if raw_admin_id else 0
+    ADMIN_ID = int(raw_admin_id) if raw_admin_id else DEFAULT_ADMIN_ID
 except (ValueError, TypeError):
-    logger.warning("ADMIN_ID is not a valid integer ('%s'). Defaulting to 0.", raw_admin_id)
-    ADMIN_ID = 0
+    logger.warning("ADMIN_ID is not a valid integer ('%s'). Defaulting to %s.", raw_admin_id, DEFAULT_ADMIN_ID)
+    ADMIN_ID = DEFAULT_ADMIN_ID
 
 def get_monday_of_week(d: datetime.date) -> datetime.date:
     """Return the Monday of the week containing date d."""
     return d - datetime.timedelta(days=d.weekday())
 
 if not raw_start_date:
-    START_DATE_STR = "2026-11-23"  # Monday, November 23 (Announcement Mon Nov 23, Cleaners on Fri Nov 27)
+    START_DATE_STR = DEFAULT_START_DATE  # Monday, November 23 (Announcement Mon Nov 23, Cleaners on Fri Nov 27)
 else:
     START_DATE_STR = raw_start_date
 
