@@ -571,5 +571,124 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(w_eng_w2.cleaner1_name, "Eng_Almaz")
         self.assertEqual(w_eng_w2.cleaner2_name, "Eng_Tigist")
 
+    async def test_tsidat_token_system(self):
+        """Verify adding Tsidat tokens, querying balances, and leaderboard ordering."""
+        await db.init_db()
+        test_dorm_id = -1005555555
+        await db.create_or_update_dorm(dorm_id=test_dorm_id, admin_id=101, dorm_name="Tsidat Test Dorm")
+        await db.add_dorm_member(test_dorm_id, 101, "Member_A")
+        await db.add_dorm_member(test_dorm_id, 102, "Member_B")
+        await db.add_dorm_member(test_dorm_id, 103, "Member_C")
+
+        # Initial balances should be 0
+        bal_a = await db.get_tsidat_balance(test_dorm_id, 101)
+        self.assertEqual(bal_a, 0)
+
+        # Award tokens
+        new_bal_a = await db.add_tsidat_tokens(test_dorm_id, 101, 25)
+        self.assertEqual(new_bal_a, 25)
+
+        new_bal_b = await db.add_tsidat_tokens(test_dorm_id, 102, 15)
+        self.assertEqual(new_bal_b, 15)
+
+        # Add more tokens to A
+        updated_bal_a = await db.add_tsidat_tokens(test_dorm_id, 101, 5)
+        self.assertEqual(updated_bal_a, 30)
+
+        # Verify leaderboard ranking
+        leaderboard = await db.get_tsidat_leaderboard(test_dorm_id)
+        self.assertEqual(len(leaderboard), 3)
+        self.assertEqual(leaderboard[0]["user_id"], 101)
+        self.assertEqual(leaderboard[0]["tsidat_balance"], 30)
+        self.assertEqual(leaderboard[1]["user_id"], 102)
+        self.assertEqual(leaderboard[1]["tsidat_balance"], 15)
+        self.assertEqual(leaderboard[2]["user_id"], 103)
+        self.assertEqual(leaderboard[2]["tsidat_balance"], 0)
+
+    async def test_five_star_inspection_review_persistence(self):
+        """Verify rating (1-5 stars) and review text storage in weeks table and history."""
+        await db.init_db()
+        test_dorm_id = -1007777777
+        await db.create_or_update_dorm(dorm_id=test_dorm_id, admin_id=201, dorm_name="Review Test Dorm")
+        await db.add_dorm_member(test_dorm_id, 201, "Reviewer")
+        await db.add_dorm_member(test_dorm_id, 202, "Cleaner_1")
+        await db.add_dorm_member(test_dorm_id, 203, "Cleaner_2")
+
+        week_record = await db.get_or_create_week(
+            week_start="2026-11-23",
+            week_number=1,
+            cleaner1_id=202,
+            cleaner2_id=203,
+            eligible_approver_ids=[201],
+            dorm_id=test_dorm_id
+        )
+        self.assertIsNotNone(week_record)
+
+        # Update with 5-star rating and review comment
+        await db.update_photo_status(
+            week_start="2026-11-23",
+            status="approved",
+            final_status="completed",
+            dorm_id=test_dorm_id,
+            rating=5,
+            review_text="Sparkling clean! 5-star hotel standard. 🌟✨"
+        )
+
+        updated = await db.get_week("2026-11-23", dorm_id=test_dorm_id)
+        self.assertEqual(updated["final_status"], "completed")
+        self.assertEqual(updated["photo_status"], "approved")
+        self.assertEqual(updated["rating"], 5)
+        self.assertEqual(updated["review_text"], "Sparkling clean! 5-star hotel standard. 🌟✨")
+
+        # History should include the rating
+        history = await db.get_history(dorm_id=test_dorm_id)
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["rating"], 5)
+
+    async def test_tsidat_content_generator(self):
+        """Verify get_tsidat_content produces formatted markdown with leaderboard."""
+        from handlers import commands
+        await db.init_db()
+        test_dorm_id = -1008888888
+        await db.create_or_update_dorm(dorm_id=test_dorm_id, admin_id=301, dorm_name="Leaderboard Dorm")
+        await db.add_dorm_member(test_dorm_id, 301, "Top_Cleaner")
+        await db.add_tsidat_tokens(test_dorm_id, 301, 50)
+
+        content, kb = await commands.get_tsidat_content(dorm_id=test_dorm_id, user_id=301)
+        self.assertIn("Tsidat Token Leaderboard", content)
+        self.assertIn("Top_Cleaner", content)
+        self.assertIn("50 Tsidat", content)
+        self.assertIn("How to earn Tsidat tokens", content)
+
+    async def test_spin_command_execution(self):
+        """Verify spin_command randomly picks a registered roommate and supports custom chores."""
+        from handlers import commands
+        from unittest.mock import AsyncMock, MagicMock
+
+        await db.init_db()
+        test_dorm_id = -1009999999
+        await db.create_or_update_dorm(dorm_id=test_dorm_id, admin_id=401, dorm_name="Roulette Dorm")
+        await db.add_dorm_member(test_dorm_id, 401, "Spin_User_A")
+        await db.add_dorm_member(test_dorm_id, 402, "Spin_User_B")
+
+        # Mock update and context
+        update = MagicMock()
+        update.effective_user.id = 401
+        update.effective_user.first_name = "Spin_User_A"
+        update.effective_chat.id = test_dorm_id
+        update.effective_chat.type = "supergroup"
+        update.effective_message.reply_text = AsyncMock()
+
+        context = MagicMock()
+        context.args = ["wash", "dishes"]
+
+        await commands.spin_command(update, context)
+
+        update.effective_message.reply_text.assert_called_once()
+        sent_text = update.effective_message.reply_text.call_args[0][0]
+        self.assertIn("DORM ROULETTE", sent_text)
+        self.assertIn("wash dishes", sent_text)
+        self.assertTrue("Spin_User_A" in sent_text or "Spin_User_B" in sent_text)
+
 if __name__ == "__main__":
     unittest.main()

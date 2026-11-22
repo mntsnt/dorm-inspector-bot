@@ -7,6 +7,7 @@ Seamlessly handles both group-scoped commands and private DM interactions.
 
 from datetime import datetime, timedelta
 import logging
+import random
 from typing import Any, Dict, List, Optional, Tuple
 
 from telegram import (
@@ -101,7 +102,7 @@ async def _resolve_target_dorm(dorm_id: Optional[int] = None, user_id: Optional[
 # Keyboards & Navigation Builders
 # ---------------------------------------------------------------------------
 def get_main_menu_inline_keyboard() -> InlineKeyboardMarkup:
-    """Main menu 6-button grid for one-tap navigation."""
+    """Main menu grid for one-tap navigation."""
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("Status", callback_data="menu_status"),
@@ -114,6 +115,10 @@ def get_main_menu_inline_keyboard() -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton("History", callback_data="menu_history"),
             InlineKeyboardButton("Help", callback_data="menu_help"),
+        ],
+        [
+            InlineKeyboardButton("🪙 Tsidat Tokens", callback_data="menu_tsidat"),
+            InlineKeyboardButton("🎲 Dorm Roulette", callback_data="menu_spin"),
         ],
     ])
 
@@ -215,8 +220,12 @@ async def get_status_content(user_id: Optional[int] = None, dorm_id: Optional[in
         check_sent = week_record.get("check_sent", 0)
         fine_amount = dorm.get("fine_amount", 100)
 
+        rating = week_record.get("rating")
+        review_text = week_record.get("review_text")
+        rating_suffix = f" (⭐⭐⭐⭐⭐ 5/5 Stars)" if rating == 5 else (f" ({rating}★ Stars)" if rating else "")
+
         if final_status == "completed":
-            duty_state = "Cleaned and approved. No fines."
+            duty_state = f"Cleaned and approved{rating_suffix}. No fines."
         elif final_status == "fined":
             duty_state = f"Not cleaned. Fined {fine_amount} ETB total."
         elif photo_status == "approved":
@@ -377,8 +386,10 @@ async def get_history_content(dorm_id: Optional[int] = None, user_id: Optional[i
         c1_name = members_by_id.get(r["cleaner1_id"], f"ID {r['cleaner1_id']}")
         c2_name = members_by_id.get(r["cleaner2_id"], f"ID {r['cleaner2_id']}")
         f_status = r.get("final_status", "pending")
+        rating = r.get("rating")
+        stars_badge = f" ({rating}★)" if rating else ""
         if f_status == "completed":
-            badge = "Completed"
+            badge = f"Cleaned{stars_badge}"
         elif f_status == "fined":
             badge = "Fined"
         else:
@@ -404,7 +415,8 @@ def get_help_content() -> Tuple[str, InlineKeyboardMarkup]:
         "How Dorm Inspector Bot Works:\n\n"
         "• Monday 8:00 AM: Duty is announced (cleaners & approver)\n"
         "• Mon – Fri: Cleaners clean, tap 'We cleaned', and send a photo\n"
-        "• Photo review: Approver approves or rejects the photo\n"
+        "• Photo review: Approver reviews photo & gives 1 to 5 Star Inspection Rating ⭐\n"
+        "• Tsidat Tokens: Cleaners earn up to +25 Tsidat tokens for good cleaning!\n"
         "• Thursday 6:00 PM: Reminder if cleaning is not yet completed\n"
         "• Friday 8:00 PM: Check time. Cleaners confirm and approver gives final decision\n"
         "• Fines: Recorded in ledger if not cleaned\n"
@@ -413,8 +425,10 @@ def get_help_content() -> Tuple[str, InlineKeyboardMarkup]:
         "• /status: Check current week's cleaners and status\n"
         "• /schedule: View upcoming 4 weeks\n"
         "• /fines: See unpaid fines ledger\n"
-        "• /history: See past week records\n"
-        "• /members: See who is connected"
+        "• /history: See past week records & 5-star reviews\n"
+        "• /members: See who is connected\n"
+        "• /spin [task]: Spin Dorm Roulette to pick a roommate for a chore!\n"
+        "• /tsidat: View Tsidat token leaderboard & balances"
     )
     return help_text, keyboard
 
@@ -438,6 +452,49 @@ async def get_done_content(user_id: int, dorm_id: Optional[int] = None) -> Tuple
         "4. The approver will review and confirm!"
     )
     return msg, keyboard
+
+async def get_tsidat_content(dorm_id: Optional[int] = None, user_id: Optional[int] = None) -> Tuple[str, InlineKeyboardMarkup]:
+    """Generate Tsidat token leaderboard text and navigation buttons."""
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("Status", callback_data="menu_status"),
+            InlineKeyboardButton("Schedule", callback_data="menu_schedule"),
+        ],
+        [
+            InlineKeyboardButton("🎲 Dorm Roulette", callback_data="menu_spin"),
+            InlineKeyboardButton("Main Menu", callback_data="menu_home"),
+        ]
+    ])
+
+    if user_id is not None and dorm_id is not None:
+        member = await db.get_dorm_member(dorm_id, user_id)
+        if not member:
+            return "You are not a member of this dorm.", keyboard
+
+    dorm = await _resolve_target_dorm(dorm_id=dorm_id, user_id=user_id)
+    if not dorm:
+        return "No active cleaning schedule found. Send /setup to configure your dorm.", keyboard
+
+    resolved_id = dorm["dorm_id"]
+    leaderboard = await db.get_tsidat_leaderboard(resolved_id)
+    d_name = dorm.get("dorm_name") or "Dorm Cleaning Schedule"
+    medals = ["🥇", "🥈", "🥉"]
+
+    lines = [f"🪙 **{d_name} — Tsidat Token Leaderboard** 🪙\n"]
+    if not leaderboard:
+        lines.append("No Tsidat tokens awarded yet.")
+    else:
+        for idx, entry in enumerate(leaderboard):
+            rank_icon = medals[idx] if idx < len(medals) else "•"
+            bal = entry.get("tsidat_balance", 0)
+            lines.append(f"{rank_icon} **{entry['name']}**: {bal} Tsidat")
+
+    lines.append(
+        "\n💡 **How to earn Tsidat tokens (ጸዳት):**\n"
+        "• Clean on schedule & earn 1 to 5 star ratings (up to **+25 Tsidat**).\n"
+        "• Approvers earn **+5 Tsidat** for completing room inspections!"
+    )
+    return "\n".join(lines), keyboard
 
 # ---------------------------------------------------------------------------
 # Command Handlers
@@ -735,6 +792,80 @@ async def members_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     await update.effective_message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
 
+async def spin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Spin Dorm Roulette to pick a random roommate for a chore or decision."""
+    user = update.effective_user
+    chat = update.effective_chat
+    if not user or not chat:
+        return
+
+    is_group = chat.type in ("group", "supergroup")
+    dorm_id = chat.id if is_group else None
+
+    if chat.type == "private" and not await check_member_permission(user.id):
+        await reject_non_member(update)
+        return
+
+    dorm = await _resolve_target_dorm(dorm_id=dorm_id, user_id=user.id)
+    if not dorm:
+        if is_group:
+            await update.effective_message.reply_text(
+                "🧼 This group doesn't have an active cleaning schedule yet. Send `/setup` to initialize.",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        else:
+            await reject_non_member(update)
+        return
+
+    target_dorm_id = dorm["dorm_id"]
+    members = await db.get_dorm_members(target_dorm_id)
+    if not members:
+        members = config.MEMBERS
+
+    if context.args and len(context.args) > 0:
+        task_title = " ".join(context.args).strip()
+    else:
+        random_chores = [
+            "Take out the dorm trash 🗑️",
+            "Turn off the room lights 💡",
+            "Buy bread (dabo) for the room 🥖",
+            "Make hot tea / coffee for the dorm ☕",
+            "Sweep the doorway and corridor 🧹",
+            "Refill the drinking water container 💧",
+            "Close the room windows 🪟",
+            "Wipe down the shared table 🧽",
+        ]
+        task_title = random.choice(random_chores)
+
+    chosen = random.choice(members)
+    chosen_name = chosen["name"] if isinstance(chosen, dict) else chosen.name
+    caller_name = user.first_name or "A roommate"
+
+    roulette_msg = (
+        f"🎲 **DORM ROULETTE** 🎲\n\n"
+        f"Spin requested by: **{caller_name}**\n"
+        f"Chore / Decision: **{task_title}**\n\n"
+        f"Rolling the roommate wheel... 🔄\n\n"
+        f"👉 The chosen roommate is: 🎯 **{chosen_name}**! 🎯\n\n"
+        f"No excuses, **{chosen_name}** — go get it done! ⚡"
+    )
+    await update.effective_message.reply_text(roulette_msg, parse_mode=ParseMode.MARKDOWN)
+
+async def tsidat_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show Tsidat token leaderboard and balances."""
+    user = update.effective_user
+    chat = update.effective_chat
+    if not user or not chat:
+        return
+
+    if chat.type == "private" and not await check_member_permission(user.id):
+        await reject_non_member(update)
+        return
+
+    dorm_id = chat.id if chat.type in ("group", "supergroup") else None
+    text, keyboard = await get_tsidat_content(dorm_id=dorm_id, user_id=user.id)
+    await update.effective_message.reply_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+
 # ---------------------------------------------------------------------------
 # Interactive Inline Menu Callback Handler
 # ---------------------------------------------------------------------------
@@ -783,6 +914,40 @@ async def menu_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
         text, keyboard = await get_history_content(dorm_id=dorm_id, user_id=user.id)
     elif action == "menu_help":
         text, keyboard = get_help_content()
+    elif action == "menu_tsidat":
+        text, keyboard = await get_tsidat_content(dorm_id=dorm_id, user_id=user.id)
+    elif action == "menu_spin":
+        members = await db.get_dorm_members(dorm_id)
+        if not members:
+            members = config.MEMBERS
+        random_chores = [
+            "Take out the dorm trash 🗑️",
+            "Turn off the room lights 💡",
+            "Buy bread (dabo) for the room 🥖",
+            "Make hot tea / coffee for the dorm ☕",
+            "Sweep the doorway and corridor 🧹",
+            "Refill the drinking water container 💧",
+            "Close the room windows 🪟",
+            "Wipe down the shared table 🧽",
+        ]
+        task_title = random.choice(random_chores)
+        chosen = random.choice(members)
+        chosen_name = chosen["name"] if isinstance(chosen, dict) else chosen.name
+        text = (
+            f"🎲 **DORM ROULETTE** 🎲\n\n"
+            f"Chore / Decision: **{task_title}**\n\n"
+            f"👉 The chosen roommate is: 🎯 **{chosen_name}**! 🎯\n\n"
+            f"_(Tip: In chat, type `/spin <chore>` to pick for any specific task!)_"
+        )
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🎲 Spin Again", callback_data="menu_spin"),
+                InlineKeyboardButton("🪙 Tsidat Tokens", callback_data="menu_tsidat"),
+            ],
+            [
+                InlineKeyboardButton("Main Menu", callback_data="menu_home"),
+            ]
+        ])
     else:
         return
 
@@ -834,6 +999,10 @@ async def reply_keyboard_text_handler(update: Update, context: ContextTypes.DEFA
         await history_command(update, context)
     elif "member" in text_lower:
         await members_command(update, context)
+    elif "tsidat" in text_lower or "token" in text_lower or "leaderboard" in text_lower:
+        await tsidat_command(update, context)
+    elif "spin" in text_lower or "roulette" in text_lower:
+        await spin_command(update, context)
     elif "help" in text_lower or "guide" in text_lower:
         await help_command(update, context)
     elif "main menu" in text_lower or "menu" in text_lower or "home" in text_lower:
@@ -897,12 +1066,17 @@ def register_command_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("fines", fines_command))
     application.add_handler(CommandHandler("history", history_command))
     application.add_handler(CommandHandler("members", members_command))
+    application.add_handler(CommandHandler("spin", spin_command))
+    application.add_handler(CommandHandler("roulette", spin_command))
+    application.add_handler(CommandHandler("tsidat", tsidat_command))
+    application.add_handler(CommandHandler("tokens", tsidat_command))
+    application.add_handler(CommandHandler("leaderboard", tsidat_command))
 
     application.add_handler(CallbackQueryHandler(menu_callback_handler, pattern=r"^menu_"))
 
     application.add_handler(
         MessageHandler(
-            filters.TEXT & ~filters.COMMAND & filters.Regex(r"(?i)^(Status|Schedule|Submit Cleaning|Fines|History|Help|Main Menu|Members|👥 Members|📋 Status|📅 Schedule|🧼 Submit Cleaning|💸 Fines|📜 History|ℹ️ Help|🏠 Main Menu)$"),
+            filters.TEXT & ~filters.COMMAND & filters.Regex(r"(?i)^(Status|Schedule|Submit Cleaning|Fines|History|Help|Main Menu|Members|Tsidat|Tokens|Spin|Roulette|👥 Members|📋 Status|📅 Schedule|🧼 Submit Cleaning|💸 Fines|📜 History|ℹ️ Help|🏠 Main Menu|🪙 Tsidat Tokens|🎲 Dorm Roulette)$"),
             reply_keyboard_text_handler
         )
     )

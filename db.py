@@ -86,6 +86,7 @@ def _init_db_sync(db_path: Optional[Path] = None) -> None:
                 username TEXT,
                 is_admin INTEGER DEFAULT 0,
                 pair_number INTEGER,
+                tsidat_balance INTEGER DEFAULT 0,
                 joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (dorm_id, user_id)
             );
@@ -121,6 +122,8 @@ def _init_db_sync(db_path: Optional[Path] = None) -> None:
                 photo_submitted_at TIMESTAMP,
                 photo_submitted_by INTEGER,
                 photo_status TEXT DEFAULT 'none',
+                rating INTEGER DEFAULT 5,
+                review_text TEXT,
                 check_sent INTEGER DEFAULT 0,
                 cleaner1_response TEXT,
                 cleaner2_response TEXT,
@@ -135,11 +138,21 @@ def _init_db_sync(db_path: Optional[Path] = None) -> None:
             );
         """)
 
-        # Migration check: Ensure dorm_id exists on legacy weeks table
+        # Migration check: Ensure dorm_id, rating, review_text exist on weeks table
         cursor.execute("PRAGMA table_info(weeks);")
         week_cols = [r["name"] for r in cursor.fetchall()]
         if "dorm_id" not in week_cols:
             cursor.execute("ALTER TABLE weeks ADD COLUMN dorm_id INTEGER DEFAULT 0;")
+        if "rating" not in week_cols:
+            cursor.execute("ALTER TABLE weeks ADD COLUMN rating INTEGER DEFAULT 5;")
+        if "review_text" not in week_cols:
+            cursor.execute("ALTER TABLE weeks ADD COLUMN review_text TEXT;")
+
+        # Migration check: Ensure tsidat_balance exists on dorm_members table
+        cursor.execute("PRAGMA table_info(dorm_members);")
+        dm_cols = [r["name"] for r in cursor.fetchall()]
+        if "tsidat_balance" not in dm_cols:
+            cursor.execute("ALTER TABLE dorm_members ADD COLUMN tsidat_balance INTEGER DEFAULT 0;")
 
         # 6. Fines Ledger Table (Multi-tenant fines ledger)
         cursor.execute("""
@@ -646,7 +659,14 @@ async def submit_photo(week_start: str, file_id: str, user_id: int, dorm_id: Opt
     resolved_id = _resolve_dorm_id(dorm_id)
     await asyncio.to_thread(_submit_photo_sync, week_start, file_id, user_id, resolved_id)
 
-def _update_photo_status_sync(week_start: str, status: str, final_status: Optional[str] = None, dorm_id: int = 0) -> None:
+def _update_photo_status_sync(
+    week_start: str,
+    status: str,
+    final_status: Optional[str] = None,
+    dorm_id: int = 0,
+    rating: Optional[int] = None,
+    review_text: Optional[str] = None
+) -> None:
     now_iso = config.get_current_time().isoformat()
     with _get_connection() as conn:
         if final_status:
@@ -654,10 +674,12 @@ def _update_photo_status_sync(week_start: str, status: str, final_status: Option
                 UPDATE weeks
                 SET photo_status = ?,
                     final_status = ?,
+                    rating = COALESCE(?, rating, 5),
+                    review_text = COALESCE(?, review_text),
                     approver_final_decision = CASE WHEN ? = 'approved' THEN 'cleaned' ELSE approver_final_decision END,
                     approver_decided_at = ?
                 WHERE dorm_id = ? AND week_start = ?;
-            """, (status, final_status, status, now_iso, dorm_id, week_start))
+            """, (status, final_status, rating, review_text, status, now_iso, dorm_id, week_start))
         else:
             conn.execute("""
                 UPDATE weeks
@@ -666,9 +688,16 @@ def _update_photo_status_sync(week_start: str, status: str, final_status: Option
             """, (status, dorm_id, week_start))
         conn.commit()
 
-async def update_photo_status(week_start: str, status: str, final_status: Optional[str] = None, dorm_id: Optional[int] = None) -> None:
+async def update_photo_status(
+    week_start: str,
+    status: str,
+    final_status: Optional[str] = None,
+    dorm_id: Optional[int] = None,
+    rating: Optional[int] = None,
+    review_text: Optional[str] = None
+) -> None:
     resolved_id = _resolve_dorm_id(dorm_id)
-    await asyncio.to_thread(_update_photo_status_sync, week_start, status, final_status, resolved_id)
+    await asyncio.to_thread(_update_photo_status_sync, week_start, status, final_status, resolved_id, rating, review_text)
 
 def _set_check_sent_sync(week_start: str, timeout_deadline_iso: str, dorm_id: int = 0) -> None:
     with _get_connection() as conn:
@@ -711,20 +740,37 @@ async def record_cleaner_response(week_start: str, cleaner_id: int, answer: str,
     resolved_id = _resolve_dorm_id(dorm_id)
     await asyncio.to_thread(_record_cleaner_response_sync, week_start, cleaner_id, answer, resolved_id)
 
-def _record_approver_decision_sync(week_start: str, decision: str, final_status: str, dorm_id: int = 0) -> None:
+def _record_approver_decision_sync(
+    week_start: str,
+    decision: str,
+    final_status: str,
+    dorm_id: int = 0,
+    rating: Optional[int] = None,
+    review_text: Optional[str] = None
+) -> None:
     now_iso = config.get_current_time().isoformat()
     with _get_connection() as conn:
         conn.execute("""
             UPDATE weeks
             SET approver_final_decision = ?,
                 approver_decided_at = ?,
-                final_status = ?
+                final_status = ?,
+                rating = COALESCE(?, rating, 5),
+                review_text = COALESCE(?, review_text)
             WHERE dorm_id = ? AND week_start = ?;
-        """, (decision, now_iso, final_status, dorm_id, week_start))
+        """, (decision, now_iso, final_status, rating, review_text, dorm_id, week_start))
         conn.commit()
 
-async def record_approver_decision(week_start: str, decision: str, final_status: str, dorm_id: Optional[int] = None) -> None:
+async def record_approver_decision(
+    week_start: str,
+    decision: str,
+    final_status: str,
+    dorm_id: Optional[int] = None,
+    rating: Optional[int] = None,
+    review_text: Optional[str] = None
+) -> None:
     resolved_id = _resolve_dorm_id(dorm_id)
+    await asyncio.to_thread(_record_approver_decision_sync, week_start, decision, final_status, resolved_id, rating, review_text)
     await asyncio.to_thread(_record_approver_decision_sync, week_start, decision, final_status, resolved_id)
 
 def _mark_timeout_processed_sync(week_start: str, decision: str, final_status: str, dorm_id: int = 0) -> None:
@@ -886,6 +932,65 @@ def _set_setting_sync(key: str, value: str) -> None:
 
 async def set_setting(key: str, value: str) -> None:
     await asyncio.to_thread(_set_setting_sync, key, value)
+
+# ---------------------------------------------------------------------------
+# Tsidat Token Operations
+# ---------------------------------------------------------------------------
+def _add_tsidat_tokens_sync(dorm_id: int, user_id: int, amount: int) -> int:
+    """Award Tsidat tokens to a dorm member and return their new balance."""
+    with _get_connection() as conn:
+        conn.execute("""
+            UPDATE dorm_members
+            SET tsidat_balance = COALESCE(tsidat_balance, 0) + ?
+            WHERE dorm_id = ? AND user_id = ?;
+        """, (amount, dorm_id, user_id))
+        conn.commit()
+        cursor = conn.cursor()
+        cursor.execute("SELECT tsidat_balance FROM dorm_members WHERE dorm_id = ? AND user_id = ?", (dorm_id, user_id))
+        row = cursor.fetchone()
+        return row["tsidat_balance"] if row and row["tsidat_balance"] is not None else amount
+
+async def add_tsidat_tokens(dorm_id: int, user_id: int, amount: int) -> int:
+    return await asyncio.to_thread(_add_tsidat_tokens_sync, dorm_id, user_id, amount)
+
+def _get_tsidat_balance_sync(dorm_id: int, user_id: int) -> int:
+    """Get the current Tsidat token balance for a member."""
+    with _get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT tsidat_balance FROM dorm_members WHERE dorm_id = ? AND user_id = ?", (dorm_id, user_id))
+        row = cursor.fetchone()
+        return row["tsidat_balance"] if row and row["tsidat_balance"] is not None else 0
+
+async def get_tsidat_balance(dorm_id: int, user_id: int) -> int:
+    return await asyncio.to_thread(_get_tsidat_balance_sync, dorm_id, user_id)
+
+def _get_tsidat_leaderboard_sync(dorm_id: int) -> List[Dict[str, Any]]:
+    """Return all members in a dorm sorted by highest Tsidat token balance."""
+    default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+    with _get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT user_id, name, COALESCE(tsidat_balance, 0) AS tsidat_balance
+            FROM dorm_members
+            WHERE dorm_id = ?
+            ORDER BY tsidat_balance DESC, name ASC;
+        """, (dorm_id,))
+        rows = cursor.fetchall()
+        if rows:
+            return [dict(r) for r in rows]
+        if dorm_id in (default_gid, getattr(config, "GROUP_ID", 0), 0):
+            _seed_default_dorm_sync()
+            cursor.execute("""
+                SELECT user_id, name, COALESCE(tsidat_balance, 0) AS tsidat_balance
+                FROM dorm_members
+                WHERE dorm_id = ?
+                ORDER BY tsidat_balance DESC, name ASC;
+            """, (dorm_id,))
+            return [dict(r) for r in cursor.fetchall()]
+        return []
+
+async def get_tsidat_leaderboard(dorm_id: int) -> List[Dict[str, Any]]:
+    return await asyncio.to_thread(_get_tsidat_leaderboard_sync, dorm_id)
 
 class MemberItem(dict):
     """Dictionary supporting both dict item lookup (m['user_id']) and attribute lookup (m.user_id)."""

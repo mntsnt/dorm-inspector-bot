@@ -9,7 +9,7 @@ import logging
 from pathlib import Path
 from typing import Optional, Tuple
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.error import TelegramError
 from telegram.ext import Application, CallbackQueryHandler, ContextTypes
@@ -139,22 +139,149 @@ async def approve_photo_callback(update: Update, context: ContextTypes.DEFAULT_T
         await query.answer("Cleaning is already completed.", show_alert=True)
         return
 
-    # Update database: mark approved and completed
-    await db.update_photo_status(week_start, status="approved", final_status="completed", dorm_id=dorm_id)
-
     c1 = await db.get_dorm_member(dorm_id, week_record["cleaner1_id"])
     c2 = await db.get_dorm_member(dorm_id, week_record["cleaner2_id"])
     c1_name = c1["name"] if c1 else f"ID {week_record['cleaner1_id']}"
     c2_name = c2["name"] if c2 else f"ID {week_record['cleaner2_id']}"
 
-    # Update approver's message
-    await query.edit_message_caption(
-        caption="You approved the cleaning photo. Thanks!",
-        parse_mode=ParseMode.MARKDOWN
+    # Present 5-Star Inspection Review rating keyboard
+    star_keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("⭐⭐⭐⭐⭐ (5★)", callback_data=f"rate_5_{dorm_id}_{week_start}"),
+            InlineKeyboardButton("⭐⭐⭐⭐ (4★)", callback_data=f"rate_4_{dorm_id}_{week_start}"),
+        ],
+        [
+            InlineKeyboardButton("⭐⭐⭐ (3★)", callback_data=f"rate_3_{dorm_id}_{week_start}"),
+            InlineKeyboardButton("⭐⭐ (2★)", callback_data=f"rate_2_{dorm_id}_{week_start}"),
+            InlineKeyboardButton("⭐ (1★)", callback_data=f"rate_1_{dorm_id}_{week_start}"),
+        ],
+    ])
+
+    prompt_text = (
+        f"⭐ **Rate This Week's Cleaning ({c1_name} & {c2_name})**\n\n"
+        "Choose a 1 to 5 star rating for room inspection.\n"
+        "Cleaners will receive **Tsidat tokens** based on your rating! 🪙"
+    )
+    if query.message and query.message.photo:
+        await query.edit_message_caption(caption=prompt_text, reply_markup=star_keyboard, parse_mode=ParseMode.MARKDOWN)
+    elif query.message:
+        await query.edit_message_text(text=prompt_text, reply_markup=star_keyboard, parse_mode=ParseMode.MARKDOWN)
+
+RATING_COMMENTS = {
+    5: "Sparkling clean! 5-star hotel standard. 🌟✨",
+    4: "Great job! Room looks and smells fresh. 🍋",
+    3: "Good effort! Passed inspection cleanly. 👍",
+    2: "Acceptable, but room needs a deeper scrub next time. 🧹",
+    1: "Barely passed. The broom was barely awake! 😅"
+}
+
+RATING_STARS_DISPLAY = {
+    5: "⭐⭐⭐⭐⭐ (5/5 Stars)",
+    4: "⭐⭐⭐⭐☆ (4/5 Stars)",
+    3: "⭐⭐⭐☆☆ (3/5 Stars)",
+    2: "⭐⭐☆☆☆ (2/5 Stars)",
+    1: "⭐☆☆☆☆ (1/5 Stars)"
+}
+
+async def rate_photo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Approver submits a 1-5 star rating and review for the cleaning photo."""
+    query = update.callback_query
+    await query.answer()
+    user = query.from_user
+
+    parts = query.data.split("_")
+    if len(parts) < 4:
+        await query.answer("Invalid rating reference.", show_alert=True)
+        return
+
+    try:
+        stars = int(parts[1])
+        dorm_id = int(parts[2])
+        week_start = parts[3]
+    except (ValueError, IndexError):
+        await query.answer("Invalid rating data.", show_alert=True)
+        return
+
+    member = await db.get_dorm_member(dorm_id, user.id)
+    if not member:
+        await query.answer("You are not a member of this dorm.", show_alert=True)
+        return
+
+    dorm = await db.get_dorm(dorm_id)
+    topic_id = dorm.get("topic_id") if dorm else None
+
+    week_record = await db.get_week(week_start, dorm_id=dorm_id)
+    if not week_record:
+        await query.answer("Week record not found.", show_alert=True)
+        return
+
+    approver_id = week_record["approver_id"]
+    approver = await db.get_dorm_member(dorm_id, approver_id)
+    approver_name = approver["name"] if approver else f"ID {approver_id}"
+
+    if user.id != approver_id:
+        await query.answer(
+            f"Only the assigned approver ({approver_name}) can submit this rating.",
+            show_alert=True
+        )
+        return
+
+    if week_record.get("final_status") == "completed":
+        await query.answer("Cleaning is already completed.", show_alert=True)
+        return
+
+    stars_clamped = max(1, min(5, stars))
+    review_comment = RATING_COMMENTS.get(stars_clamped, "Passed inspection.")
+    stars_display = RATING_STARS_DISPLAY.get(stars_clamped, f"{stars_clamped} Stars")
+    tokens_earned = stars_clamped * 5
+
+    # 1. Update database: mark approved, completed, rating, review_text
+    await db.update_photo_status(
+        week_start,
+        status="approved",
+        final_status="completed",
+        dorm_id=dorm_id,
+        rating=stars_clamped,
+        review_text=review_comment
     )
 
-    # Post result in group chat (with approved meme)
-    group_msg = f"**{approver_name}** approved the cleaning by **{c1_name}** & **{c2_name}**. Done for the week!"
+    # 2. Award Tsidat tokens: cleaners get stars*5, approver gets +5
+    c1_id = week_record["cleaner1_id"]
+    c2_id = week_record["cleaner2_id"]
+    await db.add_tsidat_tokens(dorm_id, c1_id, tokens_earned)
+    await db.add_tsidat_tokens(dorm_id, c2_id, tokens_earned)
+    await db.add_tsidat_tokens(dorm_id, approver_id, 5)
+
+    c1 = await db.get_dorm_member(dorm_id, c1_id)
+    c2 = await db.get_dorm_member(dorm_id, c2_id)
+    c1_name = c1["name"] if c1 else f"ID {c1_id}"
+    c2_name = c2["name"] if c2 else f"ID {c2_id}"
+
+    # 3. Update approver's message in DM
+    confirmation_text = (
+        f"✅ **Inspection Approved!**\n\n"
+        f"Rating: {stars_display}\n"
+        f"Review: _{review_comment}_\n\n"
+        f"🪙 Both cleaners received **+{tokens_earned} Tsidat tokens**!\n"
+        f"🪙 You received **+5 Tsidat tokens** for completing inspection."
+    )
+    try:
+        if query.message and query.message.photo:
+            await query.edit_message_caption(caption=confirmation_text, parse_mode=ParseMode.MARKDOWN)
+        elif query.message:
+            await query.edit_message_text(text=confirmation_text, parse_mode=ParseMode.MARKDOWN)
+    except Exception as edit_err:
+        logger.warning("Could not edit approver message: %s", edit_err)
+
+    # 4. Post in dorm group chat (with approved meme)
+    group_msg = (
+        f"🌟 **Room Inspection Review!**\n\n"
+        f"Approver: **{approver_name}**\n"
+        f"Rating: {stars_display}\n"
+        f"Review: _{review_comment}_\n\n"
+        f"Cleaners **{c1_name}** & **{c2_name}** completed duty for the week!\n"
+        f"🎉 Reward: **+{tokens_earned} Tsidat Tokens** awarded to each cleaner! 🪙✨"
+    )
     approved_meme = config.get_meme_file("approved")
     try:
         if approved_meme:
@@ -174,12 +301,19 @@ async def approve_photo_callback(update: Update, context: ContextTypes.DEFAULT_T
                 parse_mode=ParseMode.MARKDOWN
             )
     except Exception as e:
-        logger.error("Failed to send approval to group: %s", e)
+        logger.error("Failed to send 5-star review to group: %s", e)
 
-    # Notify cleaners in private DM
-    dm_text = f"**{approver_name}** approved your cleaning. Done for the week!"
-    await _notify_cleaner(context, week_record["cleaner1_id"], c1_name, dm_text, photo_path=approved_meme, dorm_id=dorm_id, topic_id=topic_id)
-    await _notify_cleaner(context, week_record["cleaner2_id"], c2_name, dm_text, photo_path=approved_meme, dorm_id=dorm_id, topic_id=topic_id)
+    # 5. Notify cleaners in private DM
+    dm_text = (
+        f"🌟 **Inspection Passed!**\n\n"
+        f"Approver **{approver_name}** rated your cleaning:\n"
+        f"Rating: {stars_display}\n"
+        f"Review: _{review_comment}_\n\n"
+        f"🪙 You earned **+{tokens_earned} Tsidat tokens**!\n"
+        "Check dorm rankings with `/tsidat`."
+    )
+    await _notify_cleaner(context, c1_id, c1_name, dm_text, photo_path=approved_meme, dorm_id=dorm_id, topic_id=topic_id)
+    await _notify_cleaner(context, c2_id, c2_name, dm_text, photo_path=approved_meme, dorm_id=dorm_id, topic_id=topic_id)
 
 async def reject_photo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Approver rejects the cleaning photo."""
@@ -306,19 +440,37 @@ async def confirm_cleaned_callback(update: Update, context: ContextTypes.DEFAULT
         await query.answer("Status has already been decided.", show_alert=True)
         return
 
-    # Record approver decision
-    await db.record_approver_decision(week_start, decision="cleaned", final_status="completed", dorm_id=dorm_id)
+    # Record approver decision with 5-star rating and Tsidat tokens
+    await db.record_approver_decision(
+        week_start,
+        decision="cleaned",
+        final_status="completed",
+        dorm_id=dorm_id,
+        rating=5,
+        review_text="Cleaned and verified on Friday check. 🌟"
+    )
 
-    c1 = await db.get_dorm_member(dorm_id, week_record["cleaner1_id"])
-    c2 = await db.get_dorm_member(dorm_id, week_record["cleaner2_id"])
-    c1_name = c1["name"] if c1 else f"ID {week_record['cleaner1_id']}"
-    c2_name = c2["name"] if c2 else f"ID {week_record['cleaner2_id']}"
+    c1_id = week_record["cleaner1_id"]
+    c2_id = week_record["cleaner2_id"]
+    await db.add_tsidat_tokens(dorm_id, c1_id, 25)
+    await db.add_tsidat_tokens(dorm_id, c2_id, 25)
+    await db.add_tsidat_tokens(dorm_id, approver_id, 5)
+
+    c1 = await db.get_dorm_member(dorm_id, c1_id)
+    c2 = await db.get_dorm_member(dorm_id, c2_id)
+    c1_name = c1["name"] if c1 else f"ID {c1_id}"
+    c2_name = c2["name"] if c2 else f"ID {c2_id}"
 
     # Edit approver message
-    await query.edit_message_text("You confirmed the dorm was cleaned. No fines.")
+    await query.edit_message_text("You confirmed the dorm was cleaned. Both cleaners earned +25 Tsidat tokens! 🪙")
 
     # Post in group chat (with approved meme)
-    group_msg = f"**{approver_name}** confirmed that **{c1_name}** & **{c2_name}** cleaned the dorm. No fines!"
+    group_msg = (
+        f"🌟 **Friday Check Confirmed!**\n\n"
+        f"**{approver_name}** verified that **{c1_name}** & **{c2_name}** cleaned the dorm.\n"
+        f"⭐ Rating: ⭐⭐⭐⭐⭐ (5/5 Stars)\n"
+        f"🎉 Reward: **+25 Tsidat Tokens** awarded to each cleaner! 🪙 No fines."
+    )
     approved_meme = config.get_meme_file("approved")
     try:
         if approved_meme:
@@ -447,6 +599,7 @@ async def confirm_not_cleaned_callback(update: Update, context: ContextTypes.DEF
 def register_approval_handlers(application: Application) -> None:
     """Attach approver decision handlers."""
     application.add_handler(CallbackQueryHandler(approve_photo_callback, pattern=r"^approve_"))
+    application.add_handler(CallbackQueryHandler(rate_photo_callback, pattern=r"^rate_\d+_"))
     application.add_handler(CallbackQueryHandler(reject_photo_callback, pattern=r"^reject_"))
     application.add_handler(CallbackQueryHandler(confirm_cleaned_callback, pattern=r"^fconfirm_clean_"))
     application.add_handler(CallbackQueryHandler(confirm_not_cleaned_callback, pattern=r"^fconfirm_notclean_"))
