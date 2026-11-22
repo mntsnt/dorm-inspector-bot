@@ -11,6 +11,7 @@ from telegram.ext import (
 )
 
 from .admin import register_admin_handlers
+from .ai_chat import register_ai_handlers
 from .approval import register_approval_handlers
 from .cleaning import register_cleaning_handlers
 from .commands import register_command_handlers
@@ -23,3 +24,4 @@ def register_all_handlers(application: Application) -> None:
     register_cleaning_handlers(application)
     register_approval_handlers(application)
     register_admin_handlers(application)
+    register_ai_handlers(application)

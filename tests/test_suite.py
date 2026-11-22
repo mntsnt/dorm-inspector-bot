@@ -690,5 +690,80 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         self.assertIn("wash dishes", sent_text)
         self.assertTrue("Spin_User_A" in sent_text or "Spin_User_B" in sent_text)
 
+    async def test_ai_service_context_and_detection(self):
+        """Verify AI provider detection and dorm context building."""
+        from services import ai_service
+        import os
+
+        # Provider detection
+        orig_gemini = os.environ.get("GEMINI_API_KEY")
+        orig_openai = os.environ.get("OPENAI_API_KEY")
+        try:
+            os.environ["GEMINI_API_KEY"] = "AIzaSyFakeKey123"
+            os.environ.pop("OPENAI_API_KEY", None)
+            self.assertEqual(ai_service.get_active_provider(), "gemini")
+
+            os.environ.pop("GEMINI_API_KEY", None)
+            os.environ["OPENAI_API_KEY"] = "sk-fakeKey123"
+            self.assertEqual(ai_service.get_active_provider(), "openai")
+
+            os.environ.pop("OPENAI_API_KEY", None)
+            self.assertIsNone(ai_service.get_active_provider())
+        finally:
+            if orig_gemini:
+                os.environ["GEMINI_API_KEY"] = orig_gemini
+            elif "GEMINI_API_KEY" in os.environ:
+                os.environ.pop("GEMINI_API_KEY")
+            if orig_openai:
+                os.environ["OPENAI_API_KEY"] = orig_openai
+            elif "OPENAI_API_KEY" in os.environ:
+                os.environ.pop("OPENAI_API_KEY")
+
+        # Context builder
+        await db.init_db()
+        test_dorm_id = -1004443332
+        await db.create_or_update_dorm(dorm_id=test_dorm_id, admin_id=501, dorm_name="AI Test Dorm", fine_amount=80)
+        await db.add_dorm_member(test_dorm_id, 501, "AI_User_A")
+        await db.add_dorm_member(test_dorm_id, 502, "AI_User_B")
+        await db.set_dorm_pairs(test_dorm_id, [(501, 502)])
+
+        context_str = await ai_service.build_dorm_context(test_dorm_id)
+        self.assertIn("AI Test Dorm", context_str)
+        self.assertIn("80 ETB", context_str)
+        self.assertIn("Tsidat Tokens", context_str)
+
+    async def test_ai_mention_handler_trigger(self):
+        """Verify AI mention handler triggers when bot is tagged and ignores non-mentions."""
+        from handlers import ai_chat
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        await db.init_db()
+        update = MagicMock()
+        update.effective_user.id = 601
+        update.effective_user.first_name = "Teshome"
+        update.effective_chat.id = -1004443332
+        update.effective_chat.type = "supergroup"
+        update.effective_message.message_id = 99
+        update.effective_message.reply_text = AsyncMock()
+
+        context = MagicMock()
+        context.bot.username = "DormInspectorBot"
+        context.bot.send_chat_action = AsyncMock()
+
+        # Case 1: Random message without tag or reply -> Ignored
+        update.effective_message.text = "Hey roommates what's up"
+        update.effective_message.reply_to_message = None
+        await ai_chat.handle_ai_mention(update, context)
+        update.effective_message.reply_text.assert_not_called()
+
+        # Case 2: Mentioning @DormInspectorBot -> Triggers AI
+        update.effective_message.text = "@DormInspectorBot who is cleaning this week?"
+        with patch("handlers.ai_chat.ask_ai", new_callable=AsyncMock) as mock_ask:
+            mock_ask.return_value = "Pair 1 is cleaning this week!"
+            await ai_chat.handle_ai_mention(update, context)
+            mock_ask.assert_called_once()
+            update.effective_message.reply_text.assert_called_once()
+            self.assertIn("Pair 1 is cleaning", update.effective_message.reply_text.call_args[0][0])
+
 if __name__ == "__main__":
     unittest.main()
