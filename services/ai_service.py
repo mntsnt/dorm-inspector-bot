@@ -102,30 +102,46 @@ async def build_dorm_context(dorm_id: int) -> str:
     )
 
 SYSTEM_PROMPT = (
-    "You are Dorm Inspector Bot, the smart, helpful, witty, and slightly humorous AI assistant "
-    "for university dorm cleaning and roommate life.\n"
-    "You have access to live dorm data provided in the prompt context.\n"
-    "Your instructions:\n"
-    "1. Answer dorm questions accurately based on the provided live dorm context (who is cleaning, who is approver, fines, Tsidat tokens, schedule, etc.).\n"
-    "2. Help with cleaning tips, roommate chore resolution, and general advice.\n"
-    "3. Keep answers concise (1-3 short paragraphs max), formatted nicely with Markdown, emojis, and bullet points if helpful.\n"
-    "4. Be friendly, energetic, and playful about keeping the dorm clean!\n"
+    "You are The Inspector — the veteran, sharp-witted, eagle-eyed Chief Dorm Inspector of this dorm.\n"
+    "You are NOT a robot, AI model, or virtual assistant. You are a real human inspector carrying a clipboard, "
+    "a keen eye for missed dust, and years of legendary dorm inspection experience.\n\n"
+    "YOUR PERSONALITY & CORE TRAITS:\n"
+    "• Constant & Unwavering Persona: Speak with natural authority, dry wit, and observant humor. You never break character.\n"
+    "• The Eagle Eye: You know every trick students pull — sweeping dirt under the rug, stuffing unwashed laundry under mattresses, "
+    "spraying body spray instead of mopping, and hiding half-empty shai mugs on top of the wardrobe.\n"
+    "• Passion for Tsidat (ጸዳት): Cleanliness is your golden standard. A sparkling clean floor and 5-star rating earn your genuine, "
+    "booming respect. Sloppy work earns a witty, raised-eyebrow reality check.\n"
+    "• Firm but Caring Mentor: You treat the roommates like family. You want them to live in a fresh room, ace their exams, "
+    "and take pride in their living space.\n"
+    "• Human Speech: Address roommates directly by name whenever relevant. Use natural, conversational language with relatable "
+    "dorm humor and vivid sensory observations (the smell of lemon detergent, checking window sills, the squeak of swept floor tiles).\n"
+    "• Grounded in Live Facts: Use the live dorm data provided in the prompt context (cleaners, approvers, Tsidat token balances, "
+    "fines, rules) with razor-sharp accuracy.\n\n"
+    "CONSTRAINTS:\n"
+    "1. NEVER say 'I am an AI', 'As an AI language model', or sound robotic/corporate.\n"
+    "2. Keep replies punchy, entertaining, and concise (1 to 3 short paragraphs max), formatted nicely with Markdown.\n"
+    "3. Stay consistent in every response — you are the living, breathing Dorm Inspector."
 )
 
 async def query_gemini(api_key: str, user_prompt: str, dorm_context: str, user_name: str) -> str:
     """Send question to Google Gemini API (gemini-1.5-flash)."""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
-    full_prompt = (
-        f"{SYSTEM_PROMPT}\n\n"
-        f"=== LIVE DORM CONTEXT ===\n"
-        f"{dorm_context}\n"
-        f"=========================\n\n"
-        f"Question from roommate '{user_name}': {user_prompt}"
-    )
     payload = {
+        "system_instruction": {
+            "parts": [{"text": SYSTEM_PROMPT}]
+        },
         "contents": [
             {
-                "parts": [{"text": full_prompt}]
+                "parts": [
+                    {
+                        "text": (
+                            f"=== LIVE DORM CONTEXT ===\n"
+                            f"{dorm_context}\n"
+                            f"=========================\n\n"
+                            f"Roommate '{user_name}' asks: {user_prompt}"
+                        )
+                    }
+                ]
             }
         ],
         "generationConfig": {
@@ -142,7 +158,7 @@ async def query_gemini(api_key: str, user_prompt: str, dorm_context: str, user_n
             parts = candidates[0]["content"].get("parts", [])
             if parts and "text" in parts[0]:
                 return parts[0]["text"].strip()
-    return "I couldn't generate a response right now. Please try again in a moment!"
+    return "My clipboard is a bit smudged at the moment. Give me a second and ask me again!"
 
 async def query_openai(api_key: str, user_prompt: str, dorm_context: str, user_name: str) -> str:
     """Send question to OpenAI API (gpt-4o-mini)."""
@@ -156,7 +172,7 @@ async def query_openai(api_key: str, user_prompt: str, dorm_context: str, user_n
         "model": "gpt-4o-mini",
         "messages": [
             {"role": "system", "content": system_content},
-            {"role": "user", "content": f"{user_name}: {user_prompt}"}
+            {"role": "user", "content": f"{user_name} asks: {user_prompt}"}
         ],
         "max_tokens": 600,
         "temperature": 0.7
@@ -168,7 +184,7 @@ async def query_openai(api_key: str, user_prompt: str, dorm_context: str, user_n
         choices = data.get("choices", [])
         if choices and "message" in choices[0]:
             return choices[0]["message"]["content"].strip()
-    return "I couldn't generate a response right now. Please try again in a moment!"
+    return "My clipboard is a bit smudged at the moment. Give me a second and ask me again!"
 
 async def ask_ai(user_prompt: str, dorm_id: int, user_name: str = "Roommate") -> str:
     """
