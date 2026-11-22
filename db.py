@@ -904,21 +904,28 @@ def _seed_default_dorm_sync() -> None:
                     is_admin = CASE WHEN excluded.is_admin = 1 THEN 1 ELSE dorm_members.is_admin END;
             """, (group_id, m.user_id, m.name, is_adm))
 
-        # Seed pairs from config.PAIRS if none exist for this dorm
+        # Enforce exact saved pairs from members.json / config.PAIRS for default dorm:
+        # Pair 1: Bilisuma & Nahom
+        # Pair 2: Hassan & Mintesnot
+        # Pair 3: Dawit & Zeftret
+        # Pair 4: Ahmed & Yonatan
         cursor = conn.cursor()
-        cursor.execute("SELECT count(*) as cnt FROM dorm_pairs WHERE dorm_id = ?", (group_id,))
-        pair_cnt = cursor.fetchone()["cnt"]
-        if pair_cnt == 0:
-            pairs = getattr(config, "PAIRS", [])
-            for idx, (p1, p2) in enumerate(pairs, start=1):
-                conn.execute("""
-                    INSERT OR IGNORE INTO dorm_pairs (dorm_id, pair_number, cleaner1_id, cleaner2_id)
-                    VALUES (?, ?, ?, ?);
-                """, (group_id, idx, p1.user_id, p2.user_id))
-                conn.execute(
-                    "UPDATE dorm_members SET pair_number = ? WHERE dorm_id = ? AND user_id IN (?, ?)",
-                    (idx, group_id, p1.user_id, p2.user_id)
-                )
+        cursor.execute("SELECT user_id, name FROM dorm_members WHERE dorm_id = ?", (group_id,))
+        name_to_id = {r["name"].strip().lower(): r["user_id"] for r in cursor.fetchall()}
+
+        pairs = getattr(config, "PAIRS", [])
+        conn.execute("DELETE FROM dorm_pairs WHERE dorm_id = ?", (group_id,))
+        for idx, (p1, p2) in enumerate(pairs, start=1):
+            c1_id = name_to_id.get(p1.name.strip().lower(), p1.user_id)
+            c2_id = name_to_id.get(p2.name.strip().lower(), p2.user_id)
+            conn.execute("""
+                INSERT INTO dorm_pairs (dorm_id, pair_number, cleaner1_id, cleaner2_id)
+                VALUES (?, ?, ?, ?);
+            """, (group_id, idx, c1_id, c2_id))
+            conn.execute(
+                "UPDATE dorm_members SET pair_number = ? WHERE dorm_id = ? AND user_id IN (?, ?)",
+                (idx, group_id, c1_id, c2_id)
+            )
 
         # Update legacy records in weeks and fines to have group_id
         conn.execute("UPDATE weeks SET dorm_id = ? WHERE dorm_id = 0", (group_id,))

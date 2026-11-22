@@ -59,6 +59,17 @@ class TestMultiDormPlatform(unittest.IsolatedAsyncioTestCase):
         pairs = await db.get_dorm_pairs(config.DEFAULT_GROUP_ID)
         self.assertEqual(len(pairs), 4)
 
+        # Verify the 4 fixed pairs match members.json exactly
+        member_lookup = {m["user_id"]: m["name"] for m in members}
+        pair_names = [
+            (member_lookup[p["cleaner1_id"]], member_lookup[p["cleaner2_id"]])
+            for p in pairs
+        ]
+        self.assertEqual(pair_names[0], ("Bilisuma", "Nahom"))
+        self.assertEqual(pair_names[1], ("Hassan", "Mintesnot"))
+        self.assertEqual(pair_names[2], ("Dawit", "Zeftret"))
+        self.assertEqual(pair_names[3], ("Ahmed", "Yonatan"))
+
     async def test_existing_member_permission_and_start(self):
         """Pre-configured roommates (e.g. Nahom 1758752115) are recognized and can /start."""
         await db.seed_default_dorm()

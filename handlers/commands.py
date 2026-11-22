@@ -243,12 +243,25 @@ async def get_schedule_content(dorm_id: Optional[int] = None) -> Tuple[str, Inli
     today = config.get_current_date()
     current_monday = config.get_monday_of_week(today)
 
+    start_date_str = dorm.get("start_date") or getattr(config, "START_DATE_STR", "2026-11-23")
+    try:
+        start_date_obj = datetime.strptime(start_date_str, "%Y-%m-%d").date()
+    except Exception:
+        start_date_obj = getattr(config, "START_BASE_MONDAY", date(2026, 11, 23))
+    start_base_monday = config.get_monday_of_week(start_date_obj)
+    base_monday = max(current_monday, start_base_monday)
+
     lines = [f"**{dorm['dorm_name']}** — Next 4 Weeks:\n"]
     for i in range(4):
-        target_monday = current_monday + timedelta(weeks=i)
+        target_monday = base_monday + timedelta(weeks=i)
         w = get_dorm_week_info(dorm, pairs, members_by_id, target_date=target_monday)
         if w:
-            tag = " (This Week)" if i == 0 else ""
+            if target_monday == current_monday:
+                tag = " (This Week)"
+            elif (target_monday - today).days <= 7 and target_monday > current_monday:
+                tag = " (Upcoming)"
+            else:
+                tag = ""
             date_str = f"{w.monday_date.strftime('%b %d')} – {w.friday_date.strftime('%b %d')}"
             lines.append(f"• Week {w.week_number} ({date_str}){tag}: {w.cleaner1_name} & {w.cleaner2_name}")
 
