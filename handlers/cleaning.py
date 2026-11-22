@@ -74,18 +74,18 @@ def _parse_callback_dorm_and_week(callback_data: str) -> Tuple[int, str]:
                 return int(parts[2]), parts[3]
             except ValueError:
                 pass
-        return getattr(config, "GROUP_ID", 0), parts[-1]
+        return getattr(config, "DEFAULT_GROUP_ID", -1002378440774), parts[-1]
     elif len(parts) == 3:
         # Pattern: prefix_dormId_weekStart
         try:
             return int(parts[1]), parts[2]
         except ValueError:
-            return getattr(config, "GROUP_ID", 0), parts[2]
+            return getattr(config, "DEFAULT_GROUP_ID", -1002378440774), parts[2]
     elif len(parts) == 2:
         # Legacy pattern: prefix_weekStart
-        return getattr(config, "GROUP_ID", 0), parts[1]
+        return getattr(config, "DEFAULT_GROUP_ID", -1002378440774), parts[1]
 
-    return getattr(config, "GROUP_ID", 0), ""
+    return 0, ""
 
 # ---------------------------------------------------------------------------
 # /done Command & 'We cleaned' Button
@@ -122,11 +122,16 @@ async def cleaned_button_callback(update: Update, context: ContextTypes.DEFAULT_
     await query.answer()
     user = query.from_user
 
-    if not await _is_member(user.id):
-        await query.answer("Sorry, this bot is only for dorm members.", show_alert=True)
+    dorm_id, week_start = _parse_callback_dorm_and_week(query.data)
+    if not dorm_id:
+        await query.answer("Invalid dorm reference.", show_alert=True)
         return
 
-    dorm_id, week_start = _parse_callback_dorm_and_week(query.data)
+    member = await db.get_dorm_member(dorm_id, user.id)
+    if not member:
+        await query.answer("You are not a member of this dorm.", show_alert=True)
+        return
+
     await handle_cleaner_done(update, context, user.id, dorm_id=dorm_id, week_start=week_start)
 
 async def handle_cleaner_done(
@@ -144,7 +149,13 @@ async def handle_cleaner_done(
         if resolved:
             dorm_id = resolved[0]["dorm_id"]
         else:
-            dorm_id = getattr(config, "GROUP_ID", 0)
+            await msg.reply_text("You are not registered in any active dorm.")
+            return
+
+    member = await db.get_dorm_member(dorm_id, user_id)
+    if not member:
+        await msg.reply_text("You are not a member of this dorm.")
+        return
 
     dorm = await db.get_dorm(dorm_id)
     if not dorm:
@@ -351,11 +362,16 @@ async def friday_check_yes_callback(update: Update, context: ContextTypes.DEFAUL
     await query.answer()
     user = query.from_user
 
-    if not await _is_member(user.id):
-        await query.answer("Sorry, this bot is only for dorm members.", show_alert=True)
+    dorm_id, week_start = _parse_callback_dorm_and_week(query.data)
+    if not dorm_id:
+        await query.answer("Invalid dorm reference.", show_alert=True)
         return
 
-    dorm_id, week_start = _parse_callback_dorm_and_week(query.data)
+    member = await db.get_dorm_member(dorm_id, user.id)
+    if not member:
+        await query.answer("You are not a member of this dorm.", show_alert=True)
+        return
+
     dorm = await db.get_dorm(dorm_id)
     topic_id = dorm.get("topic_id") if dorm else None
 
@@ -368,7 +384,6 @@ async def friday_check_yes_callback(update: Update, context: ContextTypes.DEFAUL
         await query.answer("Only assigned cleaners can answer this check.", show_alert=True)
         return
 
-    member = await db.get_dorm_member(dorm_id, user.id)
     member_name = member["name"] if member else user.first_name
 
     await db.record_cleaner_response(week_start, user.id, "yes", dorm_id=dorm_id)
@@ -404,11 +419,16 @@ async def friday_check_no_callback(update: Update, context: ContextTypes.DEFAULT
     await query.answer()
     user = query.from_user
 
-    if not await _is_member(user.id):
-        await query.answer("Sorry, this bot is only for dorm members.", show_alert=True)
+    dorm_id, week_start = _parse_callback_dorm_and_week(query.data)
+    if not dorm_id:
+        await query.answer("Invalid dorm reference.", show_alert=True)
         return
 
-    dorm_id, week_start = _parse_callback_dorm_and_week(query.data)
+    member = await db.get_dorm_member(dorm_id, user.id)
+    if not member:
+        await query.answer("You are not a member of this dorm.", show_alert=True)
+        return
+
     dorm = await db.get_dorm(dorm_id)
     topic_id = dorm.get("topic_id") if dorm else None
 
@@ -421,7 +441,6 @@ async def friday_check_no_callback(update: Update, context: ContextTypes.DEFAULT
         await query.answer("Only assigned cleaners can answer this check.", show_alert=True)
         return
 
-    member = await db.get_dorm_member(dorm_id, user.id)
     member_name = member["name"] if member else user.first_name
 
     await db.record_cleaner_response(week_start, user.id, "no", dorm_id=dorm_id)

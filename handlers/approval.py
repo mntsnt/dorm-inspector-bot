@@ -28,15 +28,15 @@ def _parse_callback_dorm_and_week(callback_data: str) -> Tuple[int, str]:
                 return int(parts[2]), parts[3]
             except ValueError:
                 pass
-        return getattr(config, "GROUP_ID", 0), parts[-1]
+        return getattr(config, "DEFAULT_GROUP_ID", -1002378440774), parts[-1]
     elif len(parts) == 3:
         try:
             return int(parts[1]), parts[2]
         except ValueError:
-            return getattr(config, "GROUP_ID", 0), parts[2]
+            return getattr(config, "DEFAULT_GROUP_ID", -1002378440774), parts[2]
     elif len(parts) == 2:
-        return getattr(config, "GROUP_ID", 0), parts[1]
-    return getattr(config, "GROUP_ID", 0), ""
+        return getattr(config, "DEFAULT_GROUP_ID", -1002378440774), parts[1]
+    return 0, ""
 
 async def _notify_cleaner(
     context: ContextTypes.DEFAULT_TYPE,
@@ -107,6 +107,15 @@ async def approve_photo_callback(update: Update, context: ContextTypes.DEFAULT_T
     user = query.from_user
 
     dorm_id, week_start = _parse_callback_dorm_and_week(query.data)
+    if not dorm_id:
+        await query.answer("Invalid dorm reference.", show_alert=True)
+        return
+
+    member = await db.get_dorm_member(dorm_id, user.id)
+    if not member:
+        await query.answer("You are not a member of this dorm.", show_alert=True)
+        return
+
     dorm = await db.get_dorm(dorm_id)
     topic_id = dorm.get("topic_id") if dorm else None
 
@@ -179,6 +188,15 @@ async def reject_photo_callback(update: Update, context: ContextTypes.DEFAULT_TY
     user = query.from_user
 
     dorm_id, week_start = _parse_callback_dorm_and_week(query.data)
+    if not dorm_id:
+        await query.answer("Invalid dorm reference.", show_alert=True)
+        return
+
+    member = await db.get_dorm_member(dorm_id, user.id)
+    if not member:
+        await query.answer("You are not a member of this dorm.", show_alert=True)
+        return
+
     dorm = await db.get_dorm(dorm_id)
     topic_id = dorm.get("topic_id") if dorm else None
 
@@ -256,6 +274,15 @@ async def confirm_cleaned_callback(update: Update, context: ContextTypes.DEFAULT
     user = query.from_user
 
     dorm_id, week_start = _parse_callback_dorm_and_week(query.data)
+    if not dorm_id:
+        await query.answer("Invalid dorm reference.", show_alert=True)
+        return
+
+    member = await db.get_dorm_member(dorm_id, user.id)
+    if not member:
+        await query.answer("You are not a member of this dorm.", show_alert=True)
+        return
+
     dorm = await db.get_dorm(dorm_id)
     topic_id = dorm.get("topic_id") if dorm else None
 
@@ -325,6 +352,15 @@ async def confirm_not_cleaned_callback(update: Update, context: ContextTypes.DEF
     user = query.from_user
 
     dorm_id, week_start = _parse_callback_dorm_and_week(query.data)
+    if not dorm_id:
+        await query.answer("Invalid dorm reference.", show_alert=True)
+        return
+
+    member = await db.get_dorm_member(dorm_id, user.id)
+    if not member:
+        await query.answer("You are not a member of this dorm.", show_alert=True)
+        return
+
     dorm = await db.get_dorm(dorm_id)
     topic_id = dorm.get("topic_id") if dorm else None
     fine_total = dorm.get("fine_amount", 100) if dorm else getattr(config, "FINE_TOTAL", 100)

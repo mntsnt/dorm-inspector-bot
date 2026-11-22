@@ -68,7 +68,7 @@ async def markpaid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         if m:
             target_member_id = m["user_id"]
             target_member_name = m["name"]
-        elif config.get_member(uid):
+        elif target_dorm_id == getattr(config, "DEFAULT_GROUP_ID", -1002378440774) and config.get_member(uid):
             cm = config.get_member(uid)
             target_member_id = cm.user_id
             target_member_name = cm.name
@@ -78,17 +78,17 @@ async def markpaid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         if m:
             target_member_id = m["user_id"]
             target_member_name = m["name"]
-        elif config.get_member_by_name(target_input):
+        elif target_dorm_id == getattr(config, "DEFAULT_GROUP_ID", -1002378440774) and config.get_member_by_name(target_input):
             cm = config.get_member_by_name(target_input)
             target_member_id = cm.user_id
             target_member_name = cm.name
 
     if not target_member_id:
         members = await db.get_dorm_members(target_dorm_id)
-        if not members:
+        if not members and target_dorm_id == getattr(config, "DEFAULT_GROUP_ID", -1002378440774):
             member_list = ", ".join(m.name for m in config.MEMBERS)
         else:
-            member_list = ", ".join(m["name"] for m in members)
+            member_list = ", ".join(m["name"] for m in members) if members else "None"
         await update.effective_message.reply_text(
             f"Member '{target_input}' not found in this dorm.\nMembers: {member_list}"
         )
@@ -164,26 +164,31 @@ async def setid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     new_id = int(id_input)
     member = await db.get_dorm_member_by_name(target_dorm_id, name_input)
     if not member:
-        cm = config.get_member_by_name(name_input)
-        if cm:
-            old_id = cm.user_id
-            config.update_member_id(cm.name, new_id)
-            await db.update_member_id_in_db(old_id=old_id, new_id=new_id)
-            await update.effective_message.reply_text(
-                f"Updated **{cm.name}**'s ID to `{new_id}` (was `{old_id}`).",
-                parse_mode=ParseMode.MARKDOWN
-            )
-            return
+        if target_dorm_id == getattr(config, "DEFAULT_GROUP_ID", -1002378440774):
+            cm = config.get_member_by_name(name_input)
+            if cm:
+                old_id = cm.user_id
+                config.update_member_id(cm.name, new_id)
+                await db.update_member_id_in_db(old_id=old_id, new_id=new_id)
+                await update.effective_message.reply_text(
+                    f"Updated **{cm.name}**'s ID to `{new_id}` (was `{old_id}`).",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+                return
 
         members = await db.get_dorm_members(target_dorm_id)
-        member_list = ", ".join(m["name"] for m in members) if members else ", ".join(m.name for m in config.MEMBERS)
+        if not members and target_dorm_id == getattr(config, "DEFAULT_GROUP_ID", -1002378440774):
+            member_list = ", ".join(m.name for m in config.MEMBERS)
+        else:
+            member_list = ", ".join(m["name"] for m in members) if members else "None"
         await update.effective_message.reply_text(
-            f"Member '{name_input}' not found.\nMembers: {member_list}"
+            f"Member '{name_input}' not found in this dorm.\nMembers: {member_list}"
         )
         return
 
     old_id = member["user_id"]
-    config.update_member_id(member["name"], new_id)
+    if target_dorm_id == getattr(config, "DEFAULT_GROUP_ID", -1002378440774):
+        config.update_member_id(member["name"], new_id)
     await db.update_member_id_in_db(old_id=old_id, new_id=new_id)
     await update.effective_message.reply_text(
         f"Updated **{member['name']}**'s ID to `{new_id}` (was `{old_id}`).",
@@ -197,9 +202,19 @@ async def testgroup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if not user:
         return
 
-    target_group_id = chat.id if chat.type in ("group", "supergroup") else getattr(config, "GROUP_ID", 0)
+    target_group_id: Optional[int] = None
+    if chat.type in ("group", "supergroup"):
+        target_group_id = chat.id
+    else:
+        user_dorms = await db.get_user_dorms(user.id)
+        admin_dorms = [d for d in user_dorms if d.get("user_is_admin") == 1 or d.get("admin_id") == user.id]
+        if admin_dorms:
+            target_group_id = admin_dorms[0]["dorm_id"]
+        elif user.id == getattr(config, "ADMIN_ID", 0):
+            target_group_id = getattr(config, "GROUP_ID", 0)
+
     if not target_group_id:
-        await update.effective_message.reply_text("GROUP_ID is not configured and no group chat detected.")
+        await update.effective_message.reply_text("Could not determine which dorm group to verify.")
         return
 
     dorm = await db.get_dorm(target_group_id)

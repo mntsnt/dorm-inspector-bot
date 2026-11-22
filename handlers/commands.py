@@ -125,7 +125,7 @@ def get_main_menu_text(member_name: str, connected_info: Optional[str] = None, d
 # ---------------------------------------------------------------------------
 # View Content Generators (Text + Navigation Buttons)
 # ---------------------------------------------------------------------------
-async def get_status_content(user_id: int, dorm_id: Optional[int] = None) -> Tuple[str, InlineKeyboardMarkup]:
+async def get_status_content(user_id: Optional[int] = None, dorm_id: Optional[int] = None) -> Tuple[str, InlineKeyboardMarkup]:
     """Generate status report text and navigation buttons."""
     keyboard = InlineKeyboardMarkup([
         [
@@ -137,12 +137,18 @@ async def get_status_content(user_id: int, dorm_id: Optional[int] = None) -> Tup
         ]
     ])
 
-    if dorm_id is None:
+    if dorm_id is None and user_id is None:
+        dorm_id = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+    elif dorm_id is None and user_id is not None:
         dorm = await _resolve_user_dorm(user_id)
         if dorm:
             dorm_id = dorm["dorm_id"]
         else:
-            dorm_id = getattr(config, "GROUP_ID", 0)
+            return "You are not registered in any active dorm.", keyboard
+    elif dorm_id is not None and user_id is not None:
+        member = await db.get_dorm_member(dorm_id, user_id)
+        if not member:
+            return "You are not a member of this dorm.", keyboard
 
     dorm = await db.get_dorm(dorm_id)
     if not dorm:
@@ -157,7 +163,7 @@ async def get_status_content(user_id: int, dorm_id: Optional[int] = None) -> Tup
 
     if not week_info or week_info.week_number < 1:
         start_date = dorm.get("start_date", "Soon")
-        first_cleaners = f"{pairs[0]['cleaner1_id']} & {pairs[0]['cleaner2_id']}" if pairs else "TBD"
+        first_cleaners = "TBD"
         if pairs:
             c1 = members_by_id.get(pairs[0]["cleaner1_id"], f"ID {pairs[0]['cleaner1_id']}")
             c2 = members_by_id.get(pairs[0]["cleaner2_id"], f"ID {pairs[0]['cleaner2_id']}")
@@ -212,7 +218,7 @@ async def get_status_content(user_id: int, dorm_id: Optional[int] = None) -> Tup
     )
     return msg, keyboard
 
-async def get_schedule_content(dorm_id: Optional[int] = None) -> Tuple[str, InlineKeyboardMarkup]:
+async def get_schedule_content(dorm_id: Optional[int] = None, user_id: Optional[int] = None) -> Tuple[str, InlineKeyboardMarkup]:
     """Generate 4-week schedule text and navigation buttons."""
     keyboard = InlineKeyboardMarkup([
         [
@@ -224,20 +230,29 @@ async def get_schedule_content(dorm_id: Optional[int] = None) -> Tuple[str, Inli
         ]
     ])
 
-    resolved_id = dorm_id if dorm_id is not None else getattr(config, "GROUP_ID", 0)
+    if dorm_id is None and user_id is None:
+        resolved_id = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+    elif dorm_id is None and user_id is not None:
+        dorm = await _resolve_user_dorm(user_id)
+        if dorm:
+            resolved_id = dorm["dorm_id"]
+        else:
+            return "You are not registered in any active dorm.", keyboard
+    elif dorm_id is not None and user_id is not None:
+        member = await db.get_dorm_member(dorm_id, user_id)
+        if not member:
+            return "You are not a member of this dorm.", keyboard
+        resolved_id = dorm_id
+    else:
+        resolved_id = dorm_id
+
     dorm = await db.get_dorm(resolved_id)
     pairs = await db.get_dorm_pairs(resolved_id)
     members = await db.get_dorm_members(resolved_id)
     members_by_id = {m["user_id"]: m["name"] for m in members}
 
     if not dorm or not pairs:
-        upcoming = config.get_upcoming_schedule(count=4)
-        lines = ["Next 4 Weeks:\n"]
-        for idx, w in enumerate(upcoming):
-            tag = " (This Week)" if idx == 0 else ""
-            date_str = f"{w.monday_date.strftime('%b %d')} – {w.friday_date.strftime('%b %d')}"
-            lines.append(f"• Week {w.week_number} ({date_str}){tag}: {w.cleaner1.name} & {w.cleaner2.name}")
-        return "\n".join(lines), keyboard
+        return f"No schedule configured for {dorm['dorm_name'] if dorm else 'this dorm'}.", keyboard
 
     from scheduler import get_dorm_week_info
     today = config.get_current_date()
@@ -267,7 +282,7 @@ async def get_schedule_content(dorm_id: Optional[int] = None) -> Tuple[str, Inli
 
     return "\n".join(lines), keyboard
 
-async def get_fines_content(dorm_id: Optional[int] = None) -> Tuple[str, InlineKeyboardMarkup]:
+async def get_fines_content(dorm_id: Optional[int] = None, user_id: Optional[int] = None) -> Tuple[str, InlineKeyboardMarkup]:
     """Generate unpaid fines ledger text and navigation buttons."""
     keyboard = InlineKeyboardMarkup([
         [
@@ -279,7 +294,22 @@ async def get_fines_content(dorm_id: Optional[int] = None) -> Tuple[str, InlineK
         ]
     ])
 
-    resolved_id = dorm_id if dorm_id is not None else getattr(config, "GROUP_ID", 0)
+    if dorm_id is None and user_id is None:
+        resolved_id = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+    elif dorm_id is None and user_id is not None:
+        dorm = await _resolve_user_dorm(user_id)
+        if dorm:
+            resolved_id = dorm["dorm_id"]
+        else:
+            return "You are not registered in any active dorm.", keyboard
+    elif dorm_id is not None and user_id is not None:
+        member = await db.get_dorm_member(dorm_id, user_id)
+        if not member:
+            return "You are not a member of this dorm.", keyboard
+        resolved_id = dorm_id
+    else:
+        resolved_id = dorm_id
+
     dorm = await db.get_dorm(resolved_id)
     unpaid_summary = await db.get_unpaid_fines_summary(dorm_id=resolved_id)
 
@@ -300,7 +330,7 @@ async def get_fines_content(dorm_id: Optional[int] = None) -> Tuple[str, InlineK
     lines.append(f"\nTotal: {total_ledger} ETB")
     return "\n".join(lines), keyboard
 
-async def get_history_content(dorm_id: Optional[int] = None) -> Tuple[str, InlineKeyboardMarkup]:
+async def get_history_content(dorm_id: Optional[int] = None, user_id: Optional[int] = None) -> Tuple[str, InlineKeyboardMarkup]:
     """Generate past 8 weeks history text and navigation buttons."""
     keyboard = InlineKeyboardMarkup([
         [
@@ -312,7 +342,22 @@ async def get_history_content(dorm_id: Optional[int] = None) -> Tuple[str, Inlin
         ]
     ])
 
-    resolved_id = dorm_id if dorm_id is not None else getattr(config, "GROUP_ID", 0)
+    if dorm_id is None and user_id is None:
+        resolved_id = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+    elif dorm_id is None and user_id is not None:
+        dorm = await _resolve_user_dorm(user_id)
+        if dorm:
+            resolved_id = dorm["dorm_id"]
+        else:
+            return "You are not registered in any active dorm.", keyboard
+    elif dorm_id is not None and user_id is not None:
+        member = await db.get_dorm_member(dorm_id, user_id)
+        if not member:
+            return "You are not a member of this dorm.", keyboard
+        resolved_id = dorm_id
+    else:
+        resolved_id = dorm_id
+
     dorm = await db.get_dorm(resolved_id)
     members = await db.get_dorm_members(resolved_id)
     members_by_id = {m["user_id"]: m["name"] for m in members}
@@ -594,7 +639,7 @@ async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
 
     dorm_id = chat.id if chat.type in ("group", "supergroup") else None
-    text, keyboard = await get_schedule_content(dorm_id=dorm_id)
+    text, keyboard = await get_schedule_content(dorm_id=dorm_id, user_id=user.id)
     await update.effective_message.reply_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
 
 async def fines_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -606,7 +651,7 @@ async def fines_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     dorm_id = chat.id if chat.type in ("group", "supergroup") else None
-    text, keyboard = await get_fines_content(dorm_id=dorm_id)
+    text, keyboard = await get_fines_content(dorm_id=dorm_id, user_id=user.id)
     await update.effective_message.reply_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
 
 async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -618,7 +663,7 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     dorm_id = chat.id if chat.type in ("group", "supergroup") else None
-    text, keyboard = await get_history_content(dorm_id=dorm_id)
+    text, keyboard = await get_history_content(dorm_id=dorm_id, user_id=user.id)
     await update.effective_message.reply_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
 
 async def members_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -632,10 +677,22 @@ async def members_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     dorm_id = chat.id if chat.type in ("group", "supergroup") else None
     if dorm_id is None:
         dorm = await _resolve_user_dorm(user.id)
-        dorm_id = dorm["dorm_id"] if dorm else getattr(config, "GROUP_ID", 0)
+        if not dorm:
+            await update.effective_message.reply_text("You are not registered in any active dorm.")
+            return
+        dorm_id = dorm["dorm_id"]
+    else:
+        member = await db.get_dorm_member(dorm_id, user.id)
+        if not member:
+            await update.effective_message.reply_text("You are not a member of this dorm.")
+            return
 
     dorm = await db.get_dorm(dorm_id)
-    d_name = dorm["dorm_name"] if dorm else "Dorm"
+    if not dorm:
+        await update.effective_message.reply_text("Dorm not found.")
+        return
+
+    d_name = dorm["dorm_name"]
 
     connected_count, total_count, connected_members, pending_members = await db.get_connection_status(dorm_id)
     lines = [f"**{d_name} Members** ({connected_count}/{total_count} Connected):\n"]
@@ -648,7 +705,10 @@ async def members_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     connected_ids = {_uid(m) for m in connected_members if _uid(m) is not None}
     members = await db.get_dorm_members(dorm_id)
-    display_members = members if members else config.MEMBERS
+    if dorm_id == getattr(config, "DEFAULT_GROUP_ID", -1002378440774):
+        display_members = members if members else config.MEMBERS
+    else:
+        display_members = members
 
     for m in display_members:
         mid = _uid(m)
@@ -685,7 +745,10 @@ async def menu_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     dorm = await _resolve_user_dorm(user.id)
-    dorm_id = dorm["dorm_id"] if dorm else getattr(config, "GROUP_ID", 0)
+    if not dorm:
+        await query.answer("You are not registered in any active dorm.", show_alert=True)
+        return
+    dorm_id = dorm["dorm_id"]
 
     action = query.data
     member = await db.get_dorm_member(dorm_id, user.id)
@@ -700,15 +763,15 @@ async def menu_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
     elif action == "menu_status":
         text, keyboard = await get_status_content(user.id, dorm_id=dorm_id)
     elif action == "menu_schedule":
-        text, keyboard = await get_schedule_content(dorm_id=dorm_id)
+        text, keyboard = await get_schedule_content(dorm_id=dorm_id, user_id=user.id)
     elif action == "menu_done":
         from handlers.cleaning import handle_cleaner_done
         await handle_cleaner_done(update, context, user.id, dorm_id=dorm_id)
         return
     elif action == "menu_fines":
-        text, keyboard = await get_fines_content(dorm_id=dorm_id)
+        text, keyboard = await get_fines_content(dorm_id=dorm_id, user_id=user.id)
     elif action == "menu_history":
-        text, keyboard = await get_history_content(dorm_id=dorm_id)
+        text, keyboard = await get_history_content(dorm_id=dorm_id, user_id=user.id)
     elif action == "menu_help":
         text, keyboard = get_help_content()
     else:
@@ -748,7 +811,10 @@ async def reply_keyboard_text_handler(update: Update, context: ContextTypes.DEFA
         await schedule_command(update, context)
     elif "clean" in text_lower or "submit" in text_lower:
         dorm = await _resolve_user_dorm(user.id)
-        dorm_id = dorm["dorm_id"] if dorm else getattr(config, "GROUP_ID", 0)
+        if not dorm:
+            await msg.reply_text("You are not registered in any active dorm.")
+            return
+        dorm_id = dorm["dorm_id"]
         from handlers.cleaning import handle_cleaner_done
         await handle_cleaner_done(update, context, user.id, dorm_id=dorm_id)
     elif "fine" in text_lower:

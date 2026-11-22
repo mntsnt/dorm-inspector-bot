@@ -153,9 +153,15 @@ async def setup_members_callback(update: Update, context: ContextTypes.DEFAULT_T
     """Show the list of members who have joined so far."""
     query = update.callback_query
     await query.answer()
+    user = query.from_user
 
     parts = query.data.split("_")
     dorm_id = int(parts[2])
+
+    member = await db.get_dorm_member(dorm_id, user.id)
+    if not member:
+        await query.answer("Only members of this dorm can view this list.", show_alert=True)
+        return
 
     members = await db.get_dorm_members(dorm_id)
     dorm = await db.get_dorm(dorm_id)
@@ -211,11 +217,17 @@ async def setup_settings_callback(update: Update, context: ContextTypes.DEFAULT_
 async def setfine_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Update fine amount."""
     query = update.callback_query
+    user = query.from_user
     await query.answer()
 
     parts = query.data.split("_")
     dorm_id = int(parts[1])
     new_fine = int(parts[2])
+
+    dorm = await db.get_dorm(dorm_id)
+    if not dorm or user.id != dorm["admin_id"]:
+        await query.answer("Only the dorm admin can adjust fines.", show_alert=True)
+        return
 
     await db.update_dorm_settings(dorm_id, fine_amount=new_fine)
     await query.answer(f"Fine updated to {new_fine} ETB total!", show_alert=True)

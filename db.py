@@ -841,11 +841,12 @@ async def get_connection_status(dorm_id: Optional[int] = None) -> tuple:
     resolved_id = _resolve_dorm_id(dorm_id)
     members = await get_dorm_members(resolved_id)
     if not members:
-        # Fallback to config.MEMBERS for backward compatibility
-        connected_ids = set(await get_connected_user_ids())
-        connected = [m for m in config.MEMBERS if m.user_id in connected_ids]
-        pending = [m for m in config.MEMBERS if m.user_id not in connected_ids]
-        return len(connected), len(config.MEMBERS), connected, pending
+        if resolved_id == getattr(config, "DEFAULT_GROUP_ID", -1002378440774):
+            connected_ids = set(await get_connected_user_ids())
+            connected = [m for m in config.MEMBERS if m.user_id in connected_ids]
+            pending = [m for m in config.MEMBERS if m.user_id not in connected_ids]
+            return len(connected), len(config.MEMBERS), connected, pending
+        return 0, 0, [], []
 
     connected_ids = set(await get_connected_user_ids())
     connected_list = [m for m in members if m["user_id"] in connected_ids]
