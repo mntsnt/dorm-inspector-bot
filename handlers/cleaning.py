@@ -221,9 +221,10 @@ async def handle_cleaner_done(
     week_record = await db.get_week(target_week_start, dorm_id=dorm_id)
 
     if not week_record:
+        cleaner_ids = week_info.cleaner_ids
         eligible_approver_ids = [
             m["user_id"] for m in members
-            if m["user_id"] not in (week_info.cleaner1_id, week_info.cleaner2_id)
+            if m["user_id"] not in cleaner_ids
         ]
         if not eligible_approver_ids:
             eligible_approver_ids = [week_info.cleaner1_id]
@@ -234,19 +235,21 @@ async def handle_cleaner_done(
             cleaner1_id=week_info.cleaner1_id,
             cleaner2_id=week_info.cleaner2_id,
             eligible_approver_ids=eligible_approver_ids,
-            dorm_id=dorm_id
+            dorm_id=dorm_id,
+            cleaner3_id=week_info.cleaner3_id,
         )
 
-    # Validate that user is one of the 2 cleaners
+    # Validate that user is one of the assigned cleaners
     c1_id = week_record["cleaner1_id"]
-    c2_id = week_record["cleaner2_id"]
+    c2_id = week_record.get("cleaner2_id", 0)
+    c3_id = week_record.get("cleaner3_id", 0)
+    assigned_cleaner_ids = [cid for cid in (c1_id, c2_id, c3_id) if cid]
 
-    if user_id not in (c1_id, c2_id):
-        c1_name = members_by_id.get(c1_id, f"ID {c1_id}")
-        c2_name = members_by_id.get(c2_id, f"ID {c2_id}")
+    if user_id not in assigned_cleaner_ids:
+        disp = week_info.cleaner_display
         await msg.reply_text(
             f"ℹ️ **You are not on cleaning duty this week!**\n\n"
-            f"Cleaners for this week are **{c1_name} & {c2_name}**.\n"
+            f"Cleaners for this week are **{disp}**.\n"
             "Only the assigned cleaners can submit the cleaning photo.",
             parse_mode=ParseMode.MARKDOWN
         )
@@ -312,7 +315,7 @@ async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
     if not week_record:
         eligible_approver_ids = [
             m["user_id"] for m in members
-            if m["user_id"] not in (week_info.cleaner1_id, week_info.cleaner2_id)
+            if m["user_id"] not in week_info.cleaner_ids
         ]
         if not eligible_approver_ids:
             eligible_approver_ids = [week_info.cleaner1_id]
@@ -323,19 +326,21 @@ async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
             cleaner1_id=week_info.cleaner1_id,
             cleaner2_id=week_info.cleaner2_id,
             eligible_approver_ids=eligible_approver_ids,
-            dorm_id=dorm_id
+            dorm_id=dorm_id,
+            cleaner3_id=week_info.cleaner3_id,
         )
 
     # Check cleaners
     c1_id = week_record["cleaner1_id"]
-    c2_id = week_record["cleaner2_id"]
+    c2_id = week_record.get("cleaner2_id", 0)
+    c3_id = week_record.get("cleaner3_id", 0)
+    cleaner_uids = [cid for cid in (c1_id, c2_id, c3_id) if cid]
 
-    if user.id not in (c1_id, c2_id):
-        c1_name = members_by_id.get(c1_id, f"ID {c1_id}")
-        c2_name = members_by_id.get(c2_id, f"ID {c2_id}")
+    if user.id not in cleaner_uids:
+        disp = week_info.cleaner_display
         await update.message.reply_text(
             f"ℹ️ **You are not on cleaning duty this week!**\n\n"
-            f"Cleaners for this week are **{c1_name} & {c2_name}**.",
+            f"Cleaners for this week are **{disp}**.",
             parse_mode=ParseMode.MARKDOWN
         )
         return
@@ -436,7 +441,8 @@ async def friday_check_yes_callback(update: Update, context: ContextTypes.DEFAUL
         await query.answer("Week record not found.", show_alert=True)
         return
 
-    if user.id not in (week_record["cleaner1_id"], week_record["cleaner2_id"]):
+    assigned_ids = [cid for cid in (week_record["cleaner1_id"], week_record.get("cleaner2_id", 0), week_record.get("cleaner3_id", 0)) if cid]
+    if user.id not in assigned_ids:
         await query.answer("Only assigned cleaners can answer this check.", show_alert=True)
         return
 
@@ -507,7 +513,8 @@ async def friday_check_no_callback(update: Update, context: ContextTypes.DEFAULT
         await query.answer("Week record not found.", show_alert=True)
         return
 
-    if user.id not in (week_record["cleaner1_id"], week_record["cleaner2_id"]):
+    assigned_ids = [cid for cid in (week_record["cleaner1_id"], week_record.get("cleaner2_id", 0), week_record.get("cleaner3_id", 0)) if cid]
+    if user.id not in assigned_ids:
         await query.answer("Only assigned cleaners can answer this check.", show_alert=True)
         return
 
@@ -534,6 +541,8 @@ async def friday_check_no_callback(update: Update, context: ContextTypes.DEFAULT
 def register_cleaning_handlers(application: Application) -> None:
     """Attach cleaning duty and photo submission handlers."""
     application.add_handler(CommandHandler("done", done_command))
+    application.add_handler(CommandHandler("submit", done_command))
+    application.add_handler(CommandHandler("clean", done_command))
     application.add_handler(CallbackQueryHandler(cleaned_button_callback, pattern=r"^cleaned_"))
     application.add_handler(CallbackQueryHandler(friday_check_yes_callback, pattern=r"^fcheck_yes_"))
     application.add_handler(CallbackQueryHandler(friday_check_no_callback, pattern=r"^fcheck_no_"))

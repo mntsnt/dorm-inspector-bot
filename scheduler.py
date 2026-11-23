@@ -34,6 +34,36 @@ class DormWeekInfo:
     cleaner2_name: str
     monday_date: date
     friday_date: date
+    cleaner3_id: int = 0
+    cleaner3_name: str = ""
+
+    @property
+    def cleaners(self) -> List[tuple[int, str]]:
+        res = [(self.cleaner1_id, self.cleaner1_name)]
+        if self.cleaner2_id:
+            res.append((self.cleaner2_id, self.cleaner2_name))
+        if self.cleaner3_id:
+            res.append((self.cleaner3_id, self.cleaner3_name))
+        return res
+
+    @property
+    def cleaner_ids(self) -> List[int]:
+        return [cid for cid, _ in self.cleaners if cid]
+
+    @property
+    def cleaner_names(self) -> List[str]:
+        return [name for cid, name in self.cleaners if cid]
+
+    @property
+    def cleaner_display(self) -> str:
+        names = self.cleaner_names
+        if not names:
+            return "Nobody"
+        if len(names) == 1:
+            return names[0]
+        if len(names) == 2:
+            return f"{names[0]} & {names[1]}"
+        return f"{', '.join(names[:-1])} & {names[-1]}"
 
 def get_dorm_week_info(
     dorm: Dict[str, Any],
@@ -64,10 +94,12 @@ def get_dorm_week_info(
     pair_index = 0 if week_number < 1 else (week_number - 1) % len(pairs)
     pair = pairs[pair_index]
     c1_id = pair["cleaner1_id"]
-    c2_id = pair["cleaner2_id"]
+    c2_id = pair.get("cleaner2_id", 0)
+    c3_id = pair.get("cleaner3_id", 0)
 
     c1_name = members_by_id.get(c1_id, f"ID {c1_id}")
-    c2_name = members_by_id.get(c2_id, f"ID {c2_id}")
+    c2_name = members_by_id.get(c2_id, f"ID {c2_id}") if c2_id else ""
+    c3_name = members_by_id.get(c3_id, f"ID {c3_id}") if c3_id else ""
     friday_date = target_monday + timedelta(days=4)
 
     return DormWeekInfo(
@@ -79,6 +111,8 @@ def get_dorm_week_info(
         cleaner2_name=c2_name,
         monday_date=target_monday,
         friday_date=friday_date,
+        cleaner3_id=c3_id,
+        cleaner3_name=c3_name,
     )
 
 # ---------------------------------------------------------------------------
@@ -269,7 +303,7 @@ async def send_dorm_announcement(
 
     eligible_approver_ids = [
         m["user_id"] for m in members
-        if m["user_id"] not in (week_info.cleaner1_id, week_info.cleaner2_id)
+        if m["user_id"] not in week_info.cleaner_ids
     ]
     if not eligible_approver_ids:
         eligible_approver_ids = [week_info.cleaner1_id]
@@ -280,7 +314,8 @@ async def send_dorm_announcement(
         cleaner1_id=week_info.cleaner1_id,
         cleaner2_id=week_info.cleaner2_id,
         eligible_approver_ids=eligible_approver_ids,
-        dorm_id=dorm_id
+        dorm_id=dorm_id,
+        cleaner3_id=week_info.cleaner3_id,
     )
 
     if not force and week_record.get("announced") == 1:
@@ -288,16 +323,15 @@ async def send_dorm_announcement(
 
     approver_id = week_record["approver_id"]
     approver_name = members_by_id.get(approver_id, f"ID {approver_id}")
-    c1_name = week_info.cleaner1_name
-    c2_name = week_info.cleaner2_name
+    cleaner_disp = week_info.cleaner_display
 
     # 1. Post in the dorm group chat
     group_text = (
         f"📢 **Week {week_info.week_number} Duty Announcement!**\n\n"
-        f"Cleaners this week: **{c1_name}** & **{c2_name}**\n"
+        f"Cleaners this week: **{cleaner_disp}**\n"
         f"Approver: **{approver_name}**\n"
         f"Deadline: Friday 8:00 PM\n\n"
-        f"💬 Roommates, let's encourage **{c1_name}** and **{c2_name}** to keep them motivated! "
+        f"💬 Roommates, let's encourage **{cleaner_disp}** to keep them motivated! "
         f"Feel free to help them with cleaning if you like. 🙌"
     )
 
@@ -320,7 +354,7 @@ async def send_dorm_announcement(
                         chat_id=dorm_id,
                         message_thread_id=topic_id,
                         photo=photo,
-                        caption=f"**{c1_name} and {c2_name} be like:**",
+                        caption=f"**{cleaner_disp} be like:**",
                         parse_mode=ParseMode.MARKDOWN
                     )
             except Exception:
@@ -330,32 +364,24 @@ async def send_dorm_announcement(
     cleaner_btn = InlineKeyboardMarkup([
         [InlineKeyboardButton("We cleaned", callback_data=f"cleaned_{dorm_id}_{week_info.week_start}")]
     ])
-    await send_dm_with_fallback(
-        context,
-        user_id=week_info.cleaner1_id,
-        member_name=c1_name,
-        text=(
-            f"You have cleaning duty this week with **{c2_name}**.\n"
-            f"Deadline: Friday 8:00 PM.\n\n"
-            "When done, tap 'We cleaned' below and send a photo."
-        ),
-        reply_markup=cleaner_btn,
-        dorm_id=dorm_id,
-        topic_id=topic_id,
-    )
-    await send_dm_with_fallback(
-        context,
-        user_id=week_info.cleaner2_id,
-        member_name=c2_name,
-        text=(
-            f"You have cleaning duty this week with **{c1_name}**.\n"
-            f"Deadline: Friday 8:00 PM.\n\n"
-            "When done, tap 'We cleaned' below and send a photo."
-        ),
-        reply_markup=cleaner_btn,
-        dorm_id=dorm_id,
-        topic_id=topic_id,
-    )
+    for c_id, c_name in week_info.cleaners:
+        if not c_id:
+            continue
+        partners = [p_name for p_id, p_name in week_info.cleaners if p_id != c_id and p_id]
+        partner_str = f" with **{' & '.join(partners)}**" if partners else " (Solo duty)"
+        await send_dm_with_fallback(
+            context,
+            user_id=c_id,
+            member_name=c_name,
+            text=(
+                f"You have cleaning duty this week{partner_str}.\n"
+                f"Deadline: Friday 8:00 PM.\n\n"
+                "When done, tap 'We cleaned' below and send a photo."
+            ),
+            reply_markup=cleaner_btn,
+            dorm_id=dorm_id,
+            topic_id=topic_id,
+        )
 
     # 3. Private DM to Approver
     approver_dm_text = (
@@ -445,14 +471,13 @@ async def send_dorm_thursday_reminder(
     c2_name = members_by_id.get(week_record["cleaner2_id"], f"ID {week_record['cleaner2_id']}")
 
     reminder_meme = config.get_meme_file("reminder")
-    await send_dm_with_fallback(
-        context, week_record["cleaner1_id"], c1_name, reminder_text,
-        reply_markup=cleaner_btn, photo_path=reminder_meme, dorm_id=dorm_id, topic_id=topic_id
-    )
-    await send_dm_with_fallback(
-        context, week_record["cleaner2_id"], c2_name, reminder_text,
-        reply_markup=cleaner_btn, photo_path=reminder_meme, dorm_id=dorm_id, topic_id=topic_id
-    )
+    for c_id, c_name in week_info.cleaners:
+        if not c_id:
+            continue
+        await send_dm_with_fallback(
+            context, c_id, c_name, reminder_text,
+            reply_markup=cleaner_btn, photo_path=reminder_meme, dorm_id=dorm_id, topic_id=topic_id
+        )
 
     await db.mark_reminder_sent(week_info.week_start, dorm_id=dorm_id)
     logger.info("Thursday reminder sent for dorm %s, week %s", dorm_id, week_info.week_start)
@@ -515,8 +540,7 @@ async def send_dorm_friday_check(
     if not week_record or week_record.get("check_sent") == 1:
         return False
 
-    c1_name = members_by_id.get(week_record["cleaner1_id"], f"ID {week_record['cleaner1_id']}")
-    c2_name = members_by_id.get(week_record["cleaner2_id"], f"ID {week_record['cleaner2_id']}")
+    cleaner_disp = week_info.cleaner_display
     approver_name = members_by_id.get(week_record["approver_id"], f"ID {week_record['approver_id']}")
 
     # If photo already approved, mark completed and post in group
@@ -524,7 +548,7 @@ async def send_dorm_friday_check(
         timeout_deadline = now_time + timedelta(hours=config.APPROVER_TIMEOUT_HOURS)
         await db.set_check_sent(week_info.week_start, timeout_deadline.isoformat(), dorm_id=dorm_id)
         approved_meme = config.get_meme_file("approved")
-        app_msg = f"Friday Check: **{c1_name}** & **{c2_name}** cleaned and photo was approved. All done!"
+        app_msg = f"Friday Check: **{cleaner_disp}** cleaned and photo was approved. All done!"
         await post_group_announcement_safe(context, dorm_id, topic_id, app_msg, approved_meme)
         return True
 
@@ -532,7 +556,7 @@ async def send_dorm_friday_check(
     timeout_deadline = now_time + timedelta(hours=config.APPROVER_TIMEOUT_HOURS)
     await db.set_check_sent(week_info.week_start, timeout_deadline.isoformat(), dorm_id=dorm_id)
 
-    # Send Yes/No check to both cleaners
+    # Send Yes/No check to cleaners
     check_keyboard = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("Yes", callback_data=f"fcheck_yes_{dorm_id}_{week_info.week_start}"),
@@ -540,8 +564,10 @@ async def send_dorm_friday_check(
         ]
     ])
     cleaner_check_msg = "Did you clean the dorm this week?"
-    await send_dm_with_fallback(context, week_record["cleaner1_id"], c1_name, cleaner_check_msg, reply_markup=check_keyboard, dorm_id=dorm_id, topic_id=topic_id)
-    await send_dm_with_fallback(context, week_record["cleaner2_id"], c2_name, cleaner_check_msg, reply_markup=check_keyboard, dorm_id=dorm_id, topic_id=topic_id)
+    for c_id, c_name in week_info.cleaners:
+        if not c_id:
+            continue
+        await send_dm_with_fallback(context, c_id, c_name, cleaner_check_msg, reply_markup=check_keyboard, dorm_id=dorm_id, topic_id=topic_id)
 
     # Send final confirmation request to Approver
     approver_confirm_keyboard = InlineKeyboardMarkup([
@@ -687,24 +713,36 @@ async def _process_approver_timeout(
     """Fallback logic when approver fails to confirm within APPROVER_TIMEOUT_HOURS."""
     dorm_id = dorm["dorm_id"]
     topic_id = dorm.get("topic_id")
-    fine_total = dorm.get("fine_amount", 100)
-    fine_each = fine_total // 2
 
     week_start = week_record["week_start"]
     c1_id = week_record["cleaner1_id"]
-    c2_id = week_record["cleaner2_id"]
-    c1_name = members_by_id.get(c1_id, f"ID {c1_id}")
-    c2_name = members_by_id.get(c2_id, f"ID {c2_id}")
+    c2_id = week_record.get("cleaner2_id", 0)
+    c3_id = week_record.get("cleaner3_id", 0)
+
+    cleaner_items = []
+    if c1_id:
+        cleaner_items.append((c1_id, members_by_id.get(c1_id, f"ID {c1_id}")))
+    if c2_id:
+        cleaner_items.append((c2_id, members_by_id.get(c2_id, f"ID {c2_id}")))
+    if c3_id:
+        cleaner_items.append((c3_id, members_by_id.get(c3_id, f"ID {c3_id}")))
+
+    fine_total = dorm.get("fine_amount", 100)
+    num_cleaners = max(1, len(cleaner_items))
+    fine_each = fine_total // num_cleaners
 
     approver_id = week_record["approver_id"]
     approver_name = members_by_id.get(approver_id, f"ID {approver_id}")
 
     c1_ans = week_record.get("cleaner1_response")
     c2_ans = week_record.get("cleaner2_response")
+    c3_ans = week_record.get("cleaner3_response")
     photo_status = week_record.get("photo_status", "none")
 
-    cleaners_claim_yes = (c1_ans == "yes" or c2_ans == "yes")
+    cleaners_claim_yes = (c1_ans == "yes" or c2_ans == "yes" or c3_ans == "yes")
     has_photo = photo_status in ("submitted", "approved")
+
+    cleaners_disp = " & ".join(c[1] for c in cleaner_items)
 
     if cleaners_claim_yes and has_photo:
         await db.mark_timeout_processed(week_start, decision="timeout", final_status="completed", dorm_id=dorm_id)
@@ -716,6 +754,10 @@ async def _process_approver_timeout(
         await post_group_announcement_safe(context, dorm_id, topic_id, group_msg, approved_meme)
     else:
         await db.mark_timeout_processed(week_start, decision="timeout", final_status="fined", dorm_id=dorm_id)
+        c1_name = cleaner_items[0][1] if len(cleaner_items) > 0 else ""
+        c2_name = cleaner_items[1][1] if len(cleaner_items) > 1 else ""
+        c3_name = cleaner_items[2][1] if len(cleaner_items) > 2 else ""
+
         await db.create_fines_for_week(
             week_start=week_start,
             cleaner1_id=c1_id,
@@ -723,13 +765,15 @@ async def _process_approver_timeout(
             cleaner2_id=c2_id,
             cleaner2_name=c2_name,
             fine_each=fine_each,
-            dorm_id=dorm_id
+            dorm_id=dorm_id,
+            cleaner3_id=c3_id,
+            cleaner3_name=c3_name,
         )
         fined_meme = config.get_meme_file("fined")
         group_msg = (
             f"Approver **{approver_name}** didn't reply in time and no approved photo was sent.\n"
             f"Marked as NOT cleaned.\n\n"
-            f"Fine: {fine_each} ETB each for **{c1_name}** & **{c2_name}** ({fine_total} ETB total)."
+            f"Fine: {fine_each} ETB each for **{cleaners_disp}** ({fine_total} ETB total)."
         )
         await post_group_announcement_safe(context, dorm_id, topic_id, group_msg, fined_meme)
 
@@ -737,8 +781,8 @@ async def _process_approver_timeout(
             f"The approver didn't reply in time and no photo was approved. Duty marked as NOT cleaned.\n"
             f"Fine: **{fine_each} ETB**."
         )
-        await send_dm_with_fallback(context, c1_id, c1_name, dm_fine_msg, photo_path=fined_meme, dorm_id=dorm_id, topic_id=topic_id)
-        await send_dm_with_fallback(context, c2_id, c2_name, dm_fine_msg, photo_path=fined_meme, dorm_id=dorm_id, topic_id=topic_id)
+        for cid, cname in cleaner_items:
+            await send_dm_with_fallback(context, cid, cname, dm_fine_msg, photo_path=fined_meme, dorm_id=dorm_id, topic_id=topic_id)
 
 # ---------------------------------------------------------------------------
 # Scheduler Setup

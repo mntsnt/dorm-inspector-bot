@@ -241,6 +241,9 @@ async def get_dorm_detail(dorm_identifier: str) -> Dict[str, Any]:
                     "friday": fw.friday_date.strftime("%b %d"),
                     "cleaner1": fw.cleaner1_name,
                     "cleaner2": fw.cleaner2_name,
+                    "cleaner3": getattr(fw, "cleaner3_name", ""),
+                    "cleaners_display": fw.cleaner_display,
+                    "cleaners": fw.cleaner_names,
                     "is_current": (tgt_monday == current_monday)
                 })
 
@@ -251,20 +254,28 @@ async def get_dorm_detail(dorm_identifier: str) -> Dict[str, Any]:
     formatted_history = []
     for h in history:
         c1 = members_by_id.get(h["cleaner1_id"], f"ID {h['cleaner1_id']}")
-        c2 = members_by_id.get(h["cleaner2_id"], f"ID {h['cleaner2_id']}")
+        c2 = members_by_id.get(h["cleaner2_id"], f"ID {h['cleaner2_id']}") if h.get("cleaner2_id") else ""
+        c3 = members_by_id.get(h.get("cleaner3_id", 0), f"ID {h.get('cleaner3_id', 0)}") if h.get("cleaner3_id") else ""
+        c_names = [n for n in (c1, c2, c3) if n]
         formatted_history.append({
             "week_number": h["week_number"],
             "week_start": h["week_start"],
             "cleaner1": c1,
             "cleaner2": c2,
+            "cleaner3": c3,
+            "cleaners_display": " & ".join(c_names),
             "final_status": h.get("final_status", "pending"),
             "rating": h.get("rating")
         })
+
+    cleaner_names_list = week_info.cleaner_names if week_info else []
+    cleaners_disp = week_info.cleaner_display if week_info else "TBD"
 
     return {
         "dorm_id": dorm_id,
         "dorm_name": dorm["dorm_name"],
         "dorm_code": dorm.get("dorm_code") or "DORM-101",
+        "cleaners_per_week": dorm.get("cleaners_per_week", 2),
         "fine_amount": dorm.get("fine_amount", 100),
         "status": dorm.get("status", "active"),
         "members": [{"user_id": m["user_id"], "name": m["name"], "is_admin": m.get("is_admin", 0)} for m in members],
@@ -272,7 +283,10 @@ async def get_dorm_detail(dorm_identifier: str) -> Dict[str, Any]:
             "week_number": week_info.week_number if week_info else 0,
             "week_start": week_info.week_start if week_info else "",
             "cleaner1": week_info.cleaner1_name if week_info else "TBD",
-            "cleaner2": week_info.cleaner2_name if week_info else "TBD",
+            "cleaner2": week_info.cleaner2_name if week_info else "",
+            "cleaner3": getattr(week_info, "cleaner3_name", "") if week_info else "",
+            "cleaners_display": cleaners_disp,
+            "cleaners": cleaner_names_list,
             "approver": approver_name,
             "duty_state": duty_state,
             "status_code": status_code,
@@ -287,7 +301,8 @@ async def get_dorm_detail(dorm_identifier: str) -> Dict[str, Any]:
 @app.get("/api/dorms/code/{dorm_code}", response_class=JSONResponse)
 async def get_dorm_by_code_endpoint(dorm_code: str) -> Dict[str, Any]:
     """Detailed live metrics for a dorm looked up by its dorm code."""
-    clean_code = (dorm_code or "").strip()
+    raw = (dorm_code or "").replace("`", "").replace("'", "").replace('"', '').replace("#", "").strip()
+    clean_code = raw.upper()
     if not clean_code:
         raise HTTPException(status_code=400, detail="Dorm code cannot be empty")
     dorm = await db.get_dorm_by_code(clean_code)
@@ -372,7 +387,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <span class="font-extrabold text-sm text-white tracking-tight">Dorm Inspector</span>
           <span class="px-1.5 py-0.2 rounded text-[9px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/25 tracking-wide">ALETCLOUD</span>
         </div>
-        <p class="text-[10px] text-gray-400 font-mono leading-none">inspector.app.aletcloud.com</p>
+        <p id="header-domain" class="text-[10px] text-gray-400 font-mono leading-none">dorm-inspector-bot-1.app.aletcloud.com</p>
       </div>
     </div>
 
@@ -454,28 +469,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <p id="selected-dorm-week-header" class="text-[11px] text-emerald-400 font-medium mt-0.5">Week 1 Duty</p>
         </div>
 
-        <!-- Cleaners Spotlight -->
-        <div class="mt-2.5 space-y-1.5">
+        <!-- Cleaners Spotlight (Dynamic 1, 2, or 3 Cleaners) -->
+        <div id="cleaners-container" class="mt-2.5 space-y-1.5">
           <div class="panel-subtle rounded-lg p-2 flex items-center justify-between">
-            <div class="flex items-center gap-2">
-              <span class="w-5 h-5 rounded bg-emerald-500/20 text-emerald-300 font-bold flex items-center justify-center text-[10px]">1</span>
-              <div>
-                <p class="text-[9px] text-gray-400 uppercase font-semibold">Primary Cleaner</p>
-                <p id="cleaner-1-name" class="font-bold text-white text-xs">--</p>
-              </div>
-            </div>
-            <span class="text-[10px] text-emerald-400 font-medium">On Duty</span>
-          </div>
-
-          <div class="panel-subtle rounded-lg p-2 flex items-center justify-between">
-            <div class="flex items-center gap-2">
-              <span class="w-5 h-5 rounded bg-emerald-500/20 text-emerald-300 font-bold flex items-center justify-center text-[10px]">2</span>
-              <div>
-                <p class="text-[9px] text-gray-400 uppercase font-semibold">Partner Cleaner</p>
-                <p id="cleaner-2-name" class="font-bold text-white text-xs">--</p>
-              </div>
-            </div>
-            <span class="text-[10px] text-emerald-400 font-medium">On Duty</span>
+            <span class="text-[10px] text-gray-400">Loading duty cleaners...</span>
           </div>
         </div>
       </div>
@@ -569,7 +566,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <!-- Minimal Footer -->
   <footer class="mt-2.5 px-3 py-1.5 rounded-xl panel flex items-center justify-between text-[10px] text-gray-400 flex-shrink-0">
     <div>
-      Dorm Inspector Bot • <span class="text-emerald-400 font-semibold">inspector.app.aletcloud.com</span>
+      Dorm Inspector Bot • <span id="footer-domain" class="text-emerald-400 font-semibold">dorm-inspector-bot-1.app.aletcloud.com</span>
     </div>
     <div class="flex items-center gap-3">
       <span>Auto-refresh: <strong class="text-emerald-400">15s</strong></span>
@@ -663,9 +660,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     async function lookupDormByCode() {
       const input = document.getElementById('dorm-code-input');
       const viewBtn = document.getElementById('view-code-btn');
-      const code = input ? input.value.trim().toUpperCase() : '';
-      if (!code) {
-        showCodeError("Please enter your dorm code (check /code in Telegram).");
+      const rawCode = input ? input.value : '';
+      const cleanCode = (rawCode || '').replace(/[`'"#]/g, '').trim().toUpperCase();
+      if (!cleanCode) {
+        showCodeError("Please enter your dorm code (check /code in Telegram, or try DORM-101).");
         return;
       }
 
@@ -675,7 +673,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       }
 
       try {
-        await loadDormByCode(code);
+        await loadDormByCode(cleanCode);
       } finally {
         if (viewBtn) {
           viewBtn.disabled = false;
@@ -685,14 +683,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     }
 
     async function loadDormByCode(code) {
-      const cleanCode = (code || '').trim().toUpperCase();
+      const cleanCode = (code || '').replace(/[`'"#]/g, '').trim().toUpperCase();
       if (!cleanCode) return;
       try {
         clearCodeError();
         const res = await fetch(`/api/dorms/code/${encodeURIComponent(cleanCode)}`);
         if (!res.ok) {
           if (res.status === 404) {
-            showCodeError(`Dorm code '${cleanCode}' not found. Please verify your code by typing /code in Telegram.`);
+            showCodeError(`Dorm code '${cleanCode}' not found. Please verify by typing /code in Telegram, or try DORM-101.`);
           } else {
             showCodeError(`Could not verify dorm code '${cleanCode}' (Server status: ${res.status}).`);
           }
@@ -726,6 +724,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       const refreshIcon = document.getElementById('refresh-icon');
       if (refreshIcon) refreshIcon.classList.add('animate-spin');
 
+      if (window.location && window.location.host) {
+        const hDom = document.getElementById('header-domain');
+        const fDom = document.getElementById('footer-domain');
+        if (hDom) hDom.innerText = window.location.host;
+        if (fDom) fDom.innerText = window.location.host;
+      }
+
       try {
         // 1. Fetch system status
         const sysRes = await fetch('/api/status');
@@ -750,11 +755,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         if (targetCode) {
           await loadDormByCode(targetCode);
         } else {
-          // If no code is stored, check if a single dorm exists and auto-load it
+          // If no code is stored, check active dorms and auto-load the first one
           const dormsRes = await fetch('/api/dorms');
           if (dormsRes.ok) {
             const dorms = await dormsRes.json();
-            if (dorms.length === 1 && dorms[0].dorm_code) {
+            if (dorms && dorms.length > 0 && dorms[0].dorm_code) {
               await loadDormByCode(dorms[0].dorm_code);
             } else {
               document.getElementById('selected-dorm-title').innerText = "Enter Dorm Code";
@@ -781,7 +786,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       if (codeBadge) codeBadge.innerText = `${data.dorm_code} 📋`;
       const codeInput = document.getElementById('dorm-code-input');
       if (codeInput && !codeInput.value) codeInput.value = data.dorm_code;
-      document.getElementById('selected-dorm-fine').innerText = `${data.fine_amount} ETB (50/50)`;
+
+      const teamSize = data.cleaners_per_week || 2;
+      const fineTotal = data.fine_amount || 100;
+      const fineEach = Math.floor(fineTotal / teamSize);
+      document.getElementById('selected-dorm-fine').innerText = `${fineTotal} ETB (${fineEach} each)`;
       document.getElementById('selected-dorm-approver').innerText = (data.current_week && data.current_week.approver) ? data.current_week.approver : 'Not assigned';
 
       // Week header & badge
@@ -794,8 +803,30 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         badge.className = 'px-2 py-0.5 rounded-full text-[10px] font-semibold ' + getBadgeClass(curWeek.status_code);
       }
 
-      document.getElementById('cleaner-1-name').innerText = curWeek.cleaner1 || 'TBD';
-      document.getElementById('cleaner-2-name').innerText = curWeek.cleaner2 || 'TBD';
+      // Render cleaners dynamically (1, 2, or 3 cleaners)
+      const cleaners = (curWeek.cleaners && curWeek.cleaners.length > 0)
+        ? curWeek.cleaners
+        : [curWeek.cleaner1, curWeek.cleaner2, curWeek.cleaner3].filter(Boolean);
+
+      const cleanersEl = document.getElementById('cleaners-container');
+      if (cleanersEl) {
+        if (cleaners.length === 0) {
+          cleanersEl.innerHTML = `<div class="panel-subtle rounded-lg p-2 text-center text-gray-500 text-[10px]">No cleaners assigned yet</div>`;
+        } else {
+          cleanersEl.innerHTML = cleaners.map((cName, idx) => `
+            <div class="panel-subtle rounded-lg p-2 flex items-center justify-between">
+              <div class="flex items-center gap-2">
+                <span class="w-5 h-5 rounded bg-emerald-500/20 text-emerald-300 font-bold flex items-center justify-center text-[10px]">${idx + 1}</span>
+                <div>
+                  <p class="text-[9px] text-gray-400 uppercase font-semibold">Cleaner ${idx + 1}</p>
+                  <p class="font-bold text-white text-xs">${cName || 'TBD'}</p>
+                </div>
+              </div>
+              <span class="text-[10px] text-emerald-400 font-medium">On Duty</span>
+            </div>
+          `).join('');
+        }
+      }
 
       // Render schedule preview
       renderSchedule(data.schedule);
@@ -840,6 +871,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         const isCur = w.is_current;
         const border = isCur ? 'border-emerald-500/40 bg-emerald-500/10' : 'panel-subtle';
         const tag = isCur ? '<span class="text-[9px] font-bold px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300">THIS WEEK</span>' : '';
+        const namesDisp = w.cleaners_display || [w.cleaner1, w.cleaner2, w.cleaner3].filter(Boolean).join(' & ');
 
         return `
           <div class="p-2 rounded-lg border flex items-center justify-between text-[11px] ${border}">
@@ -849,7 +881,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
               ${tag}
             </div>
             <div class="font-medium text-gray-300 text-right">
-              <span class="text-emerald-400 font-semibold">${w.cleaner1}</span> & <span class="text-emerald-400 font-semibold">${w.cleaner2}</span>
+              <span class="text-emerald-400 font-semibold">${namesDisp}</span>
             </div>
           </div>
         `;

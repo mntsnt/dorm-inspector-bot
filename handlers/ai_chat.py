@@ -34,11 +34,10 @@ async def handle_ai_mention(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     lower_text = text.lower()
 
     if is_group:
-        if (
-            (bot_username and f"@{bot_username}" in lower_text)
-            or "@inspector" in lower_text
-            or re.search(r"\b@?inspector\b", lower_text)
-        ):
+        # In groups, only answer if explicitly @mentioned or replied to directly
+        if bot_username and f"@{bot_username}" in lower_text:
+            is_mention = True
+        elif "@inspector" in lower_text:
             is_mention = True
         elif (
             message.reply_to_message
@@ -47,7 +46,6 @@ async def handle_ai_mention(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         ):
             is_reply_to_bot = True
 
-        # In groups, only answer if explicitly mentioned, called, or replied to
         if not is_mention and not is_reply_to_bot:
             return
     else:

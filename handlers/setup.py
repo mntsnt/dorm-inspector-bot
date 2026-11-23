@@ -192,6 +192,7 @@ async def setup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     setup_text = (
         f"🧼 **Dorm Inspector Setup: {dorm_name}**\n\n"
         f"Admin: **{user.first_name}**\n"
+        "Cleaners: **2 members per week** (Select below to adjust)\n"
         f"Default Fine: **100 ETB total** (50 ETB each)\n\n"
         "Roommates, tap the button below to connect your account so the bot can DM you when on duty:"
     )
@@ -201,6 +202,11 @@ async def setup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         [
             InlineKeyboardButton("👥 Members (1)", callback_data=f"setup_members_{dorm_id}"),
             InlineKeyboardButton("⚙️ Settings", callback_data=f"setup_settings_{dorm_id}")
+        ],
+        [
+            InlineKeyboardButton("1 Cleaner", callback_data=f"setteam_{dorm_id}_1"),
+            InlineKeyboardButton("✅ 2 Cleaners", callback_data=f"setteam_{dorm_id}_2"),
+            InlineKeyboardButton("3 Cleaners", callback_data=f"setteam_{dorm_id}_3"),
         ],
         [InlineKeyboardButton("🚀 Auto-Pair & Launch", callback_data=f"setup_launch_{dorm_id}")]
     ])
@@ -262,19 +268,26 @@ async def setup_settings_callback(update: Update, context: ContextTypes.DEFAULT_
         pass
 
     current_fine = dorm.get("fine_amount", 100)
+    current_team = dorm.get("cleaners_per_week", 2)
     settings_text = (
         f"⚙️ **Settings for {dorm['dorm_name']}:**\n\n"
-        f"Current Fine: **{current_fine} ETB** total ({current_fine // 2} ETB each cleaner)\n"
+        f"• Cleaning Team Size: **{current_team} cleaner(s) per week**\n"
+        f"• Fine Amount: **{current_fine} ETB total** ({current_fine // current_team} ETB each cleaner)\n\n"
         "Choose an option below to adjust:"
     )
 
     keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("50 ETB (25 each)", callback_data=f"setfine_{dorm_id}_50"),
-            InlineKeyboardButton("100 ETB (50 each)", callback_data=f"setfine_{dorm_id}_100"),
+            InlineKeyboardButton("👤 1 Cleaner/Wk", callback_data=f"setteam_{dorm_id}_1"),
+            InlineKeyboardButton("👥 2 Cleaners/Wk", callback_data=f"setteam_{dorm_id}_2"),
+            InlineKeyboardButton("👥+ 3 Cleaners/Wk", callback_data=f"setteam_{dorm_id}_3"),
         ],
         [
-            InlineKeyboardButton("200 ETB (100 each)", callback_data=f"setfine_{dorm_id}_200"),
+            InlineKeyboardButton("50 ETB Fine", callback_data=f"setfine_{dorm_id}_50"),
+            InlineKeyboardButton("100 ETB Fine", callback_data=f"setfine_{dorm_id}_100"),
+            InlineKeyboardButton("200 ETB Fine", callback_data=f"setfine_{dorm_id}_200"),
+        ],
+        [
             InlineKeyboardButton("No Fines (0 ETB)", callback_data=f"setfine_{dorm_id}_0"),
         ],
         [InlineKeyboardButton("« Back to Setup", callback_data=f"setup_back_{dorm_id}")]
@@ -312,6 +325,34 @@ async def setfine_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     # Return to setup card
     await _render_setup_card(query, context, dorm_id)
 
+async def setteam_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Update team size (cleaners per week: 1, 2, or 3)."""
+    query = update.callback_query
+    if not query:
+        return
+    user = query.from_user
+
+    parts = query.data.split("_")
+    dorm_id = int(parts[1])
+    new_team_size = int(parts[2])
+
+    dorm = await db.get_dorm(dorm_id)
+    if not dorm or user.id != dorm["admin_id"]:
+        await query.answer("Only the dorm admin can adjust cleaners per week.", show_alert=True)
+        return
+
+    if new_team_size not in (1, 2, 3):
+        new_team_size = 2
+
+    await db.update_dorm_settings(dorm_id, cleaners_per_week=new_team_size)
+    try:
+        await query.answer(f"Cleaning team set to {new_team_size} cleaner(s) per week!", show_alert=True)
+    except Exception:
+        pass
+
+    # Return to setup card
+    await _render_setup_card(query, context, dorm_id)
+
 async def setup_back_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Return to main setup card."""
     query = update.callback_query
@@ -342,21 +383,32 @@ async def _render_setup_card(query, context, dorm_id: int) -> None:
     join_url = f"https://t.me/{bot_username}?start=join_{param_id}"
 
     current_fine = dorm.get("fine_amount", 100)
-    fine_each = current_fine // 2
+    team_size = dorm.get("cleaners_per_week", 2)
+    fine_each = current_fine // team_size
 
     setup_text = (
         f"🧼 **Dorm Inspector Setup: {dorm['dorm_name']}**\n\n"
         f"Admin: **{admin_name}**\n"
-        f"Fine: **{current_fine} ETB total** ({fine_each} ETB each)\n"
+        f"Cleaners: **{team_size} member{'s' if team_size > 1 else ''} per week**\n"
+        f"Fine: **{current_fine} ETB total** ({fine_each} ETB each cleaner)\n"
         f"Connected: **{len(members)} roommates**\n\n"
         "Roommates, tap the button below to connect your account:"
     )
+
+    b1_label = "✅ 1 Cleaner" if team_size == 1 else "1 Cleaner"
+    b2_label = "✅ 2 Cleaners" if team_size == 2 else "2 Cleaners"
+    b3_label = "✅ 3 Cleaners" if team_size == 3 else "3 Cleaners"
 
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("➕ Tap to Join Dorm", url=join_url)],
         [
             InlineKeyboardButton(f"👥 Members ({len(members)})", callback_data=f"setup_members_{dorm_id}"),
             InlineKeyboardButton("⚙️ Settings", callback_data=f"setup_settings_{dorm_id}")
+        ],
+        [
+            InlineKeyboardButton(b1_label, callback_data=f"setteam_{dorm_id}_1"),
+            InlineKeyboardButton(b2_label, callback_data=f"setteam_{dorm_id}_2"),
+            InlineKeyboardButton(b3_label, callback_data=f"setteam_{dorm_id}_3"),
         ],
         [InlineKeyboardButton("🚀 Auto-Pair & Launch", callback_data=f"setup_launch_{dorm_id}")]
     ])
@@ -392,8 +444,9 @@ async def setup_launch_callback(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     members = await db.get_dorm_members(dorm_id)
-    if len(members) < 2:
-        await query.answer("You need at least 2 connected roommates to create pairs!", show_alert=True)
+    team_size = dorm.get("cleaners_per_week", 2)
+    if len(members) < team_size:
+        await query.answer(f"You need at least {team_size} connected roommate(s) to create cleaning rotation!", show_alert=True)
         return
 
     try:
@@ -401,7 +454,7 @@ async def setup_launch_callback(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception:
         pass
 
-    # Generate pairs automatically
+    # Generate teams automatically
     pairs = await db.auto_generate_dorm_pairs(dorm_id)
 
     # Set start date to upcoming Monday
@@ -415,13 +468,18 @@ async def setup_launch_callback(update: Update, context: ContextTypes.DEFAULT_TY
     # Build launch announcement text
     pair_lines = []
     members_by_id = {m["user_id"]: m["name"] for m in members}
-    for idx, (p1, p2) in enumerate(pairs, start=1):
-        n1 = members_by_id.get(p1, f"ID {p1}")
-        n2 = members_by_id.get(p2, f"ID {p2}")
-        pair_lines.append(f"• **Week {idx}:** {n1} & {n2}")
+    for idx, team in enumerate(pairs, start=1):
+        cleaner_uids = [uid for uid in team if uid]
+        cnames = [members_by_id.get(uid, f"ID {uid}") for uid in cleaner_uids]
+        if len(cnames) == 1:
+            pair_lines.append(f"• **Week {idx}:** {cnames[0]}")
+        elif len(cnames) == 2:
+            pair_lines.append(f"• **Week {idx}:** {cnames[0]} & {cnames[1]}")
+        else:
+            pair_lines.append(f"• **Week {idx}:** {', '.join(cnames[:-1])} & {cnames[-1]}")
 
     code = dorm.get("dorm_code") or "DORM-101"
-    dash_base = getattr(config, "DASHBOARD_URL", "https://inspector.app.aletcloud.com")
+    dash_base = getattr(config, "DASHBOARD_URL", "https://dorm-inspector-bot-1.app.aletcloud.com")
     dash_url = f"{dash_base}?code={code}"
 
     launch_msg = (
@@ -429,8 +487,9 @@ async def setup_launch_callback(update: Update, context: ContextTypes.DEFAULT_TY
         f"🔑 Dorm Code: `{code}`\n"
         f"🌐 Live Website: [Open Dashboard]({dash_url})\n\n"
         f"Total Roommates: **{len(members)}**\n"
+        f"Cleaners: **{team_size} per week**\n"
         f"Rotation starts: **Monday, {start_monday.strftime('%b %d')}**\n\n"
-        "**Cleaning Pairs:**\n" + "\n".join(pair_lines) + "\n\n"
+        "**Cleaning Schedule:**\n" + "\n".join(pair_lines) + "\n\n"
         "Duty will be announced automatically every Monday at 08:00 AM.\n"
         "Use /status anytime to check the schedule!"
     )
@@ -506,6 +565,7 @@ def register_setup_handlers(application: Application) -> None:
     application.add_handler(CallbackQueryHandler(setup_members_callback, pattern=r"^setup_members_"))
     application.add_handler(CallbackQueryHandler(setup_settings_callback, pattern=r"^setup_settings_"))
     application.add_handler(CallbackQueryHandler(setfine_callback, pattern=r"^setfine_"))
+    application.add_handler(CallbackQueryHandler(setteam_callback, pattern=r"^setteam_"))
     application.add_handler(CallbackQueryHandler(setup_back_callback, pattern=r"^setup_back_"))
     application.add_handler(CallbackQueryHandler(setup_launch_callback, pattern=r"^setup_launch_"))
     application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, new_chat_members_handler))

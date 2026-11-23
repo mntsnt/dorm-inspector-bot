@@ -470,16 +470,16 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         cleaner_reply_kb = commands.get_reply_keyboard(is_cleaner=True)
         self.assertTrue(cleaner_reply_kb.is_persistent)
         cleaner_reply_texts = [btn.text if hasattr(btn, "text") else btn for row in cleaner_reply_kb.keyboard for btn in row]
-        self.assertIn("Submit Cleaning", cleaner_reply_texts)
+        self.assertIn("/submit", cleaner_reply_texts)
 
         reply_kb = commands.get_reply_keyboard(is_cleaner=False)
         self.assertTrue(reply_kb.is_persistent)
         reply_texts = [btn.text if hasattr(btn, "text") else btn for row in reply_kb.keyboard for btn in row]
-        self.assertIn("Status", reply_texts)
-        self.assertIn("Schedule", reply_texts)
-        self.assertIn("Fines", reply_texts)
-        self.assertIn("Main Menu", reply_texts)
-        self.assertNotIn("Submit Cleaning", reply_texts)
+        self.assertIn("/status", reply_texts)
+        self.assertIn("/schedule", reply_texts)
+        self.assertIn("/fines", reply_texts)
+        self.assertIn("/menu", reply_texts)
+        self.assertNotIn("/submit", reply_texts)
 
         # 4. Status view has Forward (Schedule) and Back (Menu)
         status_text, status_kb = await commands.get_status_content(7220854785)
@@ -1107,7 +1107,7 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         self.assertIn("No unpaid fines", reply3)
 
     async def test_ai_mention_natural_name(self):
-        """Verify that typing 'inspector who is cleaning' triggers the AI handler."""
+        """Verify that typing '@inspector who is cleaning' triggers AI, while bare mention does not."""
         await db.init_db()
         from handlers import ai_chat
         update = MagicMock()
@@ -1117,11 +1117,20 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         update.effective_user.first_name = "Bilisuma"
         update.effective_message.text = "inspector who is cleaning this week?"
         update.effective_message.message_id = 999
+        update.effective_message.reply_to_message = None
         update.effective_message.reply_text = AsyncMock()
 
         context = MagicMock()
         context.bot.username = "DormInspectorBot"
 
+        # 1. Bare word "inspector" without @ should NOT trigger in group (user requirement)
+        with patch("handlers.ai_chat.ask_ai", new_callable=AsyncMock) as mock_ask:
+            await ai_chat.handle_ai_mention(update, context)
+            mock_ask.assert_not_called()
+            update.effective_message.reply_text.assert_not_called()
+
+        # 2. Explicit @inspector mention MUST trigger AI
+        update.effective_message.text = "@inspector who is cleaning this week?"
         with patch("handlers.ai_chat.ask_ai", new_callable=AsyncMock) as mock_ask:
             mock_ask.return_value = "Bilisuma and Nahom are on duty."
             await ai_chat.handle_ai_mention(update, context)
@@ -1468,6 +1477,106 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         reply_markup = reply_call[1].get("reply_markup")
         self.assertIsNotNone(reply_markup)
         self.assertTrue(reply_markup.is_persistent)
+
+    async def test_configurable_cleaners_per_week_1_2_3(self):
+        """Verify pair auto-generation and week info with 1, 2, and 3 cleaners per week."""
+        await db.init_db()
+        test_dorm_id = -999888777
+        await db.create_or_update_dorm(
+            dorm_id=test_dorm_id,
+            dorm_name="Multi-Size Test Dorm",
+            admin_id=6163528558,
+            dorm_code="DORM-TEST-999",
+            cleaners_per_week=1
+        )
+        # Register 6 members
+        members_list = [
+            (101, "Member 1"),
+            (102, "Member 2"),
+            (103, "Member 3"),
+            (104, "Member 4"),
+            (105, "Member 5"),
+            (106, "Member 6"),
+        ]
+        for uid, name in members_list:
+            await db.add_dorm_member(test_dorm_id, uid, name)
+
+        # 1 Cleaner per week
+        pairs_1 = await db.auto_generate_dorm_pairs(test_dorm_id)
+        self.assertEqual(len(pairs_1), 6)
+        for p in pairs_1:
+            self.assertGreater(p[0], 0)
+            self.assertEqual(p[1], 0)
+            self.assertEqual(p[2], 0)
+        saved_1 = await db.get_dorm_pairs(test_dorm_id)
+        self.assertEqual(len(saved_1), 6)
+        self.assertGreater(saved_1[0]["cleaner1_id"], 0)
+        self.assertEqual(saved_1[0]["cleaner2_id"], 0)
+        self.assertEqual(saved_1[0]["cleaner3_id"], 0)
+
+        # 2 Cleaners per week
+        await db.update_dorm_settings(test_dorm_id, cleaners_per_week=2)
+        pairs_2 = await db.auto_generate_dorm_pairs(test_dorm_id)
+        self.assertEqual(len(pairs_2), 3)
+        for p in pairs_2:
+            self.assertGreater(p[0], 0)
+            self.assertGreater(p[1], 0)
+            self.assertEqual(p[2], 0)
+        saved_2 = await db.get_dorm_pairs(test_dorm_id)
+        self.assertEqual(len(saved_2), 3)
+        self.assertGreater(saved_2[0]["cleaner1_id"], 0)
+        self.assertGreater(saved_2[0]["cleaner2_id"], 0)
+        self.assertEqual(saved_2[0]["cleaner3_id"], 0)
+
+        # 3 Cleaners per week
+        await db.update_dorm_settings(test_dorm_id, cleaners_per_week=3)
+        pairs_3 = await db.auto_generate_dorm_pairs(test_dorm_id)
+        self.assertEqual(len(pairs_3), 2)
+        for p in pairs_3:
+            self.assertGreater(p[0], 0)
+            self.assertGreater(p[1], 0)
+            self.assertGreater(p[2], 0)
+        saved_3 = await db.get_dorm_pairs(test_dorm_id)
+        self.assertEqual(len(saved_3), 2)
+        self.assertGreater(saved_3[0]["cleaner1_id"], 0)
+        self.assertGreater(saved_3[0]["cleaner2_id"], 0)
+        self.assertGreater(saved_3[0]["cleaner3_id"], 0)
+
+        # Check DormWeekInfo with 3 cleaners
+        dorm_data = await db.get_dorm(test_dorm_id)
+        members_map = {uid: name for uid, name in members_list}
+        from scheduler import get_dorm_week_info
+        week_info = get_dorm_week_info(dorm_data, saved_3, members_map)
+        self.assertEqual(len(week_info.cleaner_ids), 3)
+        self.assertEqual(len(week_info.cleaners), 3)
+        self.assertIn(" & ", week_info.cleaner_display)
+
+    async def test_dorm_code_lookup_robustness(self):
+        """Verify dorm lookup by code handles messy input, quotes, backticks, and fallbacks."""
+        await db.init_db()
+        await db.seed_default_dorm()
+        default_dorm = await db.get_dorm(getattr(config, "DEFAULT_GROUP_ID", -1002378440774))
+        self.assertIsNotNone(default_dorm)
+
+        # Direct code
+        found1 = await db.get_dorm_by_code(default_dorm["dorm_code"])
+        self.assertIsNotNone(found1)
+        self.assertEqual(found1["dorm_id"], default_dorm["dorm_id"])
+
+        # With quotes and backticks
+        found2 = await db.get_dorm_by_code(f"`'{default_dorm['dorm_code']}'`")
+        self.assertIsNotNone(found2)
+        self.assertEqual(found2["dorm_id"], default_dorm["dorm_id"])
+
+        # With DORM-101 legacy alias
+        found3 = await db.get_dorm_by_code("DORM-101")
+        self.assertIsNotNone(found3)
+        self.assertEqual(found3["dorm_id"], default_dorm["dorm_id"])
+
+        # With # prefix and lowercase
+        found4 = await db.get_dorm_by_code(f"#{default_dorm['dorm_code'].lower()}")
+        self.assertIsNotNone(found4)
+        self.assertEqual(found4["dorm_id"], default_dorm["dorm_id"])
 
 if __name__ == "__main__":
     unittest.main()

@@ -99,6 +99,7 @@ def _init_db_sync(db_path: Optional[Path] = None) -> None:
                 status TEXT DEFAULT 'active',
                 ai_api_key TEXT,
                 dorm_code TEXT,
+                cleaners_per_week INTEGER DEFAULT 2,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
@@ -139,6 +140,7 @@ def _init_db_sync(db_path: Optional[Path] = None) -> None:
                 pair_number INTEGER NOT NULL,
                 cleaner1_id INTEGER NOT NULL,
                 cleaner2_id INTEGER NOT NULL,
+                cleaner3_id INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(dorm_id, pair_number)
             );
@@ -152,6 +154,7 @@ def _init_db_sync(db_path: Optional[Path] = None) -> None:
                 week_number INTEGER NOT NULL,
                 cleaner1_id INTEGER NOT NULL,
                 cleaner2_id INTEGER NOT NULL,
+                cleaner3_id INTEGER DEFAULT 0,
                 approver_id INTEGER NOT NULL,
                 announced INTEGER DEFAULT 0,
                 announced_at TIMESTAMP,
@@ -166,6 +169,7 @@ def _init_db_sync(db_path: Optional[Path] = None) -> None:
                 check_sent INTEGER DEFAULT 0,
                 cleaner1_response TEXT,
                 cleaner2_response TEXT,
+                cleaner3_response TEXT,
                 cleaners_answered_at TIMESTAMP,
                 approver_final_decision TEXT,
                 approver_decided_at TIMESTAMP,
@@ -177,7 +181,7 @@ def _init_db_sync(db_path: Optional[Path] = None) -> None:
             );
         """)
 
-        # Migration check: Ensure dorm_id, rating, review_text exist on weeks table
+        # Migration check: Ensure dorm_id, rating, review_text, cleaner3_id exist on weeks table
         cursor.execute("PRAGMA table_info(weeks);")
         week_cols = [r["name"] for r in cursor.fetchall()]
         if "dorm_id" not in week_cols:
@@ -186,6 +190,16 @@ def _init_db_sync(db_path: Optional[Path] = None) -> None:
             cursor.execute("ALTER TABLE weeks ADD COLUMN rating INTEGER DEFAULT 5;")
         if "review_text" not in week_cols:
             cursor.execute("ALTER TABLE weeks ADD COLUMN review_text TEXT;")
+        if "cleaner3_id" not in week_cols:
+            cursor.execute("ALTER TABLE weeks ADD COLUMN cleaner3_id INTEGER DEFAULT 0;")
+        if "cleaner3_response" not in week_cols:
+            cursor.execute("ALTER TABLE weeks ADD COLUMN cleaner3_response TEXT;")
+
+        # Migration check: Ensure cleaner3_id exists on dorm_pairs table
+        cursor.execute("PRAGMA table_info(dorm_pairs);")
+        dp_cols = [r["name"] for r in cursor.fetchall()]
+        if "cleaner3_id" not in dp_cols:
+            cursor.execute("ALTER TABLE dorm_pairs ADD COLUMN cleaner3_id INTEGER DEFAULT 0;")
 
         # Migration check: Ensure tsidat_balance exists on dorm_members table
         cursor.execute("PRAGMA table_info(dorm_members);")
@@ -193,13 +207,15 @@ def _init_db_sync(db_path: Optional[Path] = None) -> None:
         if "tsidat_balance" not in dm_cols:
             cursor.execute("ALTER TABLE dorm_members ADD COLUMN tsidat_balance INTEGER DEFAULT 0;")
 
-        # Migration check: Ensure ai_api_key and dorm_code exist on dorms table
+        # Migration check: Ensure ai_api_key, dorm_code, cleaners_per_week exist on dorms table
         cursor.execute("PRAGMA table_info(dorms);")
         dorm_cols = [r["name"] for r in cursor.fetchall()]
         if "ai_api_key" not in dorm_cols:
             cursor.execute("ALTER TABLE dorms ADD COLUMN ai_api_key TEXT;")
         if "dorm_code" not in dorm_cols:
             cursor.execute("ALTER TABLE dorms ADD COLUMN dorm_code TEXT;")
+        if "cleaners_per_week" not in dorm_cols:
+            cursor.execute("ALTER TABLE dorms ADD COLUMN cleaners_per_week INTEGER DEFAULT 2;")
 
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_dorms_dorm_code ON dorms(dorm_code);")
 
@@ -282,7 +298,8 @@ def _create_or_update_dorm_sync(
     fine_amount: int = 100,
     start_date: Optional[str] = None,
     status: str = "active",
-    dorm_code: Optional[str] = None
+    dorm_code: Optional[str] = None,
+    cleaners_per_week: int = 2
 ) -> Dict[str, Any]:
     if not start_date:
         start_date = getattr(config, "START_DATE_STR", "2026-11-23")
@@ -298,8 +315,8 @@ def _create_or_update_dorm_sync(
                 dorm_code = _generate_unique_dorm_code_sync(cursor, dorm_id)
 
         conn.execute("""
-            INSERT INTO dorms (dorm_id, topic_id, admin_id, dorm_name, fine_amount, start_date, status, dorm_code, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            INSERT INTO dorms (dorm_id, topic_id, admin_id, dorm_name, fine_amount, start_date, status, dorm_code, cleaners_per_week, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(dorm_id) DO UPDATE SET
                 topic_id = COALESCE(excluded.topic_id, dorms.topic_id),
                 admin_id = excluded.admin_id,
@@ -308,8 +325,9 @@ def _create_or_update_dorm_sync(
                 start_date = COALESCE(excluded.start_date, dorms.start_date),
                 status = excluded.status,
                 dorm_code = COALESCE(dorms.dorm_code, excluded.dorm_code),
+                cleaners_per_week = COALESCE(excluded.cleaners_per_week, dorms.cleaners_per_week, 2),
                 updated_at = CURRENT_TIMESTAMP;
-        """, (dorm_id, topic_id, admin_id, dorm_name, fine_amount, start_date, status, dorm_code))
+        """, (dorm_id, topic_id, admin_id, dorm_name, fine_amount, start_date, status, dorm_code, cleaners_per_week))
         conn.commit()
 
         cursor = conn.cursor()
@@ -324,14 +342,16 @@ async def create_or_update_dorm(
     fine_amount: int = 100,
     start_date: Optional[str] = None,
     status: str = "active",
-    dorm_code: Optional[str] = None
+    dorm_code: Optional[str] = None,
+    cleaners_per_week: int = 2
 ) -> Dict[str, Any]:
     return await asyncio.to_thread(
-        _create_or_update_dorm_sync, dorm_id, admin_id, dorm_name, topic_id, fine_amount, start_date, status, dorm_code
+        _create_or_update_dorm_sync, dorm_id, admin_id, dorm_name, topic_id, fine_amount, start_date, status, dorm_code, cleaners_per_week
     )
 
 def _get_dorm_by_code_sync(code: str) -> Optional[Dict[str, Any]]:
-    clean = (code or "").strip().upper()
+    raw = (code or "").replace("`", "").replace("'", "").replace('"', '').replace("#", "").strip()
+    clean = raw.upper()
     if not clean:
         return None
 
@@ -340,6 +360,12 @@ def _get_dorm_by_code_sync(code: str) -> Optional[Dict[str, Any]]:
 
     with _get_connection() as conn:
         cursor = conn.cursor()
+
+        # If database is completely empty, auto-seed default dorm first
+        cursor.execute("SELECT COUNT(*) AS cnt FROM dorms;")
+        if cursor.fetchone()["cnt"] == 0:
+            _seed_default_dorm_sync()
+
         # 1. Direct match by exact code or with DORM- prefix
         cursor.execute("""
             SELECT * FROM dorms
@@ -350,7 +376,7 @@ def _get_dorm_by_code_sync(code: str) -> Optional[Dict[str, Any]]:
         if row:
             return dict(row)
 
-        # 2. Match compact stripped characters (ignores hyphenation and casing)
+        # 2. Match compact stripped characters (ignores hyphens, spaces, and casing)
         if compact:
             cursor.execute("""
                 SELECT * FROM dorms
@@ -361,7 +387,29 @@ def _get_dorm_by_code_sync(code: str) -> Optional[Dict[str, Any]]:
             if row:
                 return dict(row)
 
-        # 3. Direct match if code is numeric dorm_id (for internal/admin convenience)
+        # 3. Match code without DORM- prefix (e.g. user entered 'E58A-9P45')
+        cursor.execute("""
+            SELECT * FROM dorms
+            WHERE UPPER(dorm_code) = ? OR UPPER(dorm_code) = ?
+            LIMIT 1
+        """, (f"DORM-{clean}", f"DORM-{raw}"))
+        row = cursor.fetchone()
+        if row:
+            return dict(row)
+
+        # 4. Check fallback to default dorm for legacy/common code ("DORM-101", "101", "DEFAULT")
+        if clean in ("DORM-101", "101", "DORM101", "DEFAULT") or compact in ("101", "DEFAULT"):
+            default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+            cursor.execute("SELECT * FROM dorms WHERE dorm_id = ?", (default_gid,))
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+            cursor.execute("SELECT * FROM dorms WHERE status = 'active' LIMIT 1")
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+
+        # 5. Direct match if code is numeric dorm_id (for internal/admin convenience)
         try:
             num_id = int(code.strip())
             cursor.execute("SELECT * FROM dorms WHERE dorm_id = ? LIMIT 1", (num_id,))
@@ -445,6 +493,7 @@ def _update_dorm_settings_sync(
     fine_amount: Optional[int] = None,
     topic_id: Optional[int] = None,
     start_date: Optional[str] = None,
+    cleaners_per_week: Optional[int] = None,
 ) -> None:
     with _get_connection() as conn:
         if dorm_name is not None:
@@ -455,6 +504,8 @@ def _update_dorm_settings_sync(
             conn.execute("UPDATE dorms SET topic_id = ?, updated_at = CURRENT_TIMESTAMP WHERE dorm_id = ?", (topic_id, dorm_id))
         if start_date is not None:
             conn.execute("UPDATE dorms SET start_date = ?, updated_at = CURRENT_TIMESTAMP WHERE dorm_id = ?", (start_date, dorm_id))
+        if cleaners_per_week is not None:
+            conn.execute("UPDATE dorms SET cleaners_per_week = ?, updated_at = CURRENT_TIMESTAMP WHERE dorm_id = ?", (cleaners_per_week, dorm_id))
         conn.commit()
 
 async def update_dorm_settings(
@@ -463,8 +514,9 @@ async def update_dorm_settings(
     fine_amount: Optional[int] = None,
     topic_id: Optional[int] = None,
     start_date: Optional[str] = None,
+    cleaners_per_week: Optional[int] = None,
 ) -> None:
-    await asyncio.to_thread(_update_dorm_settings_sync, dorm_id, dorm_name, fine_amount, topic_id, start_date)
+    await asyncio.to_thread(_update_dorm_settings_sync, dorm_id, dorm_name, fine_amount, topic_id, start_date, cleaners_per_week)
 
 def _set_dorm_ai_key_sync(dorm_id: int, api_key: Optional[str]) -> None:
     with _get_connection() as conn:
@@ -606,10 +658,10 @@ def _leave_dorm_sync(dorm_id: int, user_id: int) -> Tuple[bool, str]:
         # Check if user is currently scheduled for cleaning duty this week
         cursor.execute("""
             SELECT * FROM weeks 
-            WHERE dorm_id = ? AND (cleaner1_id = ? OR cleaner2_id = ?) 
+            WHERE dorm_id = ? AND (cleaner1_id = ? OR cleaner2_id = ? OR cleaner3_id = ?) 
               AND final_status = 'pending'
             ORDER BY week_start DESC LIMIT 1;
-        """, (dorm_id, user_id, user_id))
+        """, (dorm_id, user_id, user_id, user_id))
         active_week = cursor.fetchone()
         if active_week:
             return False, "You cannot leave while scheduled on duty this week. Complete cleaning or swap duty (/swap) first."
@@ -632,15 +684,16 @@ def _leave_dorm_sync(dorm_id: int, user_id: int) -> Tuple[bool, str]:
                 conn.execute("UPDATE dorms SET admin_id = ?, updated_at = CURRENT_TIMESTAMP WHERE dorm_id = ?", (new_admin_id, dorm_id))
 
         # Cleanup dorm_pairs
-        cursor.execute("SELECT * FROM dorm_pairs WHERE dorm_id = ? AND (cleaner1_id = ? OR cleaner2_id = ?)", (dorm_id, user_id, user_id))
+        cursor.execute("SELECT * FROM dorm_pairs WHERE dorm_id = ? AND (cleaner1_id = ? OR cleaner2_id = ? OR cleaner3_id = ?)", (dorm_id, user_id, user_id, user_id))
         for p in cursor.fetchall():
             p_num = p["pair_number"]
             c1 = p["cleaner1_id"] if p["cleaner1_id"] != user_id else 0
             c2 = p["cleaner2_id"] if p["cleaner2_id"] != user_id else 0
-            if c1 == 0 and c2 == 0:
+            c3 = p.get("cleaner3_id", 0) if p.get("cleaner3_id", 0) != user_id else 0
+            if c1 == 0 and c2 == 0 and c3 == 0:
                 conn.execute("DELETE FROM dorm_pairs WHERE dorm_id = ? AND pair_number = ?", (dorm_id, p_num))
             else:
-                conn.execute("UPDATE dorm_pairs SET cleaner1_id = ?, cleaner2_id = ? WHERE dorm_id = ? AND pair_number = ?", (c1, c2, dorm_id, p_num))
+                conn.execute("UPDATE dorm_pairs SET cleaner1_id = ?, cleaner2_id = ?, cleaner3_id = ? WHERE dorm_id = ? AND pair_number = ?", (c1, c2, c3, dorm_id, p_num))
 
         conn.commit()
         return True, f"Successfully left {dorm_name}."
@@ -735,18 +788,24 @@ async def get_user_dorms(user_id: int) -> List[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 # Pairs Management Operations
 # ---------------------------------------------------------------------------
-def _set_dorm_pairs_sync(dorm_id: int, pairs: List[Tuple[int, int]]) -> None:
+def _set_dorm_pairs_sync(dorm_id: int, pairs: List[Any]) -> None:
     with _get_connection() as conn:
         conn.execute("DELETE FROM dorm_pairs WHERE dorm_id = ?", (dorm_id,))
-        for idx, (c1, c2) in enumerate(pairs, start=1):
+        for idx, p in enumerate(pairs, start=1):
+            c1 = p[0] if len(p) > 0 else 0
+            c2 = p[1] if len(p) > 1 else 0
+            c3 = p[2] if len(p) > 2 else 0
             conn.execute("""
-                INSERT INTO dorm_pairs (dorm_id, pair_number, cleaner1_id, cleaner2_id)
-                VALUES (?, ?, ?, ?);
-            """, (dorm_id, idx, c1, c2))
-            conn.execute("UPDATE dorm_members SET pair_number = ? WHERE dorm_id = ? AND user_id IN (?, ?)", (idx, dorm_id, c1, c2))
+                INSERT INTO dorm_pairs (dorm_id, pair_number, cleaner1_id, cleaner2_id, cleaner3_id)
+                VALUES (?, ?, ?, ?, ?);
+            """, (dorm_id, idx, c1, c2, c3))
+            active_ids = [uid for uid in (c1, c2, c3) if uid]
+            if active_ids:
+                qmarks = ",".join("?" for _ in active_ids)
+                conn.execute(f"UPDATE dorm_members SET pair_number = ? WHERE dorm_id = ? AND user_id IN ({qmarks})", (idx, dorm_id, *active_ids))
         conn.commit()
 
-async def set_dorm_pairs(dorm_id: int, pairs: List[Tuple[int, int]]) -> None:
+async def set_dorm_pairs(dorm_id: int, pairs: List[Any]) -> None:
     await asyncio.to_thread(_set_dorm_pairs_sync, dorm_id, pairs)
 
 def _get_dorm_pairs_sync(dorm_id: int) -> List[Dict[str, Any]]:
@@ -767,28 +826,50 @@ async def get_dorm_pairs(dorm_id: Optional[int] = None) -> List[Dict[str, Any]]:
     resolved_id = _resolve_dorm_id(dorm_id)
     return await asyncio.to_thread(_get_dorm_pairs_sync, resolved_id)
 
-def _auto_generate_dorm_pairs_sync(dorm_id: int) -> List[Tuple[int, int]]:
-    """Automatically pair all registered dorm members."""
+def _auto_generate_dorm_pairs_sync(dorm_id: int) -> List[Tuple[int, ...]]:
+    """Automatically group registered dorm members into 1, 2, or 3 cleaners per week based on dorm settings."""
     with _get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT user_id FROM dorm_members WHERE dorm_id = ? ORDER BY joined_at ASC", (dorm_id,))
         members = [r["user_id"] for r in cursor.fetchall()]
+        cursor.execute("SELECT cleaners_per_week FROM dorms WHERE dorm_id = ?", (dorm_id,))
+        d_row = cursor.fetchone()
+        team_size = d_row["cleaners_per_week"] if (d_row and d_row["cleaners_per_week"]) else 2
 
-    if len(members) < 2:
+    if not members:
         return []
 
-    pairs: List[Tuple[int, int]] = []
-    for i in range(0, len(members) - 1, 2):
-        pairs.append((members[i], members[i + 1]))
+    if team_size not in (1, 2, 3):
+        team_size = 2
 
-    # If odd member count, pair last person with the first person
-    if len(members) % 2 != 0:
-        pairs.append((members[-1], members[0]))
+    if len(members) < team_size:
+        team_size = max(1, len(members))
 
-    _set_dorm_pairs_sync(dorm_id, pairs)
-    return pairs
+    teams: List[Tuple[int, ...]] = []
+    if team_size == 1:
+        for u in members:
+            teams.append((u, 0, 0))
+    elif team_size == 2:
+        for i in range(0, len(members) - 1, 2):
+            teams.append((members[i], members[i + 1], 0))
+        if len(members) % 2 != 0:
+            teams.append((members[-1], members[0], 0))
+    elif team_size == 3:
+        for i in range(0, len(members), 3):
+            chunk = members[i:i+3]
+            if len(chunk) == 3:
+                teams.append((chunk[0], chunk[1], chunk[2]))
+            elif len(chunk) == 2:
+                teams.append((chunk[0], chunk[1], members[0]))
+            elif len(chunk) == 1:
+                first = members[0]
+                second = members[1] if len(members) > 1 else 0
+                teams.append((chunk[0], first, second))
 
-async def auto_generate_dorm_pairs(dorm_id: int) -> List[Tuple[int, int]]:
+    _set_dorm_pairs_sync(dorm_id, teams)
+    return teams
+
+async def auto_generate_dorm_pairs(dorm_id: int) -> List[Tuple[int, ...]]:
     return await asyncio.to_thread(_auto_generate_dorm_pairs_sync, dorm_id)
 
 # ---------------------------------------------------------------------------
@@ -800,7 +881,8 @@ def _get_or_create_week_sync(
     cleaner1_id: int,
     cleaner2_id: int,
     eligible_approver_ids: List[int],
-    dorm_id: int = 0
+    dorm_id: int = 0,
+    cleaner3_id: int = 0
 ) -> Dict[str, Any]:
     with _get_connection() as conn:
         cursor = conn.cursor()
@@ -813,9 +895,9 @@ def _get_or_create_week_sync(
         approver_id = random.choice(eligible_approver_ids) if eligible_approver_ids else cleaner1_id
         cursor.execute("""
             INSERT INTO weeks (
-                dorm_id, week_start, week_number, cleaner1_id, cleaner2_id, approver_id, final_status
-            ) VALUES (?, ?, ?, ?, ?, ?, 'pending');
-        """, (dorm_id, week_start, week_number, cleaner1_id, cleaner2_id, approver_id))
+                dorm_id, week_start, week_number, cleaner1_id, cleaner2_id, cleaner3_id, approver_id, final_status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending');
+        """, (dorm_id, week_start, week_number, cleaner1_id, cleaner2_id, cleaner3_id, approver_id))
         conn.commit()
 
         cursor.execute("SELECT * FROM weeks WHERE dorm_id = ? AND week_start = ?", (dorm_id, week_start))
@@ -827,8 +909,13 @@ async def get_or_create_week(
     cleaner1_id: int,
     cleaner2_id: int,
     eligible_approver_ids: List[int],
-    dorm_id: Optional[int] = None
+    dorm_id: Optional[int] = None,
+    cleaner3_id: int = 0
 ) -> Dict[str, Any]:
+    resolved_id = _resolve_dorm_id(dorm_id)
+    return await asyncio.to_thread(
+        _get_or_create_week_sync, week_start, week_number, cleaner1_id, cleaner2_id, eligible_approver_ids, resolved_id, cleaner3_id
+    )
     resolved_id = _resolve_dorm_id(dorm_id)
     return await asyncio.to_thread(
         _get_or_create_week_sync, week_start, week_number, cleaner1_id, cleaner2_id, eligible_approver_ids, resolved_id
@@ -960,23 +1047,25 @@ def _record_cleaner_response_sync(week_start: str, cleaner_id: int, answer: str,
     now_iso = config.get_current_time().isoformat()
     with _get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT cleaner1_id, cleaner2_id FROM weeks WHERE dorm_id = ? AND week_start = ?", (dorm_id, week_start))
+        cursor.execute("SELECT cleaner1_id, cleaner2_id, cleaner3_id FROM weeks WHERE dorm_id = ? AND week_start = ?", (dorm_id, week_start))
         row = cursor.fetchone()
         if not row:
             return
 
         if cleaner_id == row["cleaner1_id"]:
-            conn.execute("""
-                UPDATE weeks
-                SET cleaner1_response = ?, cleaners_answered_at = ?
-                WHERE dorm_id = ? AND week_start = ?;
-            """, (answer, now_iso, dorm_id, week_start))
+            col = "cleaner1_response"
         elif cleaner_id == row["cleaner2_id"]:
-            conn.execute("""
-                UPDATE weeks
-                SET cleaner2_response = ?, cleaners_answered_at = ?
-                WHERE dorm_id = ? AND week_start = ?;
-            """, (answer, now_iso, dorm_id, week_start))
+            col = "cleaner2_response"
+        elif row.get("cleaner3_id") and cleaner_id == row["cleaner3_id"]:
+            col = "cleaner3_response"
+        else:
+            return
+
+        conn.execute(f"""
+            UPDATE weeks
+            SET {col} = ?, cleaners_answered_at = ?
+            WHERE dorm_id = ? AND week_start = ?;
+        """, (answer, now_iso, dorm_id, week_start))
         conn.commit()
 
 async def record_cleaner_response(week_start: str, cleaner_id: int, answer: str, dorm_id: Optional[int] = None) -> None:
@@ -1058,22 +1147,28 @@ def _create_fines_sync(
     cleaner2_id: int,
     cleaner2_name: str,
     fine_each: int,
-    dorm_id: int = 0
+    dorm_id: int = 0,
+    cleaner3_id: int = 0,
+    cleaner3_name: str = ""
 ) -> bool:
     with _get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("""
-            INSERT OR IGNORE INTO fines (dorm_id, week_start, user_id, user_name, amount, status)
-            VALUES (?, ?, ?, ?, ?, 'unpaid');
-        """, (dorm_id, week_start, cleaner1_id, cleaner1_name, fine_each))
+        cleaners = [(cleaner1_id, cleaner1_name)]
+        if cleaner2_id:
+            cleaners.append((cleaner2_id, cleaner2_name))
+        if cleaner3_id:
+            cleaners.append((cleaner3_id, cleaner3_name))
 
-        cursor.execute("""
-            INSERT OR IGNORE INTO fines (dorm_id, week_start, user_id, user_name, amount, status)
-            VALUES (?, ?, ?, ?, ?, 'unpaid');
-        """, (dorm_id, week_start, cleaner2_id, cleaner2_name, fine_each))
+        for cid, cname in cleaners:
+            if cid:
+                cursor.execute("""
+                    INSERT OR IGNORE INTO fines (dorm_id, week_start, user_id, user_name, amount, status)
+                    VALUES (?, ?, ?, ?, ?, 'unpaid');
+                """, (dorm_id, week_start, cid, cname, fine_each))
 
         conn.commit()
-    logger.info("Fines recorded for dorm %s, week %s: %s & %s (%d ETB each)", dorm_id, week_start, cleaner1_name, cleaner2_name, fine_each)
+    names_str = " & ".join(c[1] for c in cleaners if c[0])
+    logger.info("Fines recorded for dorm %s, week %s: %s (%d ETB each)", dorm_id, week_start, names_str, fine_each)
     return True
 
 async def create_fines_for_week(
@@ -1083,11 +1178,13 @@ async def create_fines_for_week(
     cleaner2_id: int,
     cleaner2_name: str,
     fine_each: int,
-    dorm_id: Optional[int] = None
+    dorm_id: Optional[int] = None,
+    cleaner3_id: int = 0,
+    cleaner3_name: str = ""
 ) -> bool:
     resolved_id = _resolve_dorm_id(dorm_id)
     return await asyncio.to_thread(
-        _create_fines_sync, week_start, cleaner1_id, cleaner1_name, cleaner2_id, cleaner2_name, fine_each, resolved_id
+        _create_fines_sync, week_start, cleaner1_id, cleaner1_name, cleaner2_id, cleaner2_name, fine_each, resolved_id, cleaner3_id, cleaner3_name
     )
 
 def _get_unpaid_fines_summary_sync(dorm_id: int = 0) -> List[Dict[str, Any]]:
@@ -1536,11 +1633,13 @@ def _execute_swap_sync(swap_id: int) -> Tuple[bool, str]:
         if not w:
             return False, "Week record not found."
 
-        # Replace requester with target in cleaner1 or cleaner2 for this single week only
+        # Replace requester with target in cleaner1, cleaner2, or cleaner3 for this single week only
         if w["cleaner1_id"] == requester_id:
             cursor.execute("UPDATE weeks SET cleaner1_id = ? WHERE dorm_id = ? AND week_start = ?", (target_id, dorm_id, week_start))
         elif w["cleaner2_id"] == requester_id:
             cursor.execute("UPDATE weeks SET cleaner2_id = ? WHERE dorm_id = ? AND week_start = ?", (target_id, dorm_id, week_start))
+        elif w.get("cleaner3_id") == requester_id:
+            cursor.execute("UPDATE weeks SET cleaner3_id = ? WHERE dorm_id = ? AND week_start = ?", (target_id, dorm_id, week_start))
         else:
             return False, "Requester is not currently assigned to clean this week."
 

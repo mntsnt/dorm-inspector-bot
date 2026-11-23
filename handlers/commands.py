@@ -130,11 +130,9 @@ async def get_user_week_role(
     if not week_info or week_info.week_number < 1:
         return False, "NOT_STARTED", ""
 
-    c1_name = week_info.cleaner1_name
-    c2_name = week_info.cleaner2_name
-    cleaners_str = f"{c1_name} & {c2_name}"
+    cleaners_str = week_info.cleaner_display
 
-    if user_id in (week_info.cleaner1_id, week_info.cleaner2_id):
+    if user_id in week_info.cleaner_ids:
         return True, "CLEANER", cleaners_str
 
     week_record = await db.get_week(week_info.week_start, dorm_id=resolved_id)
@@ -148,7 +146,7 @@ def get_main_menu_inline_keyboard(
     dorm_code: Optional[str] = None
 ) -> InlineKeyboardMarkup:
     """Main menu grid for one-tap navigation. Submit Cleaning only shown if user is cleaner."""
-    dash_base = getattr(config, "DASHBOARD_URL", "https://inspector.app.aletcloud.com")
+    dash_base = getattr(config, "DASHBOARD_URL", "https://dorm-inspector-bot-1.app.aletcloud.com")
     dash_url = f"{dash_base}?code={dorm_code}" if dorm_code else dash_base
 
     if is_cleaner:
@@ -194,22 +192,22 @@ def get_main_menu_inline_keyboard(
     ])
 
 def get_reply_keyboard(is_cleaner: bool = False) -> ReplyKeyboardMarkup:
-    """Persistent mobile bottom keyboard for easy thumb navigation."""
+    """Persistent mobile bottom keyboard sending direct Telegram slash commands."""
     if is_cleaner:
         rows = [
-            ["Status", "Schedule"],
-            ["Submit Cleaning", "Fines"],
-            ["Tsidat Tokens", "Dorm Roulette"],
-            ["History", "Help"],
-            ["Dorm Code", "Main Menu"],
+            ["/status", "/schedule"],
+            ["/submit", "/fines"],
+            ["/tokens", "/roulette"],
+            ["/history", "/help"],
+            ["/code", "/menu"],
         ]
     else:
         rows = [
-            ["Status", "Schedule"],
-            ["Fines", "Tsidat Tokens"],
-            ["Dorm Roulette", "History"],
-            ["Dorm Code", "Help"],
-            ["Main Menu"],
+            ["/status", "/schedule"],
+            ["/fines", "/tokens"],
+            ["/roulette", "/history"],
+            ["/code", "/help"],
+            ["/menu"],
         ]
     return ReplyKeyboardMarkup(
         rows,
@@ -302,7 +300,7 @@ def get_main_menu_text(member_name: str, connected_info: Optional[str] = None, d
 # ---------------------------------------------------------------------------
 async def get_status_content(user_id: Optional[int] = None, dorm_id: Optional[int] = None) -> Tuple[str, InlineKeyboardMarkup]:
     """Generate status report text and navigation buttons."""
-    default_dash = getattr(config, "DASHBOARD_URL", "https://inspector.app.aletcloud.com")
+    default_dash = getattr(config, "DASHBOARD_URL", "https://dorm-inspector-bot-1.app.aletcloud.com")
     fallback_kb = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("Schedule", callback_data="menu_schedule"),
@@ -1379,7 +1377,7 @@ async def dorm_code_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
 
     code = dorm.get("dorm_code") or "DORM-101"
-    dash_base = getattr(config, "DASHBOARD_URL", "https://inspector.app.aletcloud.com")
+    dash_base = getattr(config, "DASHBOARD_URL", "https://dorm-inspector-bot-1.app.aletcloud.com")
     web_url = f"{dash_base}?code={code}"
 
     reply_text = (
@@ -1430,7 +1428,7 @@ async def set_dorm_code_command(update: Update, context: ContextTypes.DEFAULT_TY
         await msg.reply_text(f"⚠️ {result}")
         return
 
-    dash_base = getattr(config, "DASHBOARD_URL", "https://inspector.app.aletcloud.com")
+    dash_base = getattr(config, "DASHBOARD_URL", "https://dorm-inspector-bot-1.app.aletcloud.com")
     web_url = f"{dash_base}?code={result}"
     await msg.reply_text(
         f"✅ **Dorm Code Updated!**\n\n"
