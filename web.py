@@ -253,7 +253,7 @@ async def get_dorm_detail(dorm_id: int) -> Dict[str, Any]:
     }
 
 # ---------------------------------------------------------------------------
-# Single-Page HTML Dashboard UI
+# Single-Page HTML Dashboard UI (Minimal, Fixed Single-Screen Layout)
 # ---------------------------------------------------------------------------
 DASHBOARD_HTML = """<!DOCTYPE html>
 <html lang="en">
@@ -264,260 +264,213 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
-  <script>
-    tailwind.config = {
-      theme: {
-        extend: {
-          fontFamily: {
-            sans: ['"Plus Jakarta Sans"', 'sans-serif'],
-          },
-          colors: {
-            brand: {
-              50: '#ecfdf5',
-              100: '#d1fae5',
-              400: '#34d399',
-              500: '#10b981',
-              600: '#059669',
-              700: '#047857',
-            }
-          }
-        }
-      }
-    }
-  </script>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <style>
     body {
-      background-color: #0b0f19;
+      background-color: #080c15;
       color: #f3f4f6;
+      font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
     }
-    .glass-card {
-      background: rgba(17, 24, 39, 0.75);
-      backdrop-filter: blur(12px);
-      border: 1px solid rgba(255, 255, 255, 0.08);
+    .panel {
+      background: #0d1322;
+      border: 1px solid rgba(255, 255, 255, 0.07);
     }
-    .glass-card-hover:hover {
-      border-color: rgba(52, 211, 153, 0.3);
-      box-shadow: 0 8px 30px rgba(16, 185, 129, 0.1);
+    .panel-subtle {
+      background: #12192c;
+      border: 1px solid rgba(255, 255, 255, 0.05);
     }
-    .badge-completed { background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4); }
-    .badge-progress { background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4); }
-    .badge-fined { background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); }
-    .badge-submitted { background: rgba(59, 130, 246, 0.2); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.4); }
+    .badge-completed { background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); }
+    .badge-progress { background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3); }
+    .badge-fined { background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); }
+    .badge-submitted { background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3); }
+    ::-webkit-scrollbar { width: 4px; height: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #1e283d; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #334155; }
   </style>
 </head>
-<body class="min-h-screen flex flex-col font-sans antialiased selection:bg-brand-500 selection:text-white">
+<body class="min-h-screen lg:h-screen lg:overflow-hidden flex flex-col justify-between p-2.5 sm:p-3 text-xs antialiased">
 
-  <!-- Top Navigation Header -->
-  <header class="border-b border-gray-800/80 bg-gray-950/70 backdrop-blur-md sticky top-0 z-50">
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-      <div class="flex items-center space-x-3">
-        <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-brand-600 to-emerald-400 flex items-center justify-center shadow-lg shadow-emerald-500/20">
-          <span class="text-xl">🧼</span>
-        </div>
-        <div>
-          <h1 class="text-lg font-bold tracking-tight text-white flex items-center gap-2">
-            Dorm Inspector
-            <span class="text-xs px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 font-semibold uppercase tracking-wider">AletCloud</span>
-          </h1>
-          <p class="text-xs text-gray-400 hidden sm:block font-mono">dorm-inspector-bot.app.aletcloud.com</p>
-        </div>
+  <!-- Minimal Top Header Bar -->
+  <header class="flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-xl panel mb-2.5 flex-shrink-0">
+    <div class="flex items-center gap-2.5">
+      <div class="w-7 h-7 rounded-lg bg-emerald-500/20 border border-emerald-500/30 flex items-center justify-center text-sm shadow-sm">
+        🧼
       </div>
-
-      <div class="flex items-center space-x-4">
-        <!-- Live Status Pill -->
-        <div class="flex items-center space-x-2 px-3 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-medium">
-          <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-          <span id="bot-status-text">Bot Online</span>
+      <div>
+        <div class="flex items-center gap-2">
+          <span class="font-extrabold text-sm text-white tracking-tight">Dorm Inspector</span>
+          <span class="px-1.5 py-0.2 rounded text-[9px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/25 tracking-wide">ALETCLOUD</span>
         </div>
-
-        <button onclick="fetchDashboardData()" class="p-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white transition flex items-center gap-1.5 text-xs font-medium border border-gray-700" title="Refresh Live Data">
-          <svg id="refresh-icon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
-          </svg>
-          <span class="hidden sm:inline">Refresh</span>
-        </button>
+        <p class="text-[10px] text-gray-400 font-mono leading-none">dorm-inspector-bot.app.aletcloud.com</p>
       </div>
+    </div>
+
+    <!-- Active Dorm Selector Tabs -->
+    <div id="dorm-selector-tabs" class="flex items-center gap-1.5 overflow-x-auto py-0.5">
+      <div class="px-2.5 py-1 rounded-lg bg-gray-800 text-[10px] text-gray-400 animate-pulse">Loading...</div>
+    </div>
+
+    <!-- Telemetry Badges & Refresh -->
+    <div class="flex items-center gap-2.5 text-[11px]">
+      <div class="flex items-center gap-1.5 px-2 py-0.8 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-medium">
+        <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+        <span id="bot-status-text">Online</span>
+      </div>
+      <div class="hidden sm:flex items-center gap-1 text-gray-400 text-[10px]">
+        <span>Uptime:</span>
+        <strong id="stat-uptime" class="font-mono text-gray-200">--</strong>
+      </div>
+      <div class="hidden md:flex items-center gap-1 text-gray-400 text-[10px]">
+        <span id="stat-current-date" class="text-gray-300">--</span>
+      </div>
+      <button onclick="fetchDashboardData()" class="p-1.5 rounded-lg panel-subtle hover:bg-gray-800 text-gray-300 hover:text-white transition" title="Refresh Live Data">
+        <svg id="refresh-icon" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+        </svg>
+      </button>
     </div>
   </header>
 
-  <!-- Main Content Layout -->
-  <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+  <!-- 4-Column Minimal Fixed Dashboard Grid -->
+  <main class="flex-1 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-2.5 overflow-y-auto lg:overflow-hidden min-h-0">
 
-    <!-- Platform Quick Metrics Row -->
-    <section class="grid grid-cols-2 md:grid-cols-4 gap-4">
-      <div class="glass-card rounded-2xl p-5 relative overflow-hidden transition-all duration-300 glass-card-hover">
-        <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Active Dorms</p>
-        <p id="stat-dorms" class="text-3xl font-extrabold text-white mt-1">--</p>
-        <div class="text-[11px] text-emerald-400 mt-2 flex items-center gap-1">
-          <span>●</span> Multi-Tenant Partitioning
+    <!-- Card 1: Active Duty (This Week) -->
+    <div class="panel rounded-xl p-3 flex flex-col justify-between min-h-0">
+      <div>
+        <div class="flex items-center justify-between border-b border-gray-800 pb-2 mb-2.5">
+          <div class="flex items-center gap-1.5">
+            <span class="text-sm">🎯</span>
+            <span class="font-bold text-gray-200 uppercase tracking-wider text-[10px]">Current Duty</span>
+          </div>
+          <span id="selected-dorm-status-badge" class="px-2 py-0.5 rounded-full text-[10px] font-semibold badge-progress">In Progress</span>
         </div>
-      </div>
 
-      <div class="glass-card rounded-2xl p-5 relative overflow-hidden transition-all duration-300 glass-card-hover">
-        <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Registered Roommates</p>
-        <p id="stat-members" class="text-3xl font-extrabold text-white mt-1">--</p>
-        <div class="text-[11px] text-gray-400 mt-2">1 Dorm per Student Limit</div>
-      </div>
-
-      <div class="glass-card rounded-2xl p-5 relative overflow-hidden transition-all duration-300 glass-card-hover">
-        <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Uptime</p>
-        <p id="stat-uptime" class="text-2xl font-bold text-white mt-1">--</p>
-        <div class="text-[11px] text-emerald-400 mt-2">Zero Restarts Recorded</div>
-      </div>
-
-      <div class="glass-card rounded-2xl p-5 relative overflow-hidden transition-all duration-300 glass-card-hover">
-        <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Unpaid Fines Ledger</p>
-        <p id="stat-fines" class="text-3xl font-extrabold text-amber-400 mt-1">0 <span class="text-xs text-gray-400 font-normal">ETB</span></p>
-        <div class="text-[11px] text-gray-400 mt-2">Split 50/50 on Missed Duty</div>
-      </div>
-    </section>
-
-    <!-- Dorm Room Selector Tabs -->
-    <section class="space-y-4">
-      <div class="flex items-center justify-between border-b border-gray-800 pb-3">
         <div>
-          <h2 class="text-xl font-bold text-white tracking-tight">Dorm Rooms</h2>
-          <p class="text-xs text-gray-400 mt-0.5">Select a dorm room to view its schedule, duty status, and leaderboard</p>
-        </div>
-        <div class="text-xs text-gray-400">
-          Auto-updates every <span class="text-emerald-400 font-semibold">15s</span>
-        </div>
-      </div>
-
-      <div id="dorm-selector-tabs" class="flex flex-wrap gap-2">
-        <div class="px-4 py-2 rounded-xl bg-gray-800/80 animate-pulse text-xs text-gray-400">Loading dorms...</div>
-      </div>
-    </section>
-
-    <!-- Selected Dorm Detailed Dashboard View -->
-    <section id="dorm-detail-container" class="space-y-6">
-      <!-- Top Banner: Current Cleaning Week & Status -->
-      <div class="glass-card rounded-3xl p-6 sm:p-8 relative overflow-hidden">
-        <div class="absolute -right-12 -bottom-12 w-64 h-64 bg-emerald-500/5 rounded-full blur-3xl pointer-events-none"></div>
-
-        <div class="flex flex-col md:flex-row md:items-center justify-between gap-6">
-          <div>
-            <div class="flex items-center gap-3">
-              <span id="selected-dorm-title" class="text-2xl sm:text-3xl font-extrabold text-white">Loading...</span>
-              <span id="selected-dorm-status-badge" class="px-3 py-1 rounded-full text-xs font-semibold badge-progress">In Progress</span>
-            </div>
-            <p id="selected-dorm-week-header" class="text-sm text-gray-400 mt-1">Week Duty Overview</p>
-          </div>
-
-          <div class="flex flex-wrap items-center gap-4 bg-gray-900/60 p-4 rounded-2xl border border-gray-800">
-            <div class="text-center px-3">
-              <p class="text-[11px] font-semibold text-gray-400 uppercase">Default Fine</p>
-              <p id="selected-dorm-fine" class="text-lg font-bold text-white mt-0.5">100 ETB</p>
-            </div>
-            <div class="h-8 w-[1px] bg-gray-800"></div>
-            <div class="text-center px-3">
-              <p class="text-[11px] font-semibold text-gray-400 uppercase">Approver</p>
-              <p id="selected-dorm-approver" class="text-lg font-bold text-emerald-400 mt-0.5">--</p>
-            </div>
-          </div>
+          <h2 id="selected-dorm-title" class="text-base font-extrabold text-white truncate">--</h2>
+          <p id="selected-dorm-week-header" class="text-[11px] text-emerald-400 font-medium mt-0.5">Week 1 Duty</p>
         </div>
 
-        <!-- Cleaners in Spotlight Card -->
-        <div class="mt-8 grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div class="p-5 rounded-2xl bg-gray-900/90 border border-gray-800/80 flex items-center space-x-4">
-            <div class="w-12 h-12 rounded-xl bg-gradient-to-tr from-emerald-600 to-teal-400 flex items-center justify-center font-bold text-lg text-white shadow-md shadow-emerald-500/20">
-              1
+        <!-- Cleaners Spotlight -->
+        <div class="mt-2.5 space-y-1.5">
+          <div class="panel-subtle rounded-lg p-2 flex items-center justify-between">
+            <div class="flex items-center gap-2">
+              <span class="w-5 h-5 rounded bg-emerald-500/20 text-emerald-300 font-bold flex items-center justify-center text-[10px]">1</span>
+              <div>
+                <p class="text-[9px] text-gray-400 uppercase font-semibold">Primary Cleaner</p>
+                <p id="cleaner-1-name" class="font-bold text-white text-xs">--</p>
+              </div>
             </div>
-            <div>
-              <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Primary Cleaner</p>
-              <p id="cleaner-1-name" class="text-lg font-bold text-white mt-0.5">--</p>
-              <p class="text-xs text-emerald-400/90 mt-0.5">On Duty This Week</p>
-            </div>
+            <span class="text-[10px] text-emerald-400 font-medium">On Duty</span>
           </div>
 
-          <div class="p-5 rounded-2xl bg-gray-900/90 border border-gray-800/80 flex items-center space-x-4">
-            <div class="w-12 h-12 rounded-xl bg-gradient-to-tr from-emerald-600 to-teal-400 flex items-center justify-center font-bold text-lg text-white shadow-md shadow-emerald-500/20">
-              2
+          <div class="panel-subtle rounded-lg p-2 flex items-center justify-between">
+            <div class="flex items-center gap-2">
+              <span class="w-5 h-5 rounded bg-emerald-500/20 text-emerald-300 font-bold flex items-center justify-center text-[10px]">2</span>
+              <div>
+                <p class="text-[9px] text-gray-400 uppercase font-semibold">Partner Cleaner</p>
+                <p id="cleaner-2-name" class="font-bold text-white text-xs">--</p>
+              </div>
             </div>
-            <div>
-              <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Partner Cleaner</p>
-              <p id="cleaner-2-name" class="text-lg font-bold text-white mt-0.5">--</p>
-              <p class="text-xs text-emerald-400/90 mt-0.5">On Duty This Week</p>
-            </div>
+            <span class="text-[10px] text-emerald-400 font-medium">On Duty</span>
           </div>
         </div>
       </div>
 
-      <!-- Schedule + Leaderboard Grid -->
-      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-
-        <!-- 4-Week Rotation Preview (2 cols) -->
-        <div class="glass-card rounded-3xl p-6 lg:col-span-2 space-y-4">
-          <div class="flex items-center justify-between border-b border-gray-800 pb-3">
-            <h3 class="text-base font-bold text-white flex items-center gap-2">
-              <span>📅</span> Upcoming Rotation Schedule
-            </h3>
-            <span class="text-xs text-gray-400">Next 4 Weeks</span>
-          </div>
-
-          <div id="schedule-table" class="space-y-3">
-            <p class="text-xs text-gray-500 py-4 text-center">Loading schedule...</p>
-          </div>
+      <!-- Approver & Deadline Info -->
+      <div class="panel-subtle rounded-lg p-2.5 space-y-1.5 mt-2">
+        <div class="flex items-center justify-between text-[11px]">
+          <span class="text-gray-400">Approver:</span>
+          <span id="selected-dorm-approver" class="font-bold text-emerald-400">--</span>
         </div>
-
-        <!-- Tsidat Tokens Leaderboard (1 col) -->
-        <div class="glass-card rounded-3xl p-6 space-y-4">
-          <div class="flex items-center justify-between border-b border-gray-800 pb-3">
-            <h3 class="text-base font-bold text-white flex items-center gap-2">
-              <span>🪙</span> Tsidat Leaderboard
-            </h3>
-            <span class="text-xs text-emerald-400 font-medium">Rankings</span>
-          </div>
-
-          <div id="leaderboard-list" class="space-y-2.5">
-            <p class="text-xs text-gray-500 py-4 text-center">No tokens awarded yet.</p>
-          </div>
+        <div class="flex items-center justify-between text-[11px]">
+          <span class="text-gray-400">Deadline:</span>
+          <span class="font-semibold text-amber-300">Friday 8:00 PM</span>
         </div>
+        <div class="flex items-center justify-between border-t border-gray-800/80 pt-1.5 text-[11px]">
+          <span class="text-gray-400">Missed Fine:</span>
+          <span id="selected-dorm-fine" class="font-bold text-red-400">100 ETB (50/50)</span>
+        </div>
+      </div>
+    </div>
 
+    <!-- Card 2: 4-Week Rotation Schedule -->
+    <div class="panel rounded-xl p-3 flex flex-col min-h-0">
+      <div class="flex items-center justify-between border-b border-gray-800 pb-2 mb-2 flex-shrink-0">
+        <div class="flex items-center gap-1.5">
+          <span class="text-sm">📅</span>
+          <span class="font-bold text-gray-200 uppercase tracking-wider text-[10px]">Rotation Schedule</span>
+        </div>
+        <span class="text-[10px] text-gray-400">4 Weeks</span>
+      </div>
+      <div id="schedule-table" class="space-y-1.5 flex-1 overflow-y-auto pr-0.5">
+        <p class="text-gray-500 text-center py-4 text-[11px]">Loading schedule...</p>
+      </div>
+    </div>
+
+    <!-- Card 3: Tsidat Leaderboard -->
+    <div class="panel rounded-xl p-3 flex flex-col min-h-0">
+      <div class="flex items-center justify-between border-b border-gray-800 pb-2 mb-2 flex-shrink-0">
+        <div class="flex items-center gap-1.5">
+          <span class="text-sm">🪙</span>
+          <span class="font-bold text-gray-200 uppercase tracking-wider text-[10px]">Tsidat Tokens</span>
+        </div>
+        <span class="text-[10px] text-emerald-400 font-semibold">Rankings</span>
+      </div>
+      <div id="leaderboard-list" class="space-y-1.5 flex-1 overflow-y-auto pr-0.5">
+        <p class="text-gray-500 text-center py-4 text-[11px]">Loading leaderboard...</p>
+      </div>
+    </div>
+
+    <!-- Card 4: Fines Ledger & Room Telemetry -->
+    <div class="panel rounded-xl p-3 flex flex-col justify-between min-h-0">
+      <!-- Unpaid Fines List -->
+      <div class="flex flex-col min-h-0 flex-1">
+        <div class="flex items-center justify-between border-b border-gray-800 pb-2 mb-2 flex-shrink-0">
+          <div class="flex items-center gap-1.5">
+            <span class="text-sm">💸</span>
+            <span class="font-bold text-gray-200 uppercase tracking-wider text-[10px]">Unpaid Fines</span>
+          </div>
+          <span id="stat-fines" class="text-[11px] font-bold text-amber-400">0 ETB</span>
+        </div>
+        <div id="fines-list" class="space-y-1.5 overflow-y-auto flex-1 pr-0.5">
+          <p class="text-gray-500 text-center py-2 text-[11px]">No unpaid fines.</p>
+        </div>
       </div>
 
-      <!-- Unpaid Fines & Recent Inspection History Row -->
-      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        
-        <!-- Fines Ledger Card -->
-        <div class="glass-card rounded-3xl p-6 space-y-4">
-          <div class="flex items-center justify-between border-b border-gray-800 pb-3">
-            <h3 class="text-base font-bold text-white flex items-center gap-2">
-              <span>💸</span> Unpaid Fines Ledger
-            </h3>
-            <span class="text-xs text-amber-400 font-medium">Auto-calculated</span>
+      <!-- Past Inspections Log & Stats -->
+      <div class="border-t border-gray-800 pt-2 flex-shrink-0 space-y-1.5 mt-2">
+        <div class="flex items-center justify-between border-b border-gray-800/80 pb-1">
+          <div class="flex items-center gap-1.5">
+            <span class="text-sm">📜</span>
+            <span class="font-bold text-gray-200 uppercase tracking-wider text-[10px]">Recent Inspection Log</span>
           </div>
-
-          <div id="fines-list" class="space-y-2.5">
-            <p class="text-xs text-gray-500 py-4 text-center">No unpaid fines! Everyone is clean. 🎉</p>
-          </div>
+          <span class="text-[9px] text-gray-500">History</span>
+        </div>
+        <div id="history-list" class="space-y-1 max-h-20 overflow-y-auto pr-0.5">
+          <p class="text-gray-500 text-center py-1 text-[10px]">No past inspection records yet.</p>
         </div>
 
-        <!-- History Log Card -->
-        <div class="glass-card rounded-3xl p-6 space-y-4">
-          <div class="flex items-center justify-between border-b border-gray-800 pb-3">
-            <h3 class="text-base font-bold text-white flex items-center gap-2">
-              <span>📜</span> Recent Inspection History
-            </h3>
-            <span class="text-xs text-gray-400">Past Weeks</span>
-          </div>
-
-          <div id="history-list" class="space-y-2.5">
-            <p class="text-xs text-gray-500 py-4 text-center">No past inspection records yet.</p>
-          </div>
+        <div class="panel-subtle rounded-lg p-1.5 flex items-center justify-between text-[10px] text-gray-400">
+          <span>Roommates: <strong id="stat-members" class="text-white">--</strong></span>
+          <span>•</span>
+          <span>Dorms: <strong id="stat-dorms" class="text-white">--</strong></span>
+          <span>•</span>
+          <span class="text-emerald-400 font-medium">1 Dorm Limit</span>
         </div>
-
       </div>
-    </section>
+    </div>
 
   </main>
 
-  <!-- Footer -->
-  <footer class="border-t border-gray-800/80 bg-gray-950/60 mt-auto py-6">
-    <div class="max-w-7xl mx-auto px-4 text-center text-xs text-gray-500 flex flex-col sm:flex-row items-center justify-between gap-2">
-      <p>Dorm Inspector Bot • Hosted on <span class="text-emerald-400 font-semibold">AletCloud</span> (<a href="https://dorm-inspector-bot.app.aletcloud.com" class="hover:underline">dorm-inspector-bot.app.aletcloud.com</a>)</p>
-      <p class="text-gray-400">Telegram University Dorm Management Platform</p>
+  <!-- Minimal Footer -->
+  <footer class="mt-2.5 px-3 py-1.5 rounded-xl panel flex items-center justify-between text-[10px] text-gray-400 flex-shrink-0">
+    <div>
+      Dorm Inspector Bot • <span class="text-emerald-400 font-semibold">dorm-inspector-bot.app.aletcloud.com</span>
+    </div>
+    <div class="flex items-center gap-3">
+      <span>Auto-refresh: <strong class="text-emerald-400">15s</strong></span>
+      <span>Platform: <strong>AletCloud</strong></span>
     </div>
   </footer>
 
@@ -538,7 +491,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           document.getElementById('stat-dorms').innerText = sys.stats.active_dorms_count;
           document.getElementById('stat-members').innerText = sys.stats.total_members_count;
           document.getElementById('stat-uptime').innerText = sys.uptime;
-          document.getElementById('stat-fines').innerHTML = `${sys.stats.total_unpaid_fines_etb} <span class="text-xs text-gray-400 font-normal">ETB</span>`;
+          const dateEl = document.getElementById('stat-current-date');
+          if (dateEl) dateEl.innerText = sys.current_date;
+          document.getElementById('stat-fines').innerHTML = `${sys.stats.total_unpaid_fines_etb} ETB`;
         }
 
         // 2. Fetch all dorms
@@ -553,7 +508,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             await fetchDormDetails(activeDormId);
           } else {
             document.getElementById('selected-dorm-title').innerText = "No Active Dorms";
-            document.getElementById('selected-dorm-week-header').innerText = "Run /setup inside your Telegram group chat to initialize.";
+            document.getElementById('selected-dorm-week-header').innerText = "Run /setup inside Telegram to initialize.";
           }
         }
       } catch (err) {
@@ -568,21 +523,21 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       if (!tabs) return;
 
       if (!dorms || dorms.length === 0) {
-        tabs.innerHTML = `<span class="text-xs text-gray-400 py-1">No registered dorms yet. Run /setup in your group.</span>`;
+        tabs.innerHTML = `<span class="text-[10px] text-gray-400 py-1">No dorms registered yet.</span>`;
         return;
       }
 
       tabs.innerHTML = dorms.map(d => {
         const isSelected = d.dorm_id === activeDormId;
         const activeClass = isSelected
-          ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50 shadow-md shadow-emerald-500/10 font-bold'
-          : 'bg-gray-900/60 text-gray-400 hover:text-gray-200 border-gray-800 hover:border-gray-700';
+          ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50 font-bold shadow-sm'
+          : 'panel-subtle text-gray-400 hover:text-gray-200 border-gray-800';
 
         return `
-          <button onclick="selectDorm(${d.dorm_id})" class="px-4 py-2 rounded-xl text-xs border transition flex items-center gap-2 ${activeClass}">
+          <button onclick="selectDorm(${d.dorm_id})" class="px-2.5 py-1 rounded-lg text-[10px] border transition flex items-center gap-1.5 ${activeClass}">
             <span>🏢</span>
             <span>${d.dorm_name}</span>
-            <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-800 text-gray-300">${d.member_count}m</span>
+            <span class="text-[9px] px-1 rounded bg-black/40 text-gray-300 font-mono">${d.member_count}m</span>
           </button>
         `;
       }).join('');
@@ -601,7 +556,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         const data = await res.json();
 
         document.getElementById('selected-dorm-title').innerText = data.dorm_name;
-        document.getElementById('selected-dorm-fine').innerText = `${data.fine_amount} ETB`;
+        document.getElementById('selected-dorm-fine').innerText = `${data.fine_amount} ETB (50/50)`;
         document.getElementById('selected-dorm-approver').innerText = data.current_week.approver || 'Not assigned';
 
         // Week header & badge
@@ -610,7 +565,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
         const badge = document.getElementById('selected-dorm-status-badge');
         badge.innerText = curWeek.duty_state;
-        badge.className = 'px-3 py-1 rounded-full text-xs font-semibold ' + getBadgeClass(curWeek.status_code);
+        badge.className = 'px-2 py-0.5 rounded-full text-[10px] font-semibold ' + getBadgeClass(curWeek.status_code);
 
         document.getElementById('cleaner-1-name').innerText = curWeek.cleaner1 || 'TBD';
         document.getElementById('cleaner-2-name').innerText = curWeek.cleaner2 || 'TBD';
@@ -642,25 +597,24 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     function renderSchedule(schedule) {
       const el = document.getElementById('schedule-table');
       if (!schedule || schedule.length === 0) {
-        el.innerHTML = `<p class="text-xs text-gray-500 py-4 text-center">No upcoming rotation scheduled.</p>`;
+        el.innerHTML = `<p class="text-gray-500 text-center py-4 text-[10px]">No upcoming rotation scheduled.</p>`;
         return;
       }
 
       el.innerHTML = schedule.map(w => {
-        const currentHighlight = w.is_current
-          ? 'bg-emerald-500/10 border-emerald-500/30'
-          : 'bg-gray-900/60 border-gray-800/80';
-        const tag = w.is_current ? '<span class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400">THIS WEEK</span>' : '';
+        const isCur = w.is_current;
+        const border = isCur ? 'border-emerald-500/40 bg-emerald-500/10' : 'panel-subtle';
+        const tag = isCur ? '<span class="text-[9px] font-bold px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300">THIS WEEK</span>' : '';
 
         return `
-          <div class="p-3.5 rounded-xl border flex items-center justify-between text-xs ${currentHighlight}">
-            <div class="flex items-center space-x-3">
-              <span class="font-bold text-white w-16">Week ${w.week_number}</span>
-              <span class="text-gray-400">${w.monday} – ${w.friday}</span>
+          <div class="p-2 rounded-lg border flex items-center justify-between text-[11px] ${border}">
+            <div class="flex items-center gap-1.5">
+              <span class="font-bold text-white">W${w.week_number}</span>
+              <span class="text-gray-400 text-[10px]">${w.monday}</span>
               ${tag}
             </div>
-            <div class="font-semibold text-gray-200">
-              <span class="text-emerald-400">${w.cleaner1}</span> & <span class="text-emerald-400">${w.cleaner2}</span>
+            <div class="font-medium text-gray-300 text-right">
+              <span class="text-emerald-400 font-semibold">${w.cleaner1}</span> & <span class="text-emerald-400 font-semibold">${w.cleaner2}</span>
             </div>
           </div>
         `;
@@ -670,20 +624,20 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     function renderLeaderboard(board) {
       const el = document.getElementById('leaderboard-list');
       if (!board || board.length === 0) {
-        el.innerHTML = `<p class="text-xs text-gray-500 py-4 text-center">No Tsidat tokens awarded yet.</p>`;
+        el.innerHTML = `<p class="text-gray-500 text-center py-4 text-[10px]">No Tsidat tokens awarded yet.</p>`;
         return;
       }
 
       const medals = ['🥇', '🥈', '🥉'];
       el.innerHTML = board.map((item, idx) => {
-        const medal = idx < 3 ? medals[idx] : `•`;
+        const medal = idx < 3 ? medals[idx] : `<span class="text-gray-500 text-[10px] font-mono">#${idx+1}</span>`;
         return `
-          <div class="p-2.5 rounded-xl bg-gray-900/60 border border-gray-800/80 flex items-center justify-between text-xs">
-            <div class="flex items-center space-x-2">
+          <div class="p-1.5 rounded-lg panel-subtle flex items-center justify-between text-[11px]">
+            <div class="flex items-center gap-2">
               <span>${medal}</span>
               <span class="font-medium text-white">${item.name}</span>
             </div>
-            <span class="font-bold text-emerald-400">${item.tsidat_balance} Tsidat</span>
+            <span class="font-bold text-emerald-400">${item.tsidat_balance} <span class="text-[9px] text-gray-400 font-normal">pts</span></span>
           </div>
         `;
       }).join('');
@@ -692,12 +646,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     function renderFines(fines) {
       const el = document.getElementById('fines-list');
       if (!fines || fines.length === 0) {
-        el.innerHTML = `<p class="text-xs text-gray-500 py-4 text-center">No unpaid fines! Everyone is clean. 🎉</p>`;
+        el.innerHTML = `<div class="p-2 rounded-lg panel-subtle text-center text-emerald-400 text-[10px]">✓ No unpaid fines. Everyone clean.</div>`;
         return;
       }
 
       el.innerHTML = fines.map(f => `
-        <div class="p-2.5 rounded-xl bg-gray-900/60 border border-gray-800/80 flex items-center justify-between text-xs">
+        <div class="p-1.5 rounded-lg panel-subtle flex items-center justify-between text-[11px]">
           <span class="font-medium text-white">${f.user_name}</span>
           <span class="font-bold text-red-400">${f.total_unpaid} ETB</span>
         </div>
@@ -707,21 +661,18 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     function renderHistory(hist) {
       const el = document.getElementById('history-list');
       if (!hist || hist.length === 0) {
-        el.innerHTML = `<p class="text-xs text-gray-500 py-4 text-center">No past inspection records yet.</p>`;
+        el.innerHTML = `<p class="text-gray-500 text-center py-1 text-[10px]">No past weeks recorded yet.</p>`;
         return;
       }
 
       el.innerHTML = hist.map(h => {
         const statusBadge = h.final_status === 'completed'
-          ? `<span class="text-[10px] text-emerald-400">Cleaned ${h.rating ? '★' + h.rating : ''}</span>`
-          : (h.final_status === 'fined' ? '<span class="text-[10px] text-red-400">Fined</span>' : '<span class="text-[10px] text-amber-400">Pending</span>');
+          ? `<span class="text-[9px] text-emerald-400 font-semibold">Cleaned ${h.rating ? '★' + h.rating : ''}</span>`
+          : (h.final_status === 'fined' ? '<span class="text-[9px] text-red-400 font-semibold">Fined</span>' : '<span class="text-[9px] text-amber-400 font-semibold">Pending</span>');
 
         return `
-          <div class="p-2.5 rounded-xl bg-gray-900/60 border border-gray-800/80 flex items-center justify-between text-xs">
-            <div class="flex items-center space-x-2">
-              <span class="font-bold text-gray-300">W${h.week_number}</span>
-              <span class="text-gray-400">${h.cleaner1} & ${h.cleaner2}</span>
-            </div>
+          <div class="p-1 rounded panel-subtle flex items-center justify-between text-[10px]">
+            <span class="font-bold text-gray-300">W${h.week_number}: ${h.cleaner1} & ${h.cleaner2}</span>
             ${statusBadge}
           </div>
         `;
