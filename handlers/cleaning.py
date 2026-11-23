@@ -242,7 +242,14 @@ async def handle_cleaner_done(
     c2_id = week_record["cleaner2_id"]
 
     if user_id not in (c1_id, c2_id):
-        await msg.reply_text("You are not on cleaning duty this week.")
+        c1_name = members_by_id.get(c1_id, f"ID {c1_id}")
+        c2_name = members_by_id.get(c2_id, f"ID {c2_id}")
+        await msg.reply_text(
+            f"ℹ️ **You are not on cleaning duty this week!**\n\n"
+            f"Cleaners for this week are **{c1_name} & {c2_name}**.\n"
+            "Only the assigned cleaners can submit the cleaning photo.",
+            parse_mode=ParseMode.MARKDOWN
+        )
         return
 
     # Check if already completed
@@ -324,7 +331,13 @@ async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
     c2_id = week_record["cleaner2_id"]
 
     if user.id not in (c1_id, c2_id):
-        await update.message.reply_text("You are not on cleaning duty this week.")
+        c1_name = members_by_id.get(c1_id, f"ID {c1_id}")
+        c2_name = members_by_id.get(c2_id, f"ID {c2_id}")
+        await update.message.reply_text(
+            f"ℹ️ **You are not on cleaning duty this week!**\n\n"
+            f"Cleaners for this week are **{c1_name} & {c2_name}**.",
+            parse_mode=ParseMode.MARKDOWN
+        )
         return
 
     if week_record.get("final_status") == "completed":

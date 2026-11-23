@@ -101,46 +101,127 @@ async def _resolve_target_dorm(dorm_id: Optional[int] = None, user_id: Optional[
 # ---------------------------------------------------------------------------
 # Keyboards & Navigation Builders
 # ---------------------------------------------------------------------------
-def get_main_menu_inline_keyboard() -> InlineKeyboardMarkup:
-    """Main menu grid for one-tap navigation."""
+async def get_user_week_role(
+    user_id: Optional[int], dorm_id: Optional[int] = None
+) -> Tuple[bool, str, str]:
+    """
+    Determine whether user_id is an active cleaner for the current week.
+    Returns: (is_cleaner, role_name, cleaners_display_str)
+    """
+    if not user_id:
+        return False, "UNKNOWN", ""
+
+    dorm = await _resolve_target_dorm(dorm_id=dorm_id, user_id=user_id)
+    if not dorm:
+        return False, "UNKNOWN", ""
+
+    resolved_id = dorm["dorm_id"]
+    pairs = await db.get_dorm_pairs(resolved_id)
+    members = await db.get_dorm_members(resolved_id)
+    members_by_id = {m["user_id"]: m["name"] for m in members}
+
+    if user_id not in members_by_id:
+        cfg_m = getattr(config, "MEMBERS_BY_ID", {}).get(user_id)
+        if cfg_m:
+            members_by_id[user_id] = cfg_m.name
+
+    from scheduler import get_dorm_week_info
+    week_info = get_dorm_week_info(dorm, pairs, members_by_id)
+    if not week_info or week_info.week_number < 1:
+        return False, "NOT_STARTED", ""
+
+    c1_name = week_info.cleaner1_name
+    c2_name = week_info.cleaner2_name
+    cleaners_str = f"{c1_name} & {c2_name}"
+
+    if user_id in (week_info.cleaner1_id, week_info.cleaner2_id):
+        return True, "CLEANER", cleaners_str
+
+    week_record = await db.get_week(week_info.week_start, dorm_id=resolved_id)
+    if week_record and week_record.get("approver_id") == user_id:
+        return False, "APPROVER", cleaners_str
+
+    return False, "OFF_DUTY", cleaners_str
+
+def get_main_menu_inline_keyboard(
+    is_cleaner: bool = False,
+    dorm_code: Optional[str] = None
+) -> InlineKeyboardMarkup:
+    """Main menu grid for one-tap navigation. Submit Cleaning only shown if user is cleaner."""
+    dash_base = getattr(config, "DASHBOARD_URL", "https://dorm-inspector-bot-1.app.aletcloud.com")
+    dash_url = f"{dash_base}?code={dorm_code}" if dorm_code else dash_base
+
+    if is_cleaner:
+        return InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("📋 Status", callback_data="menu_status"),
+                InlineKeyboardButton("📅 Schedule", callback_data="menu_schedule"),
+            ],
+            [
+                InlineKeyboardButton("🧼 Submit Cleaning", callback_data="menu_done"),
+                InlineKeyboardButton("💸 Fines", callback_data="menu_fines"),
+            ],
+            [
+                InlineKeyboardButton("📜 History", callback_data="menu_history"),
+                InlineKeyboardButton("ℹ️ Help", callback_data="menu_help"),
+            ],
+            [
+                InlineKeyboardButton("🪙 Tsidat Tokens", callback_data="menu_tsidat"),
+                InlineKeyboardButton("🎲 Dorm Roulette", callback_data="menu_spin"),
+            ],
+            [
+                InlineKeyboardButton("🌐 Live Web Dashboard", url=dash_url),
+            ],
+        ])
+
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("Status", callback_data="menu_status"),
-            InlineKeyboardButton("Schedule", callback_data="menu_schedule"),
+            InlineKeyboardButton("📋 Status", callback_data="menu_status"),
+            InlineKeyboardButton("📅 Schedule", callback_data="menu_schedule"),
         ],
         [
-            InlineKeyboardButton("Submit Cleaning", callback_data="menu_done"),
-            InlineKeyboardButton("Fines", callback_data="menu_fines"),
-        ],
-        [
-            InlineKeyboardButton("History", callback_data="menu_history"),
-            InlineKeyboardButton("Help", callback_data="menu_help"),
+            InlineKeyboardButton("💸 Fines", callback_data="menu_fines"),
+            InlineKeyboardButton("📜 History", callback_data="menu_history"),
         ],
         [
             InlineKeyboardButton("🪙 Tsidat Tokens", callback_data="menu_tsidat"),
             InlineKeyboardButton("🎲 Dorm Roulette", callback_data="menu_spin"),
         ],
         [
-            InlineKeyboardButton("🌐 Live Web Dashboard", url=getattr(config, "DASHBOARD_URL", "https://dorm-inspector-bot-1.app.aletcloud.com")),
+            InlineKeyboardButton("ℹ️ Help", callback_data="menu_help"),
+            InlineKeyboardButton("🌐 Live Dashboard", url=dash_url),
         ],
     ])
 
-def get_reply_keyboard() -> ReplyKeyboardMarkup:
+def get_reply_keyboard(is_cleaner: bool = False) -> ReplyKeyboardMarkup:
     """Persistent mobile bottom keyboard for easy thumb navigation."""
-    return ReplyKeyboardMarkup(
-        [
+    if is_cleaner:
+        rows = [
             ["Status", "Schedule"],
             ["Submit Cleaning", "Fines"],
+            ["Tsidat Tokens", "Dorm Roulette"],
             ["History", "Help"],
+            ["Dorm Code", "Main Menu"],
+        ]
+    else:
+        rows = [
+            ["Status", "Schedule"],
+            ["Fines", "Tsidat Tokens"],
+            ["Dorm Roulette", "History"],
+            ["Dorm Code", "Help"],
             ["Main Menu"],
-        ],
-        resize_keyboard=True
+        ]
+    return ReplyKeyboardMarkup(
+        rows,
+        resize_keyboard=True,
+        is_persistent=True,
     )
 
 async def get_dorm_main_menu_text(
     member_name: str,
     connected_info: Optional[str] = None,
-    dorm: Optional[Dict[str, Any]] = None
+    dorm: Optional[Dict[str, Any]] = None,
+    is_cleaner: bool = False
 ) -> str:
     """Welcome and overview text for the main menu, dynamically scoped to the target dorm."""
     dorm_name = dorm.get("dorm_name") if dorm else None
@@ -182,10 +263,11 @@ async def get_dorm_main_menu_text(
     else:
         c1 = week_info.cleaner1_name
         c2 = week_info.cleaner2_name
+        action_text = "submit cleaning" if is_cleaner else "check duty, fines, or schedule"
         return (
             f"{dorm_prefix}Hi **{member_name}**!\n\n"
             f"Week {week_info.week_number} cleaners: **{c1} & {c2}**{status_suffix}\n\n"
-            "Use the buttons below to check duty, fines, or submit cleaning."
+            f"Use the buttons below to {action_text}."
         )
 
 def get_main_menu_text(member_name: str, connected_info: Optional[str] = None, dorm_name: Optional[str] = None) -> str:
@@ -220,13 +302,14 @@ def get_main_menu_text(member_name: str, connected_info: Optional[str] = None, d
 # ---------------------------------------------------------------------------
 async def get_status_content(user_id: Optional[int] = None, dorm_id: Optional[int] = None) -> Tuple[str, InlineKeyboardMarkup]:
     """Generate status report text and navigation buttons."""
-    keyboard = InlineKeyboardMarkup([
+    default_dash = getattr(config, "DASHBOARD_URL", "https://dorm-inspector-bot-1.app.aletcloud.com")
+    fallback_kb = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("Schedule", callback_data="menu_schedule"),
-            InlineKeyboardButton("Submit Cleaning", callback_data="menu_done"),
+            InlineKeyboardButton("Fines", callback_data="menu_fines"),
         ],
         [
-            InlineKeyboardButton("🌐 Live Dashboard", url=getattr(config, "DASHBOARD_URL", "https://dorm-inspector-bot-1.app.aletcloud.com")),
+            InlineKeyboardButton("🌐 Live Dashboard", url=default_dash),
             InlineKeyboardButton("Main Menu", callback_data="menu_home"),
         ]
     ])
@@ -234,26 +317,15 @@ async def get_status_content(user_id: Optional[int] = None, dorm_id: Optional[in
     if user_id is not None and dorm_id is not None:
         member = await db.get_dorm_member(dorm_id, user_id)
         if not member:
-            return "You are not a member of this dorm.", keyboard
+            return "You are not a member of this dorm.", fallback_kb
 
     dorm = await _resolve_target_dorm(dorm_id=dorm_id, user_id=user_id)
     if not dorm:
-        return "No active cleaning schedule found. Send /setup to configure your dorm.", keyboard
+        return "No active cleaning schedule found. Send /setup to configure your dorm.", fallback_kb
 
     resolved_id = dorm["dorm_id"]
     dorm_code = dorm.get("dorm_code") or "DORM-101"
-    dash_url = f"{getattr(config, 'DASHBOARD_URL', 'https://dorm-inspector-bot-1.app.aletcloud.com')}?code={dorm_code}"
-
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("Schedule", callback_data="menu_schedule"),
-            InlineKeyboardButton("Submit Cleaning", callback_data="menu_done"),
-        ],
-        [
-            InlineKeyboardButton("🌐 Live Dashboard", url=dash_url),
-            InlineKeyboardButton("Main Menu", callback_data="menu_home"),
-        ]
-    ])
+    dash_url = f"{default_dash}?code={dorm_code}"
 
     pairs = await db.get_dorm_pairs(resolved_id)
     members = await db.get_dorm_members(resolved_id)
@@ -261,6 +333,33 @@ async def get_status_content(user_id: Optional[int] = None, dorm_id: Optional[in
 
     from scheduler import get_dorm_week_info
     week_info = get_dorm_week_info(dorm, pairs, members_by_id)
+
+    is_cleaner = False
+    if user_id and week_info and week_info.week_number >= 1:
+        is_cleaner = user_id in (week_info.cleaner1_id, week_info.cleaner2_id)
+
+    if is_cleaner:
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("Schedule", callback_data="menu_schedule"),
+                InlineKeyboardButton("Submit Cleaning", callback_data="menu_done"),
+            ],
+            [
+                InlineKeyboardButton("🌐 Live Dashboard", url=dash_url),
+                InlineKeyboardButton("Main Menu", callback_data="menu_home"),
+            ]
+        ])
+    else:
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("Schedule", callback_data="menu_schedule"),
+                InlineKeyboardButton("Fines", callback_data="menu_fines"),
+            ],
+            [
+                InlineKeyboardButton("🌐 Live Dashboard", url=dash_url),
+                InlineKeyboardButton("Main Menu", callback_data="menu_home"),
+            ]
+        ])
 
     if not week_info or week_info.week_number < 1:
         start_date = dorm.get("start_date", "Soon")
@@ -631,9 +730,16 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                     "You will receive duty announcements, reminders, and verification prompts here in DM.\n\n"
                     "Tap below to see your dorm's status."
                 )
+                is_cleaner, _, _ = await get_user_week_role(user.id, dorm_id=dorm["dorm_id"])
+                code = dorm.get("dorm_code") or "DORM-101"
                 await update.effective_message.reply_text(
                     welcome_dm,
-                    reply_markup=get_main_menu_inline_keyboard(),
+                    reply_markup=get_reply_keyboard(is_cleaner=is_cleaner),
+                    parse_mode=ParseMode.MARKDOWN
+                )
+                await update.effective_message.reply_text(
+                    "Main Menu:",
+                    reply_markup=get_main_menu_inline_keyboard(is_cleaner=is_cleaner, dorm_code=code),
                     parse_mode=ParseMode.MARKDOWN
                 )
                 return
@@ -721,8 +827,13 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 except Exception as e:
                     logger.error("Failed to post all-connected celebration to group: %s", e)
 
-        welcome_text = await get_dorm_main_menu_text(member_name, connected_info=conn_str, dorm=target_dorm)
-        inline_markup = get_main_menu_inline_keyboard()
+        target_dorm_id = target_dorm["dorm_id"] if target_dorm else None
+        is_cleaner, _, _ = await get_user_week_role(user.id, dorm_id=target_dorm_id)
+        dorm_code = target_dorm.get("dorm_code") or "DORM-101" if target_dorm else "DORM-101"
+
+        welcome_text = await get_dorm_main_menu_text(member_name, connected_info=conn_str, dorm=target_dorm, is_cleaner=is_cleaner)
+        inline_markup = get_main_menu_inline_keyboard(is_cleaner=is_cleaner, dorm_code=dorm_code)
+        persistent_reply_kb = get_reply_keyboard(is_cleaner=is_cleaner)
 
         welcome_meme = config.get_meme_file("welcome")
         if welcome_meme:
@@ -731,11 +842,19 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                     await update.effective_message.reply_photo(
                         photo=photo,
                         caption=f"Welcome, {member_name}!",
-                        reply_markup=ReplyKeyboardRemove(),
+                        reply_markup=persistent_reply_kb,
                         parse_mode=ParseMode.MARKDOWN
                     )
             except Exception as e:
                 logger.warning("Could not send welcome meme: %s", e)
+        else:
+            try:
+                await update.effective_message.reply_text(
+                    "🎛️ Navigation keyboard ready below.",
+                    reply_markup=persistent_reply_kb
+                )
+            except Exception as e:
+                logger.warning("Could not send reply keyboard: %s", e)
 
         await update.effective_message.reply_text(welcome_text, reply_markup=inline_markup, parse_mode=ParseMode.MARKDOWN)
     else:
@@ -1005,18 +1124,27 @@ async def menu_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
     action = query.data
     member = await db.get_dorm_member(dorm_id, user.id)
     member_name = member["name"] if member else user.first_name
+    is_cleaner, _, cleaners_str = await get_user_week_role(user.id, dorm_id=dorm_id)
 
     text = ""
     keyboard: Optional[InlineKeyboardMarkup] = None
 
     if action == "menu_home":
-        text = await get_dorm_main_menu_text(member_name, dorm=dorm)
-        keyboard = get_main_menu_inline_keyboard()
+        code = dorm.get("dorm_code") or "DORM-101"
+        text = await get_dorm_main_menu_text(member_name, dorm=dorm, is_cleaner=is_cleaner)
+        keyboard = get_main_menu_inline_keyboard(is_cleaner=is_cleaner, dorm_code=code)
     elif action == "menu_status":
         text, keyboard = await get_status_content(user.id, dorm_id=dorm_id)
     elif action == "menu_schedule":
         text, keyboard = await get_schedule_content(dorm_id=dorm_id, user_id=user.id)
     elif action == "menu_done":
+        if not is_cleaner:
+            alert_text = f"You are not on cleaning duty this week! Cleaners: {cleaners_str}" if cleaners_str else "You are not on cleaning duty this week."
+            try:
+                await query.answer(alert_text, show_alert=True)
+            except Exception:
+                pass
+            return
         try:
             await query.answer()
         except Exception:
@@ -1063,7 +1191,7 @@ async def menu_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
 # Quick Reply Keyboard Handler
 # ---------------------------------------------------------------------------
 async def reply_keyboard_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Respond to clicks on the persistent bottom reply keyboard and dismiss it."""
+    """Respond to clicks on the persistent bottom reply keyboard."""
     user = update.effective_user
     msg = update.effective_message
     if not user or not msg or not msg.text:
@@ -1073,12 +1201,6 @@ async def reply_keyboard_text_handler(update: Update, context: ContextTypes.DEFA
     if chat and chat.type == "private" and not await check_member_permission(user.id):
         await reject_non_member(update)
         return
-
-    if chat and chat.type == "private":
-        try:
-            await msg.reply_text("Switching to clean inline buttons...", reply_markup=ReplyKeyboardRemove())
-        except Exception:
-            pass
 
     text_lower = msg.text.strip().lower()
 
@@ -1092,6 +1214,16 @@ async def reply_keyboard_text_handler(update: Update, context: ContextTypes.DEFA
             await msg.reply_text("You are not registered in any active dorm.")
             return
         dorm_id = dorm["dorm_id"]
+        is_cleaner, _, cleaners_str = await get_user_week_role(user.id, dorm_id=dorm_id)
+        if not is_cleaner:
+            cleaners_info = f"This week's cleaners are **{cleaners_str}**." if cleaners_str else "Duty has not started yet."
+            await msg.reply_text(
+                f"ℹ️ **You are not on cleaning duty this week!**\n\n{cleaners_info}\n"
+                "You don't need to submit anything. Use the buttons below to check your schedule or fines.",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=get_reply_keyboard(is_cleaner=False)
+            )
+            return
         from handlers.cleaning import handle_cleaner_done
         await handle_cleaner_done(update, context, user.id, dorm_id=dorm_id)
     elif "fine" in text_lower:
@@ -1104,6 +1236,8 @@ async def reply_keyboard_text_handler(update: Update, context: ContextTypes.DEFA
         await tsidat_command(update, context)
     elif "spin" in text_lower or "roulette" in text_lower:
         await spin_command(update, context)
+    elif "code" in text_lower:
+        await dorm_code_command(update, context)
     elif "help" in text_lower or "guide" in text_lower:
         await help_command(update, context)
     elif "main menu" in text_lower or "menu" in text_lower or "home" in text_lower:
@@ -1155,11 +1289,24 @@ async def claim_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await db.update_member_id_in_db(old_id=old_id, new_id=user.id)
     logger.info("User %s (%s) claimed member slot %s", user.first_name, user.id, target_member.name)
 
+    target_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+    is_cleaner, _, _ = await get_user_week_role(user.id, dorm_id=target_gid)
+    reply_kb = get_reply_keyboard(is_cleaner=is_cleaner)
+    inline_kb = get_main_menu_inline_keyboard(is_cleaner=is_cleaner)
+
+    try:
+        await update.effective_message.reply_text(
+            "🎛️ Navigation keyboard ready below.",
+            reply_markup=reply_kb
+        )
+    except Exception as e:
+        logger.warning("Could not send reply keyboard in claim: %s", e)
+
     await update.effective_message.reply_text(
         f"🎉 Welcome **{target_member.name}**!\n\n"
         f"Your Telegram account (ID: `{user.id}`) is now linked to your dorm cleaning schedule.\n"
         "Tap below to view your schedule and status.",
-        reply_markup=get_main_menu_inline_keyboard(),
+        reply_markup=inline_kb,
         parse_mode=ParseMode.MARKDOWN
     )
 

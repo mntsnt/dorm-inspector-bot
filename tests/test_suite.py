@@ -452,9 +452,9 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Nahom", menu_text)
         self.assertIn("Bilisuma & Nahom", menu_text)
 
-        # 2. Main menu inline keyboard has 6 functional buttons
-        main_kb = commands.get_main_menu_inline_keyboard()
-        button_callbacks = [btn.callback_data for row in main_kb.inline_keyboard for btn in row]
+        # 2. Main menu inline keyboard: cleaner has submit cleaning, non-cleaner does not
+        cleaner_kb = commands.get_main_menu_inline_keyboard(is_cleaner=True)
+        button_callbacks = [btn.callback_data for row in cleaner_kb.inline_keyboard for btn in row]
         self.assertIn("menu_status", button_callbacks)
         self.assertIn("menu_schedule", button_callbacks)
         self.assertIn("menu_done", button_callbacks)
@@ -462,13 +462,24 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         self.assertIn("menu_history", button_callbacks)
         self.assertIn("menu_help", button_callbacks)
 
-        # 3. Mobile reply keyboard has quick jump options
-        reply_kb = commands.get_reply_keyboard()
+        non_cleaner_kb = commands.get_main_menu_inline_keyboard(is_cleaner=False)
+        non_cleaner_callbacks = [btn.callback_data for row in non_cleaner_kb.inline_keyboard for btn in row]
+        self.assertNotIn("menu_done", non_cleaner_callbacks)
+
+        # 3. Mobile reply keyboard has quick jump options and is persistent
+        cleaner_reply_kb = commands.get_reply_keyboard(is_cleaner=True)
+        self.assertTrue(cleaner_reply_kb.is_persistent)
+        cleaner_reply_texts = [btn.text if hasattr(btn, "text") else btn for row in cleaner_reply_kb.keyboard for btn in row]
+        self.assertIn("Submit Cleaning", cleaner_reply_texts)
+
+        reply_kb = commands.get_reply_keyboard(is_cleaner=False)
+        self.assertTrue(reply_kb.is_persistent)
         reply_texts = [btn.text if hasattr(btn, "text") else btn for row in reply_kb.keyboard for btn in row]
         self.assertIn("Status", reply_texts)
         self.assertIn("Schedule", reply_texts)
         self.assertIn("Fines", reply_texts)
         self.assertIn("Main Menu", reply_texts)
+        self.assertNotIn("Submit Cleaning", reply_texts)
 
         # 4. Status view has Forward (Schedule) and Back (Menu)
         status_text, status_kb = await commands.get_status_content(7220854785)
@@ -1150,6 +1161,32 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
                 reply_to_message_id=1000
             )
 
+    async def test_ai_dm_attaches_persistent_reply_keyboard(self):
+        """Verify that chatting with AI in DM attaches the persistent reply keyboard."""
+        await db.init_db()
+        await db.seed_default_dorm()
+        from handlers import ai_chat
+        update = MagicMock()
+        update.effective_chat.id = 7220854785
+        update.effective_chat.type = "private"
+        update.effective_user.id = 7220854785  # Bilisuma
+        update.effective_user.first_name = "Bilisuma"
+        update.effective_message.text = "who is cleaning?"
+        update.effective_message.message_id = 1005
+        update.effective_message.reply_text = AsyncMock()
+
+        context = MagicMock()
+        context.bot.username = "DormInspectorBot"
+
+        with patch("handlers.ai_chat.ask_ai", new_callable=AsyncMock) as mock_ask:
+            mock_ask.return_value = "You are on cleaning duty with Nahom."
+            await ai_chat.handle_ai_mention(update, context)
+            mock_ask.assert_called_once()
+            update.effective_message.reply_text.assert_called_once()
+            call_kwargs = update.effective_message.reply_text.call_args[1]
+            self.assertIn("reply_markup", call_kwargs)
+            self.assertTrue(call_kwargs["reply_markup"].is_persistent)
+
     async def test_ai_role_context_resolution(self):
         """Verify build_dorm_context correctly injects role for cleaner, approver, and off-duty roommate."""
         await db.init_db()
@@ -1309,6 +1346,116 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         text_arg = update.effective_message.reply_text.call_args[0][0]
         self.assertIn("DORM-101", text_arg)
         self.assertIn("?code=DORM-101", text_arg)
+
+    async def test_role_context_aware_buttons_cleaner_vs_non_cleaner(self):
+        """Verify Submit Cleaning button only appears for current week's cleaners."""
+        await db.init_db()
+        await db.seed_default_dorm()
+        from handlers import commands
+
+        # Get week 1 cleaners and an off-duty member
+        d_id = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+        dorm = await db.get_dorm(d_id)
+        pairs = await db.get_dorm_pairs(d_id)
+        members = await db.get_dorm_members(d_id)
+        members_by_id = {m["user_id"]: m["name"] for m in members}
+
+        from scheduler import get_dorm_week_info
+        week_info = get_dorm_week_info(dorm, pairs, members_by_id)
+        self.assertIsNotNone(week_info)
+        cleaner_id = week_info.cleaner1_id
+
+        # Find off-duty member
+        off_duty_id = None
+        for m in members:
+            if m["user_id"] not in (week_info.cleaner1_id, week_info.cleaner2_id):
+                off_duty_id = m["user_id"]
+                break
+        self.assertIsNotNone(off_duty_id)
+
+        # 1. Cleaner status view must have Submit Cleaning
+        _, cleaner_status_kb = await commands.get_status_content(cleaner_id, dorm_id=d_id)
+        cleaner_callbacks = [btn.callback_data for row in cleaner_status_kb.inline_keyboard for btn in row]
+        self.assertIn("menu_done", cleaner_callbacks)
+
+        # 2. Off-duty status view must NOT have Submit Cleaning
+        _, off_duty_status_kb = await commands.get_status_content(off_duty_id, dorm_id=d_id)
+        off_duty_callbacks = [btn.callback_data for row in off_duty_status_kb.inline_keyboard for btn in row]
+        self.assertNotIn("menu_done", off_duty_callbacks)
+        self.assertIn("menu_fines", off_duty_callbacks)
+
+        # 3. get_user_week_role
+        is_cleaner_yes, role_cleaner, _ = await commands.get_user_week_role(cleaner_id, dorm_id=d_id)
+        self.assertTrue(is_cleaner_yes)
+        self.assertEqual(role_cleaner, "CLEANER")
+
+        is_cleaner_no, role_off_duty, _ = await commands.get_user_week_role(off_duty_id, dorm_id=d_id)
+        self.assertFalse(is_cleaner_no)
+        self.assertNotEqual(role_off_duty, "CLEANER")
+
+    async def test_non_cleaner_menu_done_callback_guard(self):
+        """Verify non-cleaner tapping menu_done gets alerted and rejected."""
+        await db.init_db()
+        await db.seed_default_dorm()
+        from handlers import commands
+
+        d_id = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+        members = await db.get_dorm_members(d_id)
+        dorm = await db.get_dorm(d_id)
+        pairs = await db.get_dorm_pairs(d_id)
+        members_by_id = {m["user_id"]: m["name"] for m in members}
+
+        from scheduler import get_dorm_week_info
+        week_info = get_dorm_week_info(dorm, pairs, members_by_id)
+        off_duty_member = next(m for m in members if m["user_id"] not in (week_info.cleaner1_id, week_info.cleaner2_id))
+
+        update = MagicMock()
+        update.callback_query.data = "menu_done"
+        update.callback_query.from_user.id = off_duty_member["user_id"]
+        update.callback_query.from_user.first_name = off_duty_member["name"]
+        update.callback_query.answer = AsyncMock()
+        update.effective_message.reply_text = AsyncMock()
+
+        context = MagicMock()
+        await commands.menu_callback_handler(update, context)
+
+        update.callback_query.answer.assert_called_once()
+        alert_msg = update.callback_query.answer.call_args[0][0]
+        self.assertIn("not on cleaning duty", alert_msg.lower())
+        self.assertTrue(update.callback_query.answer.call_args[1].get("show_alert"))
+
+    async def test_reply_keyboard_text_handler_submit_guard(self):
+        """Verify non-cleaner texting 'Submit Cleaning' is politely rejected and bottom keyboard stays."""
+        await db.init_db()
+        await db.seed_default_dorm()
+        from handlers import commands
+
+        d_id = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+        members = await db.get_dorm_members(d_id)
+        dorm = await db.get_dorm(d_id)
+        pairs = await db.get_dorm_pairs(d_id)
+        members_by_id = {m["user_id"]: m["name"] for m in members}
+
+        from scheduler import get_dorm_week_info
+        week_info = get_dorm_week_info(dorm, pairs, members_by_id)
+        off_duty_member = next(m for m in members if m["user_id"] not in (week_info.cleaner1_id, week_info.cleaner2_id))
+
+        update = MagicMock()
+        update.effective_chat.type = "private"
+        update.effective_user.id = off_duty_member["user_id"]
+        update.effective_user.first_name = off_duty_member["name"]
+        update.effective_message.text = "🧼 Submit Cleaning"
+        update.effective_message.reply_text = AsyncMock()
+
+        context = MagicMock()
+        await commands.reply_keyboard_text_handler(update, context)
+
+        update.effective_message.reply_text.assert_called_once()
+        reply_call = update.effective_message.reply_text.call_args
+        self.assertIn("not on cleaning duty", reply_call[0][0].lower())
+        reply_markup = reply_call[1].get("reply_markup")
+        self.assertIsNotNone(reply_markup)
+        self.assertTrue(reply_markup.is_persistent)
 
 if __name__ == "__main__":
     unittest.main()

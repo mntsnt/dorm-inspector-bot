@@ -90,11 +90,24 @@ async def handle_ai_mention(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     response_text = await ask_ai(cleaned_prompt, dorm_id=dorm_id, user_name=user_name, user_id=user.id)
 
-    # Reply to the user's message as clean natural text
+    # Reply to the user's message as clean natural text with persistent keyboard in DM
+    reply_kb = None
+    if not is_group:
+        try:
+            from handlers.commands import get_user_week_role, get_reply_keyboard
+            is_cleaner, _, _ = await get_user_week_role(user.id, dorm_id=dorm_id)
+            reply_kb = get_reply_keyboard(is_cleaner=is_cleaner)
+        except Exception as e:
+            logger.warning("Could not resolve reply keyboard: %s", e)
+
+    kwargs = {"reply_to_message_id": message.message_id}
+    if reply_kb is not None:
+        kwargs["reply_markup"] = reply_kb
+
     try:
         await message.reply_text(
             response_text,
-            reply_to_message_id=message.message_id
+            **kwargs
         )
     except Exception as e:
         logger.warning("Could not send AI chat reply: %s", e)
@@ -135,8 +148,25 @@ async def inspector_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         user_name = member["name"]
 
     response_text = await ask_ai(query, dorm_id=dorm_id, user_name=user_name, user_id=user.id)
+
+    reply_kb = None
+    if not is_group:
+        try:
+            from handlers.commands import get_user_week_role, get_reply_keyboard
+            is_cleaner, _, _ = await get_user_week_role(user.id, dorm_id=dorm_id)
+            reply_kb = get_reply_keyboard(is_cleaner=is_cleaner)
+        except Exception as e:
+            logger.warning("Could not resolve reply keyboard for inspector command: %s", e)
+
+    kwargs = {"reply_to_message_id": message.message_id}
+    if reply_kb is not None:
+        kwargs["reply_markup"] = reply_kb
+
     try:
-        await message.reply_text(response_text, reply_to_message_id=message.message_id)
+        await message.reply_text(
+            response_text,
+            **kwargs
+        )
     except Exception as e:
         logger.warning("Could not send AI command reply: %s", e)
 
