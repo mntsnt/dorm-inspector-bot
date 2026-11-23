@@ -121,7 +121,7 @@ def get_main_menu_inline_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("🎲 Dorm Roulette", callback_data="menu_spin"),
         ],
         [
-            InlineKeyboardButton("🌐 Live Web Dashboard", url="https://dorm-inspector-bot.app.aletcloud.com"),
+            InlineKeyboardButton("🌐 Live Web Dashboard", url=getattr(config, "DASHBOARD_URL", "https://dorm-inspector-bot-1.app.aletcloud.com")),
         ],
     ])
 
@@ -226,7 +226,7 @@ async def get_status_content(user_id: Optional[int] = None, dorm_id: Optional[in
             InlineKeyboardButton("Submit Cleaning", callback_data="menu_done"),
         ],
         [
-            InlineKeyboardButton("🌐 Live Dashboard", url="https://dorm-inspector-bot.app.aletcloud.com"),
+            InlineKeyboardButton("🌐 Live Dashboard", url=getattr(config, "DASHBOARD_URL", "https://dorm-inspector-bot-1.app.aletcloud.com")),
             InlineKeyboardButton("Main Menu", callback_data="menu_home"),
         ]
     ])

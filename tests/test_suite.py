@@ -1139,11 +1139,103 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         with patch("handlers.ai_chat.ask_ai", new_callable=AsyncMock) as mock_ask:
             mock_ask.return_value = "Approver this week is Hassan."
             await ai_chat.inspector_command(update, context)
-            mock_ask.assert_called_once_with("who is approver?", dorm_id=update.effective_chat.id, user_name="Bilisuma")
+            mock_ask.assert_called_once_with(
+                "who is approver?",
+                dorm_id=update.effective_chat.id,
+                user_name="Bilisuma",
+                user_id=7220854785
+            )
             update.effective_message.reply_text.assert_called_once_with(
                 "Approver this week is Hassan.",
                 reply_to_message_id=1000
             )
+
+    async def test_ai_role_context_resolution(self):
+        """Verify build_dorm_context correctly injects role for cleaner, approver, and off-duty roommate."""
+        await db.init_db()
+        from services import ai_service
+        test_dorm_id = -100444555666
+
+        # Setup test dorm with 4 members: 2 cleaners, 1 approver, 1 off-duty
+        cleaner1_id = 9101
+        cleaner2_id = 9102
+        approver_id = 9103
+        offduty_id = 9104
+        admin_id = 9105
+
+        await db.create_or_update_dorm(
+            dorm_id=test_dorm_id,
+            admin_id=admin_id,
+            dorm_name="Role Test Dorm",
+            start_date="2026-11-23"
+        )
+        await db.add_dorm_member(test_dorm_id, cleaner1_id, "CleanerA")
+        await db.add_dorm_member(test_dorm_id, cleaner2_id, "CleanerB")
+        await db.add_dorm_member(test_dorm_id, approver_id, "ApproverC")
+        await db.add_dorm_member(test_dorm_id, offduty_id, "OffDutyD")
+        await db.set_dorm_pairs(test_dorm_id, [(cleaner1_id, cleaner2_id), (approver_id, offduty_id)])
+
+        # Create week record with assigned approver
+        await db.get_or_create_week(
+            week_start="2026-11-23",
+            week_number=1,
+            cleaner1_id=cleaner1_id,
+            cleaner2_id=cleaner2_id,
+            eligible_approver_ids=[approver_id],
+            dorm_id=test_dorm_id
+        )
+
+        # 1. Cleaner context
+        ctx_cleaner = await ai_service.build_dorm_context(test_dorm_id, user_id=cleaner1_id)
+        self.assertIn("Role: CLEANER ON DUTY", ctx_cleaner)
+        self.assertIn("Partner: CleanerB", ctx_cleaner)
+        self.assertIn("YOU ARE ON CLEANING DUTY THIS WEEK", ctx_cleaner)
+
+        # 2. Approver context
+        ctx_approver = await ai_service.build_dorm_context(test_dorm_id, user_id=approver_id)
+        self.assertIn("Role: APPROVER (INSPECTOR)", ctx_approver)
+        self.assertIn("YOU DO NOT CLEAN THE ROOM!", ctx_approver)
+
+        # 3. Off-duty context
+        ctx_offduty = await ai_service.build_dorm_context(test_dorm_id, user_id=offduty_id)
+        self.assertIn("Role: OFF-DUTY ROOMMATE", ctx_offduty)
+        self.assertIn("OFF DUTY. You do NOT have cleaning duty this week!", ctx_offduty)
+
+    def test_fallback_inspector_reply_role_awareness(self):
+        """Verify fallback_inspector_reply tailors responses by role and never tells off-duty/approver to clean."""
+        from services.ai_service import fallback_inspector_reply
+
+        cleaner_ctx = (
+            "Dorm: Test Dorm\n"
+            "Current Duty: Cleaners: Alice & Bob | Approver: Charlie | Status: In progress\n"
+            "Role: CLEANER ON DUTY\n"
+            "Partner: Bob\n"
+        )
+        approver_ctx = (
+            "Dorm: Test Dorm\n"
+            "Current Duty: Cleaners: Alice & Bob | Approver: Charlie | Status: In progress\n"
+            "Role: APPROVER (INSPECTOR)\n"
+        )
+        offduty_ctx = (
+            "Dorm: Test Dorm\n"
+            "Current Duty: Cleaners: Alice & Bob | Approver: Charlie | Status: In progress\n"
+            "Role: OFF-DUTY ROOMMATE\n"
+        )
+
+        # Asking 'am I cleaning?'
+        self.assertIn("Yes, you are on cleaning duty with Bob", fallback_inspector_reply("am i cleaning?", cleaner_ctx))
+        self.assertIn("No, you are the approver this week, not a cleaner", fallback_inspector_reply("am i cleaning?", approver_ctx))
+        self.assertIn("No, you are off duty this week", fallback_inspector_reply("am i cleaning?", offduty_ctx))
+
+        # Casual greeting
+        self.assertIn("You are on duty with Bob this week", fallback_inspector_reply("hello inspector", cleaner_ctx))
+        self.assertIn("You are the approver this week", fallback_inspector_reply("hello inspector", approver_ctx))
+        self.assertIn("You are off duty this week", fallback_inspector_reply("hello inspector", offduty_ctx))
+
+        # Duty inquiry
+        self.assertIn("You are cleaning with Bob this week", fallback_inspector_reply("what is the duty?", cleaner_ctx))
+        self.assertIn("Alice and Bob are cleaning this week. You are the approver", fallback_inspector_reply("what is the duty?", approver_ctx))
+        self.assertIn("Alice and Bob are cleaning this week. You are off duty", fallback_inspector_reply("what is the duty?", offduty_ctx))
 
 if __name__ == "__main__":
     unittest.main()

@@ -261,6 +261,8 @@ except ValueError:
 
 FINE_EACH = FINE_TOTAL // 2
 
+DASHBOARD_URL = os.getenv("DASHBOARD_URL", "https://dorm-inspector-bot-1.app.aletcloud.com").rstrip("/")
+
 DB_PATH = BASE_DIR / os.getenv("DB_NAME", "dorm_inspector.db")
 
 # Helper map for weekday names to Python weekday index (0=Monday, 6=Sunday)

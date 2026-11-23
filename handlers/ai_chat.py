@@ -88,7 +88,7 @@ async def handle_ai_mention(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if member:
         user_name = member["name"]
 
-    response_text = await ask_ai(cleaned_prompt, dorm_id=dorm_id, user_name=user_name)
+    response_text = await ask_ai(cleaned_prompt, dorm_id=dorm_id, user_name=user_name, user_id=user.id)
 
     # Reply to the user's message as clean natural text
     try:
@@ -134,7 +134,7 @@ async def inspector_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if member:
         user_name = member["name"]
 
-    response_text = await ask_ai(query, dorm_id=dorm_id, user_name=user_name)
+    response_text = await ask_ai(query, dorm_id=dorm_id, user_name=user_name, user_id=user.id)
     try:
         await message.reply_text(response_text, reply_to_message_id=message.message_id)
     except Exception as e:

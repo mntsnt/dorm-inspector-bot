@@ -302,7 +302,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <span class="font-extrabold text-sm text-white tracking-tight">Dorm Inspector</span>
           <span class="px-1.5 py-0.2 rounded text-[9px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/25 tracking-wide">ALETCLOUD</span>
         </div>
-        <p class="text-[10px] text-gray-400 font-mono leading-none">dorm-inspector-bot.app.aletcloud.com</p>
+        <p class="text-[10px] text-gray-400 font-mono leading-none">dorm-inspector-bot-1.app.aletcloud.com</p>
       </div>
     </div>
 
@@ -466,7 +466,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <!-- Minimal Footer -->
   <footer class="mt-2.5 px-3 py-1.5 rounded-xl panel flex items-center justify-between text-[10px] text-gray-400 flex-shrink-0">
     <div>
-      Dorm Inspector Bot • <span class="text-emerald-400 font-semibold">dorm-inspector-bot.app.aletcloud.com</span>
+      Dorm Inspector Bot • <span class="text-emerald-400 font-semibold">dorm-inspector-bot-1.app.aletcloud.com</span>
     </div>
     <div class="flex items-center gap-3">
       <span>Auto-refresh: <strong class="text-emerald-400">15s</strong></span>
