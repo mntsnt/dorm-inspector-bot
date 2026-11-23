@@ -261,7 +261,7 @@ except ValueError:
 
 FINE_EACH = FINE_TOTAL // 2
 
-DASHBOARD_URL = os.getenv("DASHBOARD_URL", "https://dorm-inspector-bot-1.app.aletcloud.com").rstrip("/")
+DASHBOARD_URL = os.getenv("DASHBOARD_URL", "https://inspector.app.aletcloud.com").rstrip("/")
 
 DB_PATH = BASE_DIR / os.getenv("DB_NAME", "dorm_inspector.db")
 

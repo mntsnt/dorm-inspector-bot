@@ -40,6 +40,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.on_event("startup")
+async def on_startup() -> None:
+    """Initialize database and seed default dorm if needed on server start."""
+    try:
+        await db.init_db()
+        if getattr(config, "GROUP_ID", 0):
+            await db.seed_default_dorm()
+    except Exception as e:
+        logger.error("Error during web app startup: %s", e)
+
 def get_uptime_seconds() -> int:
     return int(time.time() - START_TIME)
 
@@ -277,7 +287,9 @@ async def get_dorm_detail(dorm_identifier: str) -> Dict[str, Any]:
 @app.get("/api/dorms/code/{dorm_code}", response_class=JSONResponse)
 async def get_dorm_by_code_endpoint(dorm_code: str) -> Dict[str, Any]:
     """Detailed live metrics for a dorm looked up by its dorm code."""
-    clean_code = dorm_code.strip()
+    clean_code = (dorm_code or "").strip()
+    if not clean_code:
+        raise HTTPException(status_code=400, detail="Dorm code cannot be empty")
     dorm = await db.get_dorm_by_code(clean_code)
     if not dorm:
         raise HTTPException(status_code=404, detail=f"Dorm with code '{dorm_code}' not found")
@@ -360,7 +372,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <span class="font-extrabold text-sm text-white tracking-tight">Dorm Inspector</span>
           <span class="px-1.5 py-0.2 rounded text-[9px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/25 tracking-wide">ALETCLOUD</span>
         </div>
-        <p class="text-[10px] text-gray-400 font-mono leading-none">dorm-inspector-bot-1.app.aletcloud.com</p>
+        <p class="text-[10px] text-gray-400 font-mono leading-none">inspector.app.aletcloud.com</p>
       </div>
     </div>
 
@@ -371,21 +383,22 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         id="dorm-code-input" 
         type="text" 
         placeholder="Enter Dorm Code..." 
-        class="bg-transparent text-white placeholder-gray-500 text-[11px] font-mono uppercase focus:outline-none w-28 sm:w-36"
+        class="bg-transparent text-white placeholder-gray-500 text-[11px] font-mono uppercase focus:outline-none w-32 sm:w-44"
         onkeydown="if(event.key==='Enter') lookupDormByCode()"
+        autocomplete="off"
+        spellcheck="false"
       />
       <button 
+        id="view-code-btn"
         onclick="lookupDormByCode()" 
-        class="px-2 py-0.5 rounded bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 font-semibold text-[10px] border border-emerald-500/30 transition"
+        class="px-2.5 py-0.5 rounded bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 font-semibold text-[10px] border border-emerald-500/30 transition cursor-pointer"
       >
         View
       </button>
     </div>
 
-    <!-- Active Dorm Selector Tabs -->
-    <div id="dorm-selector-tabs" class="flex items-center gap-1.5 overflow-x-auto py-0.5 max-w-xs md:max-w-md">
-      <div class="px-2.5 py-1 rounded-lg bg-gray-800 text-[10px] text-gray-400 animate-pulse">Loading...</div>
-    </div>
+    <!-- User's Saved Dorms Switcher (Private to this browser) -->
+    <div id="my-dorms-container" class="flex items-center gap-1.5 overflow-x-auto py-0.5 max-w-xs md:max-w-md"></div>
 
     <!-- Telemetry Badges & Refresh -->
     <div class="flex items-center gap-2.5 text-[11px]">
@@ -556,7 +569,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <!-- Minimal Footer -->
   <footer class="mt-2.5 px-3 py-1.5 rounded-xl panel flex items-center justify-between text-[10px] text-gray-400 flex-shrink-0">
     <div>
-      Dorm Inspector Bot • <span class="text-emerald-400 font-semibold">dorm-inspector-bot-1.app.aletcloud.com</span>
+      Dorm Inspector Bot • <span class="text-emerald-400 font-semibold">inspector.app.aletcloud.com</span>
     </div>
     <div class="flex items-center gap-3">
       <span>Auto-refresh: <strong class="text-emerald-400">15s</strong></span>
@@ -567,7 +580,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <!-- Live Client-Side Data Fetcher -->
   <script>
     let activeDormId = null;
-    let allDormsCache = [];
+    let currentDormData = null;
 
     function showCodeError(msg) {
       const banner = document.getElementById('code-alert-banner');
@@ -583,9 +596,58 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       if (banner) banner.classList.add('hidden');
     }
 
+    function getSavedDorms() {
+      try {
+        const raw = localStorage.getItem('my_saved_dorms');
+        return raw ? JSON.parse(raw) : [];
+      } catch (e) {
+        return [];
+      }
+    }
+
+    function addSavedDorm(code, name) {
+      if (!code) return;
+      try {
+        let list = getSavedDorms();
+        list = list.filter(d => (d.code || '').toUpperCase() !== code.toUpperCase());
+        list.unshift({ code, name: name || code });
+        if (list.length > 5) list = list.slice(0, 5);
+        localStorage.setItem('my_saved_dorms', JSON.stringify(list));
+      } catch (e) {}
+    }
+
+    function renderMyDormChips() {
+      const container = document.getElementById('my-dorms-container');
+      if (!container) return;
+      const list = getSavedDorms();
+      if (!list || list.length === 0) {
+        container.innerHTML = '';
+        return;
+      }
+
+      const activeCode = (currentDormData && currentDormData.dorm_code)
+        ? currentDormData.dorm_code.toUpperCase()
+        : (localStorage.getItem('saved_dorm_code') || '').toUpperCase();
+
+      container.innerHTML = list.map(item => {
+        const isSelected = item.code.toUpperCase() === activeCode;
+        const activeClass = isSelected
+          ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50 font-bold shadow-sm'
+          : 'panel-subtle text-gray-400 hover:text-gray-200 border-gray-800';
+        return `
+          <button onclick="loadDormByCode('${item.code}')" class="px-2 py-0.5 rounded-lg text-[10px] border transition flex items-center gap-1.5 ${activeClass}">
+            <span>🏢</span>
+            <span>${item.name}</span>
+          </button>
+        `;
+      }).join('');
+    }
+
     function copyDormCode() {
-      const current = allDormsCache.find(d => d.dorm_id === activeDormId);
-      const code = current ? (current.dorm_code || 'DORM-101') : 'DORM-101';
+      const code = (currentDormData && currentDormData.dorm_code)
+        ? currentDormData.dorm_code
+        : (document.getElementById('dorm-code-input') ? document.getElementById('dorm-code-input').value.trim() : '');
+      if (!code) return;
       const shareUrl = `${window.location.origin}/?code=${encodeURIComponent(code)}`;
       if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(shareUrl).then(() => {
@@ -600,29 +662,63 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
     async function lookupDormByCode() {
       const input = document.getElementById('dorm-code-input');
+      const viewBtn = document.getElementById('view-code-btn');
       const code = input ? input.value.trim().toUpperCase() : '';
-      if (!code) return;
-      await loadDormByCode(code);
+      if (!code) {
+        showCodeError("Please enter your dorm code (check /code in Telegram).");
+        return;
+      }
+
+      if (viewBtn) {
+        viewBtn.disabled = true;
+        viewBtn.innerText = "Checking...";
+      }
+
+      try {
+        await loadDormByCode(code);
+      } finally {
+        if (viewBtn) {
+          viewBtn.disabled = false;
+          viewBtn.innerText = "View";
+        }
+      }
     }
 
     async function loadDormByCode(code) {
+      const cleanCode = (code || '').trim().toUpperCase();
+      if (!cleanCode) return;
       try {
         clearCodeError();
-        const res = await fetch(`/api/dorms/code/${encodeURIComponent(code)}`);
+        const res = await fetch(`/api/dorms/code/${encodeURIComponent(cleanCode)}`);
         if (!res.ok) {
-          showCodeError(`Dorm code '${code}' not found. Ask your dorm admin or check /code in Telegram.`);
+          if (res.status === 404) {
+            showCodeError(`Dorm code '${cleanCode}' not found. Please verify your code by typing /code in Telegram.`);
+          } else {
+            showCodeError(`Could not verify dorm code '${cleanCode}' (Server status: ${res.status}).`);
+          }
           return;
         }
+
         const data = await res.json();
+        currentDormData = data;
         activeDormId = data.dorm_id;
         localStorage.setItem('saved_dorm_code', data.dorm_code);
+        addSavedDorm(data.dorm_code, data.dorm_name);
+
         const input = document.getElementById('dorm-code-input');
         if (input) input.value = data.dorm_code;
-        window.history.replaceState(null, '', `?code=${encodeURIComponent(data.dorm_code)}`);
-        renderDormTabs(allDormsCache);
+
+        try {
+          const url = new URL(window.location);
+          url.searchParams.set('code', data.dorm_code);
+          window.history.replaceState({}, '', url);
+        } catch (ue) {}
+
+        renderMyDormChips();
         applyDormDetails(data);
       } catch (e) {
-        showCodeError("Network error checking dorm code.");
+        console.error("loadDormByCode error:", e);
+        showCodeError("Network error connecting to inspector service. Please try again.");
       }
     }
 
@@ -643,34 +739,32 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           document.getElementById('stat-fines').innerHTML = `${sys.stats.total_unpaid_fines_etb} ETB`;
         }
 
-        // 2. Fetch all dorms
-        const dormsRes = await fetch('/api/dorms');
-        if (dormsRes.ok) {
-          allDormsCache = await dormsRes.json();
-          renderDormTabs(allDormsCache);
+        renderMyDormChips();
 
-          // Check query param code or saved code
-          const urlParams = new URLSearchParams(window.location.search);
-          const urlCode = urlParams.get('code') || urlParams.get('dorm');
-          const savedCode = localStorage.getItem('saved_dorm_code');
+        // 2. Resolve target dorm code from URL or localStorage
+        const urlParams = new URLSearchParams(window.location.search);
+        const urlCode = urlParams.get('code') || urlParams.get('dorm');
+        const savedCode = localStorage.getItem('saved_dorm_code');
+        const targetCode = urlCode || savedCode;
 
-          if (urlCode) {
-            await loadDormByCode(urlCode);
-          } else if (allDormsCache.length > 0) {
-            let targetDorm = null;
-            if (savedCode) {
-              targetDorm = allDormsCache.find(d => (d.dorm_code || '').toUpperCase() === savedCode.toUpperCase());
+        if (targetCode) {
+          await loadDormByCode(targetCode);
+        } else {
+          // If no code is stored, check if a single dorm exists and auto-load it
+          const dormsRes = await fetch('/api/dorms');
+          if (dormsRes.ok) {
+            const dorms = await dormsRes.json();
+            if (dorms.length === 1 && dorms[0].dorm_code) {
+              await loadDormByCode(dorms[0].dorm_code);
+            } else {
+              document.getElementById('selected-dorm-title').innerText = "Enter Dorm Code";
+              document.getElementById('selected-dorm-week-header').innerText = "Enter your code above or check /code in Telegram.";
+              const badge = document.getElementById('selected-dorm-status-badge');
+              if (badge) {
+                badge.innerText = "Code Required";
+                badge.className = 'px-2 py-0.5 rounded-full text-[10px] font-semibold badge-not-started';
+              }
             }
-            if (!targetDorm) {
-              targetDorm = allDormsCache.find(d => d.dorm_id === activeDormId) || allDormsCache[0];
-            }
-            activeDormId = targetDorm.dorm_id;
-            const input = document.getElementById('dorm-code-input');
-            if (input && !input.value) input.value = targetDorm.dorm_code || 'DORM-101';
-            await fetchDormDetails(activeDormId);
-          } else {
-            document.getElementById('selected-dorm-title').innerText = "No Active Dorms";
-            document.getElementById('selected-dorm-week-header').innerText = "Run /setup inside Telegram to initialize.";
           }
         }
       } catch (err) {
@@ -680,63 +774,25 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       }
     }
 
-    function renderDormTabs(dorms) {
-      const tabs = document.getElementById('dorm-selector-tabs');
-      if (!tabs) return;
-
-      if (!dorms || dorms.length === 0) {
-        tabs.innerHTML = `<span class="text-[10px] text-gray-400 py-1">No dorms registered yet.</span>`;
-        return;
-      }
-
-      tabs.innerHTML = dorms.map(d => {
-        const isSelected = d.dorm_id === activeDormId;
-        const activeClass = isSelected
-          ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50 font-bold shadow-sm'
-          : 'panel-subtle text-gray-400 hover:text-gray-200 border-gray-800';
-
-        const codeTag = d.dorm_code ? `<span class="text-[9px] px-1 rounded bg-black/40 text-emerald-400 font-mono">${d.dorm_code}</span>` : '';
-
-        return `
-          <button onclick="selectDorm(${d.dorm_id})" class="px-2.5 py-1 rounded-lg text-[10px] border transition flex items-center gap-1.5 ${activeClass}">
-            <span>🏢</span>
-            <span>${d.dorm_name}</span>
-            ${codeTag}
-          </button>
-        `;
-      }).join('');
-    }
-
-    async function selectDorm(dormId) {
-      activeDormId = dormId;
-      const found = allDormsCache.find(d => d.dorm_id === dormId);
-      if (found && found.dorm_code) {
-        localStorage.setItem('saved_dorm_code', found.dorm_code);
-        const input = document.getElementById('dorm-code-input');
-        if (input) input.value = found.dorm_code;
-        window.history.replaceState(null, '', `?code=${encodeURIComponent(found.dorm_code)}`);
-      }
-      clearCodeError();
-      renderDormTabs(allDormsCache);
-      await fetchDormDetails(dormId);
-    }
-
     function applyDormDetails(data) {
+      currentDormData = data;
       document.getElementById('selected-dorm-title').innerText = data.dorm_name;
       const codeBadge = document.getElementById('selected-dorm-code-badge');
-      if (codeBadge) codeBadge.innerText = `${data.dorm_code || 'DORM-101'} 📋`;
+      if (codeBadge) codeBadge.innerText = `${data.dorm_code} 📋`;
       const codeInput = document.getElementById('dorm-code-input');
-      if (codeInput && !codeInput.value) codeInput.value = data.dorm_code || '';
+      if (codeInput && !codeInput.value) codeInput.value = data.dorm_code;
       document.getElementById('selected-dorm-fine').innerText = `${data.fine_amount} ETB (50/50)`;
-      document.getElementById('selected-dorm-approver').innerText = data.current_week.approver || 'Not assigned';
+      document.getElementById('selected-dorm-approver').innerText = (data.current_week && data.current_week.approver) ? data.current_week.approver : 'Not assigned';
 
       // Week header & badge
-      const curWeek = data.current_week;
-      document.getElementById('selected-dorm-week-header').innerText = `Week ${curWeek.week_number} Duty • ${curWeek.duty_state}`;
+      const curWeek = data.current_week || {};
+      document.getElementById('selected-dorm-week-header').innerText = `Week ${curWeek.week_number || 1} Duty • ${curWeek.duty_state || 'In Progress'}`;
 
       const badge = document.getElementById('selected-dorm-status-badge');
-      badge.innerText = curWeek.duty_state;
-      badge.className = 'px-2 py-0.5 rounded-full text-[10px] font-semibold ' + getBadgeClass(curWeek.status_code);
+      if (badge) {
+        badge.innerText = curWeek.duty_state || 'In Progress';
+        badge.className = 'px-2 py-0.5 rounded-full text-[10px] font-semibold ' + getBadgeClass(curWeek.status_code);
+      }
 
       document.getElementById('cleaner-1-name').innerText = curWeek.cleaner1 || 'TBD';
       document.getElementById('cleaner-2-name').innerText = curWeek.cleaner2 || 'TBD';

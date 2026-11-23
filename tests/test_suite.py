@@ -1279,17 +1279,24 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         await db.init_db()
         await db.seed_default_dorm()
 
-        # 1. Default dorm should have DORM-101
-        default_dorm = await db.get_dorm_by_code("DORM-101")
+        # 1. Default dorm should have a secure unguessable code
+        active_dorms = await db.get_all_active_dorms()
+        self.assertGreaterEqual(len(active_dorms), 1)
+        expected_code = active_dorms[0]["dorm_code"]
+        self.assertTrue(expected_code.startswith("DORM-"))
+        self.assertGreaterEqual(len(expected_code), 10)
+
+        default_dorm = await db.get_dorm_by_code(expected_code)
         self.assertIsNotNone(default_dorm)
-        self.assertEqual(default_dorm["dorm_code"], "DORM-101")
+        self.assertEqual(default_dorm["dorm_code"], expected_code)
 
         # 2. Case-insensitive and prefix-insensitive lookup
-        lookup_lower = await db.get_dorm_by_code("dorm-101")
+        lookup_lower = await db.get_dorm_by_code(expected_code.lower())
         self.assertIsNotNone(lookup_lower)
         self.assertEqual(lookup_lower["dorm_id"], default_dorm["dorm_id"])
 
-        lookup_bare = await db.get_dorm_by_code("101")
+        bare_code = expected_code.replace("DORM-", "")
+        lookup_bare = await db.get_dorm_by_code(bare_code)
         self.assertIsNotNone(lookup_bare)
         self.assertEqual(lookup_bare["dorm_id"], default_dorm["dorm_id"])
 
@@ -1314,13 +1321,15 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         from web import app
         from httpx import AsyncClient, ASGITransport
 
+        active_dorms = await db.get_all_active_dorms()
+        code = active_dorms[0]["dorm_code"]
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             # Valid code
-            res = await client.get("/api/dorms/code/DORM-101")
+            res = await client.get(f"/api/dorms/code/{code}")
             self.assertEqual(res.status_code, 200)
             data = res.json()
-            self.assertEqual(data["dorm_code"], "DORM-101")
+            self.assertEqual(data["dorm_code"], code)
             self.assertIn("current_week", data)
 
             # Invalid code
@@ -1333,6 +1342,9 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         await db.seed_default_dorm()
         from handlers import commands
 
+        active_dorms = await db.get_all_active_dorms()
+        code = active_dorms[0]["dorm_code"]
+
         update = MagicMock()
         update.effective_chat.id = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
         update.effective_chat.type = "supergroup"
@@ -1344,8 +1356,8 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
 
         update.effective_message.reply_text.assert_called_once()
         text_arg = update.effective_message.reply_text.call_args[0][0]
-        self.assertIn("DORM-101", text_arg)
-        self.assertIn("?code=DORM-101", text_arg)
+        self.assertIn(code, text_arg)
+        self.assertIn(f"?code={code}", text_arg)
 
     async def test_role_context_aware_buttons_cleaner_vs_non_cleaner(self):
         """Verify Submit Cleaning button only appears for current week's cleaners."""

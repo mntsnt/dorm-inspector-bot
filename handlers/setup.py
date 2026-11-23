@@ -421,7 +421,7 @@ async def setup_launch_callback(update: Update, context: ContextTypes.DEFAULT_TY
         pair_lines.append(f"• **Week {idx}:** {n1} & {n2}")
 
     code = dorm.get("dorm_code") or "DORM-101"
-    dash_base = getattr(config, "DASHBOARD_URL", "https://dorm-inspector-bot-1.app.aletcloud.com")
+    dash_base = getattr(config, "DASHBOARD_URL", "https://inspector.app.aletcloud.com")
     dash_url = f"{dash_base}?code={code}"
 
     launch_msg = (

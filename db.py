@@ -42,6 +42,43 @@ def _get_connection(db_path: Optional[Path] = None):
     return _DBConnectionContext(db_path)
 
 # ---------------------------------------------------------------------------
+# Cryptographically Secure Dorm Code Utilities
+# ---------------------------------------------------------------------------
+DORM_CODE_CHARSET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+
+def is_weak_dorm_code(code: Optional[str]) -> bool:
+    """Check if a dorm code is missing, sequential, or easily guessable."""
+    if not code:
+        return True
+    clean = str(code).strip().upper()
+    if clean in ("DORM-101", "101", "DORM-0001", "0001", "DORM-102", "102"):
+        return True
+    # If it's just DORM- followed by simple digits (e.g. DORM-101, DORM-4077)
+    if clean.startswith("DORM-") and clean[5:].isdigit():
+        return True
+    if clean.isdigit():
+        return True
+    # If total length is too short (< 8 chars)
+    if len(clean) < 8:
+        return True
+    return False
+
+def generate_secure_dorm_code(prefix: str = "DORM") -> str:
+    """Generate a high-entropy, human-readable cryptographically secure dorm code (e.g. DORM-7K9P-4X2M)."""
+    import secrets
+    part1 = "".join(secrets.choice(DORM_CODE_CHARSET) for _ in range(4))
+    part2 = "".join(secrets.choice(DORM_CODE_CHARSET) for _ in range(4))
+    return f"{prefix}-{part1}-{part2}"
+
+def _generate_unique_dorm_code_sync(cursor, dorm_id: Optional[int] = None) -> str:
+    """Generate a collision-free, cryptographically unguessable dorm code."""
+    while True:
+        code = generate_secure_dorm_code("DORM")
+        cursor.execute("SELECT 1 FROM dorms WHERE UPPER(dorm_code) = UPPER(?)", (code,))
+        if not cursor.fetchone():
+            return code
+
+# ---------------------------------------------------------------------------
 # Database Schema Initialization & Auto-Migration
 # ---------------------------------------------------------------------------
 def _init_db_sync(db_path: Optional[Path] = None) -> None:
@@ -166,18 +203,15 @@ def _init_db_sync(db_path: Optional[Path] = None) -> None:
 
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_dorms_dorm_code ON dorms(dorm_code);")
 
-        # Assign unique dorm codes to any dorms missing one
-        cursor.execute("SELECT dorm_id FROM dorms WHERE dorm_code IS NULL OR dorm_code = '';")
-        unassigned_dorms = cursor.fetchall()
-        default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
-        for r in unassigned_dorms:
+        # Assign unique cryptographically secure dorm codes to any dorms missing one or having weak codes
+        cursor.execute("SELECT dorm_id, dorm_code FROM dorms;")
+        existing_dorms = cursor.fetchall()
+        for r in existing_dorms:
             d_id = r["dorm_id"]
-            if d_id in (default_gid, getattr(config, "GROUP_ID", 0), 0):
-                code = "DORM-101"
-            else:
-                suffix = abs(d_id) % 10000
-                code = f"DORM-{suffix:04d}"
-            cursor.execute("UPDATE dorms SET dorm_code = ? WHERE dorm_id = ?", (code, d_id))
+            cur_code = r["dorm_code"]
+            if is_weak_dorm_code(cur_code):
+                new_code = _generate_unique_dorm_code_sync(cursor, d_id)
+                cursor.execute("UPDATE dorms SET dorm_code = ? WHERE dorm_id = ?", (new_code, d_id))
 
         # 6. Fines Ledger Table (Multi-tenant fines ledger)
         cursor.execute("""
@@ -240,20 +274,6 @@ def _resolve_dorm_id(dorm_id: Optional[int]) -> int:
 # ---------------------------------------------------------------------------
 # Dorm Platform Operations
 # ---------------------------------------------------------------------------
-def _generate_unique_dorm_code_sync(cursor, dorm_id: int) -> str:
-    """Generate a clean, collision-free dorm code."""
-    suffix = abs(dorm_id) % 10000
-    candidate = f"DORM-{suffix:04d}"
-    cursor.execute("SELECT 1 FROM dorms WHERE UPPER(dorm_code) = UPPER(?)", (candidate,))
-    if not cursor.fetchone():
-        return candidate
-    import secrets
-    while True:
-        code = f"DORM-{secrets.token_hex(2).upper()}"
-        cursor.execute("SELECT 1 FROM dorms WHERE UPPER(dorm_code) = UPPER(?)", (code,))
-        if not cursor.fetchone():
-            return code
-
 def _create_or_update_dorm_sync(
     dorm_id: int,
     admin_id: int,
@@ -267,16 +287,13 @@ def _create_or_update_dorm_sync(
     if not start_date:
         start_date = getattr(config, "START_DATE_STR", "2026-11-23")
 
-    default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
     with _get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT dorm_code FROM dorms WHERE dorm_id = ?", (dorm_id,))
         existing = cursor.fetchone()
         if not dorm_code:
-            if existing and existing["dorm_code"]:
+            if existing and existing["dorm_code"] and not is_weak_dorm_code(existing["dorm_code"]):
                 dorm_code = existing["dorm_code"]
-            elif dorm_id in (default_gid, getattr(config, "GROUP_ID", 0), 0):
-                dorm_code = "DORM-101"
             else:
                 dorm_code = _generate_unique_dorm_code_sync(cursor, dorm_id)
 
@@ -317,17 +334,43 @@ def _get_dorm_by_code_sync(code: str) -> Optional[Dict[str, Any]]:
     clean = (code or "").strip().upper()
     if not clean:
         return None
-    alt_clean = f"DORM-{clean}" if not clean.startswith("DORM-") else clean[5:]
+
+    compact = clean.replace("DORM-", "").replace("DORM", "").replace("-", "").replace(" ", "")
+    with_prefix = f"DORM-{compact}" if not clean.startswith("DORM-") else clean
+
     with _get_connection() as conn:
         cursor = conn.cursor()
+        # 1. Direct match by exact code or with DORM- prefix
         cursor.execute("""
             SELECT * FROM dorms
             WHERE UPPER(dorm_code) = ? OR UPPER(dorm_code) = ?
             LIMIT 1
-        """, (clean, alt_clean))
+        """, (clean, with_prefix))
         row = cursor.fetchone()
         if row:
             return dict(row)
+
+        # 2. Match compact stripped characters (ignores hyphenation and casing)
+        if compact:
+            cursor.execute("""
+                SELECT * FROM dorms
+                WHERE REPLACE(REPLACE(REPLACE(UPPER(dorm_code), 'DORM-', ''), 'DORM', ''), '-', '') = ?
+                LIMIT 1
+            """, (compact,))
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+
+        # 3. Direct match if code is numeric dorm_id (for internal/admin convenience)
+        try:
+            num_id = int(code.strip())
+            cursor.execute("SELECT * FROM dorms WHERE dorm_id = ? LIMIT 1", (num_id,))
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+        except ValueError:
+            pass
+
         return None
 
 async def get_dorm_by_code(code: str) -> Optional[Dict[str, Any]]:
@@ -1261,16 +1304,25 @@ def _seed_default_dorm_sync() -> None:
         conn.execute("UPDATE users SET user_id = 7220854785 WHERE user_id = 111111111;")
         conn.execute("UPDATE fines SET user_id = 7220854785 WHERE user_id = 111111111;")
 
+        cursor = conn.cursor()
+        cursor.execute("SELECT dorm_code FROM dorms WHERE dorm_id = ?", (group_id,))
+        row = cursor.fetchone()
+        existing_code = row["dorm_code"] if row else None
+        if not existing_code or is_weak_dorm_code(existing_code):
+            default_code = _generate_unique_dorm_code_sync(cursor, group_id)
+        else:
+            default_code = existing_code
+
         # Upsert dorm so topic_id, dorm_code, and status are always correct and active
         conn.execute("""
             INSERT INTO dorms (dorm_id, topic_id, admin_id, dorm_name, fine_amount, start_date, status, dorm_code, updated_at)
-            VALUES (?, ?, ?, 'Dorm Cleaning Schedule', ?, ?, 'active', 'DORM-101', CURRENT_TIMESTAMP)
+            VALUES (?, ?, ?, 'Dorm Cleaning Schedule', ?, ?, 'active', ?, CURRENT_TIMESTAMP)
             ON CONFLICT(dorm_id) DO UPDATE SET
                 topic_id = COALESCE(excluded.topic_id, dorms.topic_id),
-                dorm_code = COALESCE(dorms.dorm_code, 'DORM-101'),
+                dorm_code = CASE WHEN dorms.dorm_code IS NULL OR dorms.dorm_code = '' OR dorms.dorm_code = 'DORM-101' THEN excluded.dorm_code ELSE dorms.dorm_code END,
                 status = 'active',
                 updated_at = CURRENT_TIMESTAMP;
-        """, (group_id, topic_id, admin_id, fine_amount, start_date))
+        """, (group_id, topic_id, admin_id, fine_amount, start_date, default_code))
 
         # Seed pre-configured members from config.MEMBERS as already connected
         for m in getattr(config, "MEMBERS", []):
@@ -1358,15 +1410,24 @@ def _seed_default_dorm_for_group_sync(group_id: int) -> Dict[str, Any]:
     fine_amount = getattr(config, "FINE_TOTAL", 100)
 
     with _get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT dorm_code FROM dorms WHERE dorm_id = ?", (group_id,))
+        row = cursor.fetchone()
+        existing_code = row["dorm_code"] if row else None
+        if not existing_code or is_weak_dorm_code(existing_code):
+            default_code = _generate_unique_dorm_code_sync(cursor, group_id)
+        else:
+            default_code = existing_code
+
         conn.execute("""
             INSERT INTO dorms (dorm_id, topic_id, admin_id, dorm_name, fine_amount, start_date, status, dorm_code, updated_at)
-            VALUES (?, ?, ?, 'Dorm Cleaning Schedule', ?, ?, 'active', 'DORM-101', CURRENT_TIMESTAMP)
+            VALUES (?, ?, ?, 'Dorm Cleaning Schedule', ?, ?, 'active', ?, CURRENT_TIMESTAMP)
             ON CONFLICT(dorm_id) DO UPDATE SET
                 topic_id = COALESCE(excluded.topic_id, dorms.topic_id),
-                dorm_code = COALESCE(dorms.dorm_code, 'DORM-101'),
+                dorm_code = CASE WHEN dorms.dorm_code IS NULL OR dorms.dorm_code = '' OR dorms.dorm_code = 'DORM-101' THEN excluded.dorm_code ELSE dorms.dorm_code END,
                 status = 'active',
                 updated_at = CURRENT_TIMESTAMP;
-        """, (group_id, topic_id, admin_id, fine_amount, start_date))
+        """, (group_id, topic_id, admin_id, fine_amount, start_date, default_code))
 
         for m in getattr(config, "MEMBERS", []):
             is_adm = 1 if m.user_id in (admin_id, 7220854785, 6163528558) else 0
