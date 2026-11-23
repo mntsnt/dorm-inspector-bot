@@ -27,13 +27,13 @@ def _parse_callback_dorm_and_week(callback_data: str) -> Tuple[int, str]:
             try:
                 return int(parts[2]), parts[3]
             except ValueError:
-                pass
-        return getattr(config, "DEFAULT_GROUP_ID", -1002378440774), parts[-1]
+                return 0, ""
+        return 0, ""
     elif len(parts) == 3:
         try:
             return int(parts[1]), parts[2]
         except ValueError:
-            return getattr(config, "DEFAULT_GROUP_ID", -1002378440774), parts[2]
+            return 0, ""
     elif len(parts) == 2:
         return getattr(config, "DEFAULT_GROUP_ID", -1002378440774), parts[1]
     return 0, ""

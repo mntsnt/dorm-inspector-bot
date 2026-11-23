@@ -89,22 +89,18 @@ def _parse_callback_dorm_and_week(callback_data: str) -> Tuple[int, str]:
     # Example: ['cleaned', '-1002378440774', '2026-11-23'] -> 3 parts
     # Example: ['fcheck', 'yes', '-1002378440774', '2026-11-23'] -> 4 parts
     if len(parts) >= 4 and parts[0] in ("fcheck", "fconfirm"):
-        # Pattern: prefix_action_dormId_weekStart or prefix_action_weekStart
-        # parts[2] is dorm_id if parts[3] is week_start
-        if len(parts) >= 4 and "-" in parts[3]:  # date contains hyphen e.g. 2026-11-23
+        if len(parts) >= 4 and "-" in parts[3]:
             try:
                 return int(parts[2]), parts[3]
             except ValueError:
-                pass
-        return getattr(config, "DEFAULT_GROUP_ID", -1002378440774), parts[-1]
+                return 0, ""
+        return 0, ""
     elif len(parts) == 3:
-        # Pattern: prefix_dormId_weekStart
         try:
             return int(parts[1]), parts[2]
         except ValueError:
-            return getattr(config, "DEFAULT_GROUP_ID", -1002378440774), parts[2]
+            return 0, ""
     elif len(parts) == 2:
-        # Legacy pattern: prefix_weekStart
         return getattr(config, "DEFAULT_GROUP_ID", -1002378440774), parts[1]
 
     return 0, ""

@@ -65,15 +65,17 @@ async def handle_ai_mention(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     except Exception:
         pass
 
-    # Resolve target dorm
-    dorm_id = chat.id if is_group else getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
-    dorm = await db.get_dorm(dorm_id)
-    if not dorm and not is_group:
+    # Resolve target dorm without cross-dorm leakage
+    if is_group:
+        dorm_id = chat.id
+    else:
         user_dorms = await db.get_user_dorms(user.id)
         if user_dorms:
             dorm_id = user_dorms[0]["dorm_id"]
-        else:
+        elif config.is_member(user.id) or user.id == getattr(config, "ADMIN_ID", 6163528558):
             dorm_id = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+        else:
+            return
 
     user_name = user.first_name or "Roommate"
     member = await db.get_dorm_member(dorm_id, user.id)

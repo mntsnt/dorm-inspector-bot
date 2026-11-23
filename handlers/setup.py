@@ -107,10 +107,9 @@ async def setup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     start_monday_str = start_monday.strftime("%Y-%m-%d")
 
     default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
-    is_main_admin_or_member = (user.id == getattr(config, "ADMIN_ID", 6163528558) or config.is_member(user.id))
 
     # The default saved dorm is always active and protected against resetting
-    if dorm_id == default_gid or is_main_admin_or_member:
+    if dorm_id == default_gid:
         dorm = await db.seed_default_dorm_for_group(dorm_id)
         pairs = await db.get_dorm_pairs(dorm_id)
         members = await db.get_dorm_members(dorm_id)
@@ -136,6 +135,20 @@ async def setup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
         return
 
+    # Check single-dorm membership for the admin running setup
+    user_dorms = await db.get_user_dorms(user.id)
+    if user_dorms:
+        existing_other = [d for d in user_dorms if d["dorm_id"] != dorm_id]
+        if existing_other:
+            await msg.reply_text(
+                f"⚠️ **Cannot set up a new dorm.**\n\n"
+                f"You are already a member of **{existing_other[0]['dorm_name']}**.\n\n"
+                "A student can only belong to one dorm at a time. "
+                "If you are moving rooms, please leave your current dorm first with `/leave`.",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return
+
     # Create or update dorm record in database
     existing_dorm = await db.get_dorm(dorm_id)
     if existing_dorm and existing_dorm.get("status") == "active":
@@ -159,13 +172,16 @@ async def setup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     )
 
     # Automatically register the admin as member #1
-    await db.add_dorm_member(
+    success, err_msg = await db.add_dorm_member(
         dorm_id=dorm_id,
         user_id=admin_id,
         name=user.first_name,
         username=user.username,
         is_admin=1
     )
+    if not success:
+        await msg.reply_text(f"⚠️ {err_msg}")
+        return
 
     # Build shareable join link
     bot_info = await context.bot.get_me()

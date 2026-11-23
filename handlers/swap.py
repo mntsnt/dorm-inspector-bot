@@ -26,13 +26,22 @@ async def swap_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     is_group = chat.type in ("group", "supergroup")
-    dorm_id = chat.id if is_group else getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
-
-    dorm = await db.get_dorm(dorm_id)
-    if not dorm and not is_group:
+    dorm = None
+    if is_group:
+        dorm_id = chat.id
+        dorm = await db.get_dorm(dorm_id)
+        if dorm:
+            member = await db.get_dorm_member(dorm_id, user.id)
+            if not member and user.id != getattr(config, "ADMIN_ID", 6163528558):
+                await message.reply_text("You are not a member of this dorm.")
+                return
+    else:
         user_dorms = await db.get_user_dorms(user.id)
         if user_dorms:
             dorm_id = user_dorms[0]["dorm_id"]
+            dorm = await db.get_dorm(dorm_id)
+        elif config.is_member(user.id) or user.id == getattr(config, "ADMIN_ID", 6163528558):
+            dorm_id = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
             dorm = await db.get_dorm(dorm_id)
 
     if not dorm:

@@ -35,18 +35,20 @@ import db
 logger = logging.getLogger(__name__)
 
 async def check_member_permission(user_id: int, dorm_id: Optional[int] = None) -> bool:
-    """Return True if user is a registered member of the dorm or platform."""
-    if config.is_member(user_id) or user_id == getattr(config, "ADMIN_ID", 6163528558):
+    """Return True if user is a registered member of the target dorm (or any active dorm if dorm_id is None)."""
+    if user_id == getattr(config, "ADMIN_ID", 6163528558):
         return True
     if dorm_id:
         member = await db.get_dorm_member(dorm_id, user_id)
-        if member:
-            return True
-        dorm = await db.get_dorm(dorm_id)
-        if dorm and dorm.get("status") == "active":
-            return True
+        return member is not None
     user_dorms = await db.get_user_dorms(user_id)
-    return len(user_dorms) > 0
+    if user_dorms:
+        return True
+    default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+    if config.is_member(user_id):
+        member = await db.get_dorm_member(default_gid, user_id)
+        return member is not None
+    return False
 
 async def reject_non_member(update: Update) -> None:
     """Politely guide new students on how to set up their dorm."""
@@ -62,41 +64,39 @@ async def reject_non_member(update: Update) -> None:
         )
 
 async def _resolve_user_dorm(user_id: int) -> Optional[Dict[str, Any]]:
-    """Resolve primary dorm for a user in private chat."""
+    """Resolve the single active dorm for a user in private chat."""
     user_dorms = await db.get_user_dorms(user_id)
     if user_dorms:
         return user_dorms[0]
     default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
-    if config.is_member(user_id) or user_id == getattr(config, "ADMIN_ID", 6163528558):
+    if user_id == getattr(config, "ADMIN_ID", 6163528558):
         dorm = await db.get_dorm(default_gid)
         if not dorm:
             await db.seed_default_dorm()
             dorm = await db.get_dorm(default_gid)
         return dorm
+    if config.is_member(user_id):
+        member = await db.get_dorm_member(default_gid, user_id)
+        if member:
+            return await db.get_dorm(default_gid)
     return None
 
 async def _resolve_target_dorm(dorm_id: Optional[int] = None, user_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
-    """Reliably resolve the active dorm for a group chat or user command."""
+    """Reliably resolve the active dorm for a group chat or user command without cross-dorm leaks."""
     default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
-    target_id = dorm_id
 
-    if target_id is not None:
-        dorm = await db.get_dorm(target_id)
+    if dorm_id is not None:
+        dorm = await db.get_dorm(dorm_id)
         if dorm:
             return dorm
-        if target_id in (default_gid, -2378440774, 2378440774) or (user_id and (config.is_member(user_id) or user_id == getattr(config, "ADMIN_ID", 6163528558))):
-            return await db.seed_default_dorm_for_group(target_id)
+        if dorm_id in (default_gid, -2378440774, 2378440774):
+            return await db.seed_default_dorm_for_group(dorm_id)
+        return None
 
     if user_id is not None:
-        dorm = await _resolve_user_dorm(user_id)
-        if dorm:
-            return dorm
+        return await _resolve_user_dorm(user_id)
 
-    dorm = await db.get_dorm(default_gid)
-    if not dorm:
-        await db.seed_default_dorm()
-        dorm = await db.get_dorm(default_gid)
-    return dorm
+    return None
 
 # ---------------------------------------------------------------------------
 # Keyboards & Navigation Builders
@@ -134,28 +134,83 @@ def get_reply_keyboard() -> ReplyKeyboardMarkup:
         resize_keyboard=True
     )
 
-def get_main_menu_text(member_name: str, connected_info: Optional[str] = None, dorm_name: Optional[str] = None) -> str:
-    """Welcome and overview text for the main menu."""
-    current_date = config.get_current_date()
-    week_info = config.get_week_info(current_date)
-
+async def get_dorm_main_menu_text(
+    member_name: str,
+    connected_info: Optional[str] = None,
+    dorm: Optional[Dict[str, Any]] = None
+) -> str:
+    """Welcome and overview text for the main menu, dynamically scoped to the target dorm."""
+    dorm_name = dorm.get("dorm_name") if dorm else None
     status_suffix = f"\n\nMembers connected: **{connected_info}**" if connected_info else ""
     dorm_prefix = f"**{dorm_name}**\n\n" if dorm_name else ""
 
-    if week_info.week_number < 1:
-        first_cleaners = f"{config.PAIRS[0][0].name} & {config.PAIRS[0][1].name}"
+    if not dorm:
+        return (
+            f"Hi **{member_name}**!\n\n"
+            "Use the buttons below to check duty, fines, or rules."
+        )
+
+    dorm_id = dorm["dorm_id"]
+    from scheduler import get_dorm_week_info
+    pairs = await db.get_dorm_pairs(dorm_id)
+    members = await db.get_dorm_members(dorm_id)
+    members_by_id = {m["user_id"]: m["name"] for m in members}
+
+    current_date = config.get_current_date()
+    week_info = get_dorm_week_info(dorm, pairs, members_by_id, target_date=current_date)
+
+    if not week_info or not pairs:
         return (
             f"{dorm_prefix}Hi **{member_name}**!\n\n"
-            f"Week 1 starts: Monday, {config.START_BASE_MONDAY.strftime('%b %d')}\n"
-            f"First cleaners: **{first_cleaners}**{status_suffix}\n\n"
+            f"Cleaning schedule is being configured.{status_suffix}\n\n"
+            "Use the buttons below to check duty, fines, or rules."
+        )
+
+    if week_info.week_number < 1:
+        first_c1 = members_by_id.get(pairs[0]["cleaner1_id"], "TBD")
+        first_c2 = members_by_id.get(pairs[0]["cleaner2_id"], "TBD")
+        start_date_str = dorm.get("start_date") or getattr(config, "START_DATE_STR", "2026-11-23")
+        return (
+            f"{dorm_prefix}Hi **{member_name}**!\n\n"
+            f"Week 1 starts: Monday, {start_date_str}\n"
+            f"First cleaners: **{first_c1} & {first_c2}**{status_suffix}\n\n"
             "Use the buttons below to check duty, fines, or rules."
         )
     else:
+        c1 = week_info.cleaner1_name
+        c2 = week_info.cleaner2_name
         return (
             f"{dorm_prefix}Hi **{member_name}**!\n\n"
-            f"Week {week_info.week_number} cleaners: **{week_info.cleaner1.name}** & **{week_info.cleaner2.name}**{status_suffix}\n\n"
+            f"Week {week_info.week_number} cleaners: **{c1} & {c2}**{status_suffix}\n\n"
             "Use the buttons below to check duty, fines, or submit cleaning."
         )
+
+def get_main_menu_text(member_name: str, connected_info: Optional[str] = None, dorm_name: Optional[str] = None) -> str:
+    """Overview text for main menu."""
+    status_suffix = f"\n\nMembers connected: **{connected_info}**" if connected_info else ""
+    dorm_prefix = f"**{dorm_name}**\n\n" if dorm_name else ""
+
+    if not dorm_name or dorm_name == "Dorm Cleaning Schedule":
+        current_date = config.get_current_date()
+        week_info = config.get_week_info(current_date)
+        if week_info.week_number < 1:
+            first_cleaners = f"{config.PAIRS[0][0].name} & {config.PAIRS[0][1].name}"
+            return (
+                f"{dorm_prefix}Hi **{member_name}**!\n\n"
+                f"Week 1 starts: Monday, {config.START_BASE_MONDAY.strftime('%b %d')}\n"
+                f"First cleaners: **{first_cleaners}**{status_suffix}\n\n"
+                "Use the buttons below to check duty, fines, or rules."
+            )
+        else:
+            return (
+                f"{dorm_prefix}Hi **{member_name}**!\n\n"
+                f"Week {week_info.week_number} cleaners: **{week_info.cleaner1.name} & {week_info.cleaner2.name}**{status_suffix}\n\n"
+                "Use the buttons below to check duty, fines, or submit cleaning."
+            )
+    return (
+        f"{dorm_prefix}Hi **{member_name}**!{status_suffix}\n\n"
+        "Use the buttons below to check duty, fines, or submit cleaning."
+    )
 
 # ---------------------------------------------------------------------------
 # View Content Generators (Text + Navigation Buttons)
@@ -514,7 +569,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
             if dorm:
                 member_name = user.first_name or user.username or f"User {user.id}"
-                await db.add_dorm_member(
+                success, msg = await db.add_dorm_member(
                     dorm_id=dorm["dorm_id"],
                     user_id=user.id,
                     name=member_name,
@@ -522,6 +577,16 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                     username=user.username,
                     is_admin=1 if user.id == dorm["admin_id"] else 0
                 )
+                if not success:
+                    await update.effective_message.reply_text(
+                        f"⚠️ **Cannot join {dorm['dorm_name']}**\n\n"
+                        f"{msg}\n\n"
+                        "A student can only belong to one dorm at a time. "
+                        "To join this dorm, you must first leave your current dorm using `/leave`.",
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+                    return
+
                 logger.info("User %s (%s) joined dorm %s via deep-link", member_name, user.id, dorm["dorm_id"])
 
                 # Post greeting in the dorm group chat
@@ -550,21 +615,24 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     # Auto-claim placeholder member if first name, username, or arg matches (e.g. Bilisuma with placeholder ID 111111111)
     if not await check_member_permission(user.id):
-        fname = (user.first_name or "").strip().lower()
-        uname = (user.username or "").strip().lower()
-        for m in getattr(config, "MEMBERS", []):
-            if m.user_id == 111111111:
-                m_name = m.name.strip().lower()
-                is_claim_arg = (
-                    context.args
-                    and len(context.args) > 0
-                    and context.args[0].lower() in (f"claim_{m_name}", m_name)
-                )
-                if m_name in (fname, uname) or is_claim_arg:
-                    logger.info("Auto-linking placeholder member %s to user ID %s", m.name, user.id)
-                    config.update_member_id(m.name, user.id)
-                    await db.update_member_id_in_db(old_id=m.user_id, new_id=user.id)
-                    break
+        user_dorms = await db.get_user_dorms(user.id)
+        default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+        if not (user_dorms and any(d["dorm_id"] != default_gid for d in user_dorms)):
+            fname = (user.first_name or "").strip().lower()
+            uname = (user.username or "").strip().lower()
+            for m in getattr(config, "MEMBERS", []):
+                if m.user_id == 111111111:
+                    m_name = m.name.strip().lower()
+                    is_claim_arg = (
+                        context.args
+                        and len(context.args) > 0
+                        and context.args[0].lower() in (f"claim_{m_name}", m_name)
+                    )
+                    if m_name in (fname, uname) or is_claim_arg:
+                        logger.info("Auto-linking placeholder member %s to user ID %s", m.name, user.id)
+                        config.update_member_id(m.name, user.id)
+                        await db.update_member_id_in_db(old_id=m.user_id, new_id=user.id)
+                        break
 
     # Normal /start verification
     if not await check_member_permission(user.id):
@@ -628,8 +696,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 except Exception as e:
                     logger.error("Failed to post all-connected celebration to group: %s", e)
 
-        d_name = target_dorm["dorm_name"] if target_dorm else None
-        welcome_text = get_main_menu_text(member_name, connected_info=conn_str, dorm_name=d_name)
+        welcome_text = await get_dorm_main_menu_text(member_name, connected_info=conn_str, dorm=target_dorm)
         inline_markup = get_main_menu_inline_keyboard()
 
         welcome_meme = config.get_meme_file("welcome")
@@ -743,12 +810,13 @@ async def members_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     target_dorm_id = dorm["dorm_id"]
+    if is_group and not await check_member_permission(user.id, dorm_id=target_dorm_id):
+        await update.effective_message.reply_text("You are not a member of this dorm.")
+        return
+
     d_name = dorm.get("dorm_name") or "Dorm Cleaning Schedule"
 
     connected_count, total_count, connected_members, pending_members = await db.get_connection_status(target_dorm_id)
-    if total_count == 0 and target_dorm_id != default_gid:
-        connected_count, total_count, connected_members, pending_members = await db.get_connection_status(default_gid)
-        target_dorm_id = default_gid
 
     lines = [f"**{d_name} Members** ({connected_count}/{total_count} Connected):\n"]
 
@@ -760,8 +828,11 @@ async def members_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     connected_ids = {_uid(m) for m in connected_members if _uid(m) is not None}
     members = await db.get_dorm_members(target_dorm_id)
-    if not members:
+    if not members and target_dorm_id == default_gid:
         members = config.MEMBERS
+    elif not members:
+        await update.effective_message.reply_text(f"No members registered yet in {d_name}.")
+        return
 
     for m in members:
         mid = _uid(m)
@@ -805,9 +876,17 @@ async def spin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     target_dorm_id = dorm["dorm_id"]
+    if is_group and not await check_member_permission(user.id, dorm_id=target_dorm_id):
+        await update.effective_message.reply_text("You are not a member of this dorm.")
+        return
+
     members = await db.get_dorm_members(target_dorm_id)
-    if not members:
+    default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+    if not members and target_dorm_id == default_gid:
         members = config.MEMBERS
+    elif not members:
+        await update.effective_message.reply_text(f"No members found in {dorm.get('dorm_name', 'this dorm')} to spin.")
+        return
 
     if not context.args or len(context.args) == 0:
         await update.effective_message.reply_text(
@@ -906,7 +985,7 @@ async def menu_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
     keyboard: Optional[InlineKeyboardMarkup] = None
 
     if action == "menu_home":
-        text = get_main_menu_text(member_name, dorm_name=dorm["dorm_name"] if dorm else None)
+        text = await get_dorm_main_menu_text(member_name, dorm=dorm)
         keyboard = get_main_menu_inline_keyboard()
     elif action == "menu_status":
         text, keyboard = await get_status_content(user.id, dorm_id=dorm_id)
@@ -1014,6 +1093,16 @@ async def claim_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not user:
         return
 
+    user_dorms = await db.get_user_dorms(user.id)
+    default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+    if user_dorms and any(d["dorm_id"] != default_gid for d in user_dorms):
+        await update.effective_message.reply_text(
+            f"⚠️ You are already a member of **{user_dorms[0]['dorm_name']}**.\n\n"
+            "A student can only belong to one dorm at a time. Leave your current dorm first with `/leave`.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
     if not context.args or len(context.args) < 1:
         await update.effective_message.reply_text(
             "Usage: `/claim <YourName>`\nExample: `/claim Bilisuma`",
@@ -1050,6 +1139,59 @@ async def claim_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     )
 
 # ---------------------------------------------------------------------------
+# Leave Dorm Command
+# ---------------------------------------------------------------------------
+async def leave_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Allow a student moving rooms or leaving the dorm to cleanly leave."""
+    user = update.effective_user
+    chat = update.effective_chat
+    if not user or not chat:
+        return
+
+    is_group = chat.type in ("group", "supergroup")
+    dorm_id = chat.id if is_group else None
+
+    # Resolve dorm
+    if is_group:
+        member = await db.get_dorm_member(dorm_id, user.id)
+        if not member:
+            await update.effective_message.reply_text("You are not a member of this dorm.")
+            return
+        target_dorm = await db.get_dorm(dorm_id)
+    else:
+        user_dorms = await db.get_user_dorms(user.id)
+        if not user_dorms:
+            await update.effective_message.reply_text("You are not currently a member of any active dorm.")
+            return
+        target_dorm = user_dorms[0]
+        dorm_id = target_dorm["dorm_id"]
+
+    success, msg = await db.leave_dorm(dorm_id, user.id)
+    if not success:
+        await update.effective_message.reply_text(f"⚠️ {msg}")
+        return
+
+    d_name = target_dorm["dorm_name"] if target_dorm else "the dorm"
+    await update.effective_message.reply_text(
+        f"👋 You have successfully left **{d_name}**.\n\n"
+        "You can now join another dorm via its join link or set up a new room with `/setup`.",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+    # If in private chat, notify the group
+    if not is_group and dorm_id:
+        try:
+            member_name = user.first_name or f"User {user.id}"
+            await context.bot.send_message(
+                chat_id=dorm_id,
+                message_thread_id=target_dorm.get("topic_id"),
+                text=f"ℹ️ **{member_name}** has left the dorm.",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        except Exception:
+            pass
+
+# ---------------------------------------------------------------------------
 # Handler Registration
 # ---------------------------------------------------------------------------
 def register_command_handlers(application: Application) -> None:
@@ -1057,6 +1199,8 @@ def register_command_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("menu", start_command))
     application.add_handler(CommandHandler("claim", claim_command))
+    application.add_handler(CommandHandler("leave", leave_command))
+    application.add_handler(CommandHandler("leavedorm", leave_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("status", status_command))
     application.add_handler(CommandHandler("schedule", schedule_command))

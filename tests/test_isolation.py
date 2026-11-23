@@ -158,5 +158,155 @@ class TestTenantIsolation(unittest.IsolatedAsyncioTestCase):
         answer_call = update.callback_query.answer.call_args
         self.assertIn("Only members of this dorm", answer_call[0][0])
 
+    async def test_cannot_join_second_active_dorm_via_db(self):
+        """A user already belonging to an active dorm cannot be added to another active dorm."""
+        success, msg = await db.add_dorm_member(self.dorm_a_id, self.dorm_b_member_id, "MemberB")
+        self.assertFalse(success)
+        self.assertIn("already a member of Hawassa Block 3 Room 4", msg)
+
+        # Verify user is NOT in Dorm A members
+        dorm_a_members = await db.get_dorm_members(self.dorm_a_id)
+        dorm_a_uids = [m["user_id"] for m in dorm_a_members]
+        self.assertNotIn(self.dorm_b_member_id, dorm_a_uids)
+
+    async def test_cannot_join_second_active_dorm_via_deeplink(self):
+        """A member of Dorm A trying to deep-link join Dorm B is blocked with informative message."""
+        update = MagicMock()
+        update.effective_user.id = self.dorm_a_member_id
+        update.effective_user.first_name = "Nahom"
+        update.effective_chat.type = "private"
+        update.effective_chat.id = self.dorm_a_member_id
+        update.effective_message.reply_text = AsyncMock()
+
+        context = MagicMock()
+        context.args = [f"join_{abs(self.dorm_b_id)}"]
+
+        await commands.start_command(update, context)
+        self.assertTrue(update.effective_message.reply_text.called)
+        reply = update.effective_message.reply_text.call_args[0][0]
+        self.assertIn("Cannot join", reply)
+        self.assertIn("/leave", reply)
+
+        # Ensure user was not added to Dorm B
+        dorm_b_member = await db.get_dorm_member(self.dorm_b_id, self.dorm_a_member_id)
+        self.assertIsNone(dorm_b_member)
+
+    async def test_cannot_setup_second_dorm_while_active_in_dorm(self):
+        """A member of Dorm B cannot create/setup another dorm group."""
+        dorm_d_id = -1004443332221
+        update = MagicMock()
+        update.effective_user.id = self.dorm_b_member_id
+        update.effective_user.first_name = "MemberB"
+        update.effective_chat.type = "group"
+        update.effective_chat.id = dorm_d_id
+        update.effective_chat.title = "Dorm Delta"
+        update.effective_message.reply_text = AsyncMock()
+        update.effective_message.message_thread_id = None
+
+        context = MagicMock()
+
+        await setup.setup_command(update, context)
+        self.assertTrue(update.effective_message.reply_text.called)
+        reply = update.effective_message.reply_text.call_args[0][0]
+        self.assertIn("Cannot set up a new dorm", reply)
+        self.assertIn("/leave", reply)
+
+        # Dorm D was not created
+        dorm_d = await db.get_dorm(dorm_d_id)
+        self.assertIsNone(dorm_d)
+
+    async def test_leave_dorm_cleanly_when_not_on_duty(self):
+        """A member can cleanly leave their dorm when not scheduled on duty this week."""
+        # Add a 3rd member to Dorm B who is not on duty
+        new_uid = 777003
+        success, _ = await db.add_dorm_member(self.dorm_b_id, new_uid, "StudentC")
+        self.assertTrue(success)
+
+        update = MagicMock()
+        update.effective_user.id = new_uid
+        update.effective_user.first_name = "StudentC"
+        update.effective_chat.type = "private"
+        update.effective_chat.id = new_uid
+        update.effective_message.reply_text = AsyncMock()
+
+        context = MagicMock()
+
+        await commands.leave_command(update, context)
+        self.assertTrue(update.effective_message.reply_text.called)
+        reply = update.effective_message.reply_text.call_args[0][0]
+        self.assertIn("successfully left", reply)
+
+        # Verify no longer a member
+        m = await db.get_dorm_member(self.dorm_b_id, new_uid)
+        self.assertIsNone(m)
+
+        # Now this user is free to join another dorm
+        success_join, _ = await db.add_dorm_member(self.dorm_a_id, new_uid, "StudentC")
+        self.assertTrue(success_join)
+
+    async def test_leave_dorm_blocked_when_on_duty(self):
+        """A member scheduled on duty this week is blocked from leaving until completed or swapped."""
+        # Create an active pending week in Dorm B with dorm_b_member_id on duty
+        await db.get_or_create_week(
+            dorm_id=self.dorm_b_id,
+            week_start="2026-11-23",
+            week_number=1,
+            cleaner1_id=self.dorm_b_admin_id,
+            cleaner2_id=self.dorm_b_member_id,
+            eligible_approver_ids=[self.dorm_b_admin_id]
+        )
+
+        update = MagicMock()
+        update.effective_user.id = self.dorm_b_member_id
+        update.effective_chat.type = "private"
+        update.effective_chat.id = self.dorm_b_member_id
+        update.effective_message.reply_text = AsyncMock()
+
+        context = MagicMock()
+
+        await commands.leave_command(update, context)
+        self.assertTrue(update.effective_message.reply_text.called)
+        reply = update.effective_message.reply_text.call_args[0][0]
+        self.assertIn("cannot leave while scheduled on duty", reply)
+
+        # Still a member
+        m = await db.get_dorm_member(self.dorm_b_id, self.dorm_b_member_id)
+        self.assertIsNotNone(m)
+
+    async def test_stranger_cannot_spin_or_view_members_in_group(self):
+        """A stranger running /members or /spin in Dorm B's group chat is rejected."""
+        stranger_id = 999000111
+        update = MagicMock()
+        update.effective_user.id = stranger_id
+        update.effective_chat.type = "group"
+        update.effective_chat.id = self.dorm_b_id
+        update.effective_message.reply_text = AsyncMock()
+
+        context = MagicMock()
+
+        # Members command
+        await commands.members_command(update, context)
+        self.assertTrue(update.effective_message.reply_text.called)
+        reply = update.effective_message.reply_text.call_args[0][0]
+        self.assertIn("not a member of this dorm", reply)
+
+        # Spin command
+        update.effective_message.reply_text.reset_mock()
+        context.args = ["clean trash"]
+        await commands.spin_command(update, context)
+        self.assertTrue(update.effective_message.reply_text.called)
+        reply = update.effective_message.reply_text.call_args[0][0]
+        self.assertIn("not a member of this dorm", reply)
+
+    async def test_callback_parsing_invalid_does_not_leak_default_dorm(self):
+        """Invalid callback queries return (0, '') and never fall back to default dorm."""
+        d_id, w_start = approval._parse_callback_dorm_and_week("approve_notanumber_2026-11-23")
+        self.assertEqual(d_id, 0)
+        self.assertEqual(w_start, "")
+
+        d_id2, w_start2 = cleaning._parse_callback_dorm_and_week("cleaned_badid_2026-11-23")
+        self.assertEqual(d_id2, 0)
+        self.assertEqual(w_start2, "")
+
 if __name__ == "__main__":
     unittest.main()

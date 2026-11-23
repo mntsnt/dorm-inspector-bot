@@ -394,8 +394,21 @@ def _add_dorm_member_sync(
     chat_id: Optional[int] = None,
     username: Optional[str] = None,
     is_admin: int = 0
-) -> None:
+) -> Tuple[bool, str]:
     with _get_connection() as conn:
+        cursor = conn.cursor()
+        # Enforce strict single-dorm membership:
+        # Check if user is already an active member of another active dorm
+        cursor.execute("""
+            SELECT d.dorm_id, d.dorm_name
+            FROM dorm_members dm
+            JOIN dorms d ON dm.dorm_id = d.dorm_id
+            WHERE dm.user_id = ? AND dm.dorm_id != ? AND d.status = 'active';
+        """, (user_id, dorm_id))
+        existing = cursor.fetchone()
+        if existing:
+            return False, f"You are already a member of {existing['dorm_name']}."
+
         # First upsert into global users table
         conn.execute("""
             INSERT INTO users (user_id, name, chat_id, username, updated_at)
@@ -426,6 +439,7 @@ def _add_dorm_member_sync(
                 is_admin = CASE WHEN excluded.is_admin = 1 THEN 1 ELSE dorm_members.is_admin END;
         """, (dorm_id, user_id, name, chat_id, username, is_admin))
         conn.commit()
+        return True, "Success"
 
 async def add_dorm_member(
     dorm_id: int,
@@ -434,8 +448,8 @@ async def add_dorm_member(
     chat_id: Optional[int] = None,
     username: Optional[str] = None,
     is_admin: int = 0
-) -> None:
-    await asyncio.to_thread(_add_dorm_member_sync, dorm_id, user_id, name, chat_id, username, is_admin)
+) -> Tuple[bool, str]:
+    return await asyncio.to_thread(_add_dorm_member_sync, dorm_id, user_id, name, chat_id, username, is_admin)
 
 def _remove_dorm_member_sync(dorm_id: int, user_id: int) -> None:
     with _get_connection() as conn:
@@ -444,6 +458,64 @@ def _remove_dorm_member_sync(dorm_id: int, user_id: int) -> None:
 
 async def remove_dorm_member(dorm_id: int, user_id: int) -> None:
     await asyncio.to_thread(_remove_dorm_member_sync, dorm_id, user_id)
+
+def _leave_dorm_sync(dorm_id: int, user_id: int) -> Tuple[bool, str]:
+    """Cleanly remove a member from a dorm with duty checks and pair maintenance."""
+    with _get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM dorm_members WHERE dorm_id = ? AND user_id = ?", (dorm_id, user_id))
+        member = cursor.fetchone()
+        if not member:
+            return False, "You are not a member of this dorm."
+
+        cursor.execute("SELECT * FROM dorms WHERE dorm_id = ?", (dorm_id,))
+        dorm = cursor.fetchone()
+        dorm_name = dorm["dorm_name"] if dorm else "Dorm"
+
+        # Check if user is currently scheduled for cleaning duty this week
+        cursor.execute("""
+            SELECT * FROM weeks 
+            WHERE dorm_id = ? AND (cleaner1_id = ? OR cleaner2_id = ?) 
+              AND final_status = 'pending'
+            ORDER BY week_start DESC LIMIT 1;
+        """, (dorm_id, user_id, user_id))
+        active_week = cursor.fetchone()
+        if active_week:
+            return False, "You cannot leave while scheduled on duty this week. Complete cleaning or swap duty (/swap) first."
+
+        # Delete member from dorm_members
+        conn.execute("DELETE FROM dorm_members WHERE dorm_id = ? AND user_id = ?", (dorm_id, user_id))
+
+        # Check remaining members
+        cursor.execute("SELECT * FROM dorm_members WHERE dorm_id = ? ORDER BY joined_at ASC", (dorm_id,))
+        remaining = cursor.fetchall()
+
+        if not remaining:
+            conn.execute("UPDATE dorms SET status = 'inactive', updated_at = CURRENT_TIMESTAMP WHERE dorm_id = ?", (dorm_id,))
+        elif member["is_admin"] == 1:
+            cursor.execute("SELECT * FROM dorm_members WHERE dorm_id = ? AND is_admin = 1", (dorm_id,))
+            has_other_admin = cursor.fetchone()
+            if not has_other_admin:
+                new_admin_id = remaining[0]["user_id"]
+                conn.execute("UPDATE dorm_members SET is_admin = 1 WHERE dorm_id = ? AND user_id = ?", (dorm_id, new_admin_id))
+                conn.execute("UPDATE dorms SET admin_id = ?, updated_at = CURRENT_TIMESTAMP WHERE dorm_id = ?", (new_admin_id, dorm_id))
+
+        # Cleanup dorm_pairs
+        cursor.execute("SELECT * FROM dorm_pairs WHERE dorm_id = ? AND (cleaner1_id = ? OR cleaner2_id = ?)", (dorm_id, user_id, user_id))
+        for p in cursor.fetchall():
+            p_num = p["pair_number"]
+            c1 = p["cleaner1_id"] if p["cleaner1_id"] != user_id else 0
+            c2 = p["cleaner2_id"] if p["cleaner2_id"] != user_id else 0
+            if c1 == 0 and c2 == 0:
+                conn.execute("DELETE FROM dorm_pairs WHERE dorm_id = ? AND pair_number = ?", (dorm_id, p_num))
+            else:
+                conn.execute("UPDATE dorm_pairs SET cleaner1_id = ?, cleaner2_id = ? WHERE dorm_id = ? AND pair_number = ?", (c1, c2, dorm_id, p_num))
+
+        conn.commit()
+        return True, f"Successfully left {dorm_name}."
+
+async def leave_dorm(dorm_id: int, user_id: int) -> Tuple[bool, str]:
+    return await asyncio.to_thread(_leave_dorm_sync, dorm_id, user_id)
 
 def _get_dorm_members_sync(dorm_id: int) -> List[Dict[str, Any]]:
     default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
@@ -472,7 +544,7 @@ def _get_dorm_member_sync(dorm_id: int, user_id: int) -> Optional[Dict[str, Any]
         if row:
             return dict(row)
 
-        if dorm_id in (default_gid, getattr(config, "GROUP_ID", 0), 0) or config.is_member(user_id):
+        if (dorm_id in (default_gid, getattr(config, "GROUP_ID", 0), 0)) and config.is_member(user_id):
             cm = config.get_member(user_id)
             if cm:
                 _seed_default_dorm_sync()
