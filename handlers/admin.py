@@ -320,12 +320,36 @@ async def set_ai_key_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
     await chat.send_message(success_text, parse_mode=ParseMode.MARKDOWN)
 
+async def announce_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin command to manually broadcast or re-trigger the weekly duty announcement in the group."""
+    user = update.effective_user
+    chat = update.effective_chat
+    if not user or not chat:
+        return
+
+    is_group = chat.type in ("group", "supergroup")
+    target_dorm_id = chat.id if is_group else getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+
+    dorm = await db.get_dorm(target_dorm_id)
+    dorm_admin_id = dorm["admin_id"] if dorm else getattr(config, "ADMIN_ID", 0)
+
+    # Permission check
+    if user.id != dorm_admin_id and user.id != getattr(config, "ADMIN_ID", 0):
+        await update.effective_message.reply_text("Only the dorm admin can trigger the announcement.")
+        return
+
+    from scheduler import send_dorm_announcement
+    success, msg = await send_dorm_announcement(context, target_dorm_id, force=True)
+    await update.effective_message.reply_text(msg)
+
 def register_admin_handlers(application: Application) -> None:
     """Attach admin command handlers."""
     application.add_handler(CommandHandler("markpaid", markpaid_command))
     application.add_handler(CommandHandler("paid", markpaid_command))
     application.add_handler(CommandHandler("setid", setid_command))
     application.add_handler(CommandHandler("testgroup", testgroup_command))
+    application.add_handler(CommandHandler("announce", announce_command))
+    application.add_handler(CommandHandler("postannouncement", announce_command))
     application.add_handler(CommandHandler("set_ai_key", set_ai_key_command))
     application.add_handler(CommandHandler("setaikey", set_ai_key_command))
     application.add_handler(CommandHandler("aikey", set_ai_key_command))

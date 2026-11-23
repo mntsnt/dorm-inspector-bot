@@ -156,159 +156,248 @@ async def send_dm_with_fallback(
         return False
 
 # ---------------------------------------------------------------------------
+# Robust Group Delivery Helper
+# ---------------------------------------------------------------------------
+async def post_group_announcement_safe(
+    context: ContextTypes.DEFAULT_TYPE,
+    dorm_id: int,
+    topic_id: Optional[int],
+    group_text: str,
+    meme_path: Optional[Path] = None,
+) -> tuple[bool, str]:
+    """
+    Deliver the group announcement with progressive resilience:
+    1. Try with photo, topic_id, and Markdown
+    2. Try with photo and Markdown (no topic_id, in case topic_id is invalid)
+    3. Try text message with topic_id and Markdown
+    4. Try text message with topic_id plain text (fixes any Markdown parsing issues)
+    5. Try text message without topic_id plain text (ensures group delivery even if topic closed/invalid)
+    """
+    bot = context.bot
+    errs = []
+
+    # Attempt 1: Photo + Topic + Markdown
+    if meme_path and meme_path.is_file():
+        try:
+            with open(meme_path, "rb") as photo:
+                await bot.send_photo(
+                    chat_id=dorm_id,
+                    message_thread_id=topic_id,
+                    photo=photo,
+                    caption=group_text,
+                    parse_mode=ParseMode.MARKDOWN
+                )
+            return True, "Delivered photo to group topic."
+        except Exception as e1:
+            errs.append(f"Photo+Topic: {e1}")
+            logger.warning("Attempt 1 (photo+topic) failed for dorm %s: %s", dorm_id, e1)
+
+        # Attempt 2: Photo + General (no topic)
+        if topic_id:
+            try:
+                with open(meme_path, "rb") as photo:
+                    await bot.send_photo(
+                        chat_id=dorm_id,
+                        photo=photo,
+                        caption=group_text,
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+                return True, "Delivered photo to general group chat."
+            except Exception as e2:
+                errs.append(f"Photo+General: {e2}")
+                logger.warning("Attempt 2 (photo+general) failed for dorm %s: %s", dorm_id, e2)
+
+    # Attempt 3: Text + Topic + Markdown
+    try:
+        await bot.send_message(
+            chat_id=dorm_id,
+            message_thread_id=topic_id,
+            text=group_text,
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return True, "Delivered text message to group topic."
+    except Exception as e3:
+        errs.append(f"Text+Topic: {e3}")
+        logger.warning("Attempt 3 (text+topic) failed for dorm %s: %s", dorm_id, e3)
+
+    # Attempt 4: Text + Topic + Plain text
+    clean_text = group_text.replace("**", "").replace("__", "")
+    try:
+        await bot.send_message(
+            chat_id=dorm_id,
+            message_thread_id=topic_id,
+            text=clean_text
+        )
+        return True, "Delivered plain text message to group topic."
+    except Exception as e4:
+        errs.append(f"Text+Plain: {e4}")
+        logger.warning("Attempt 4 (text+plain) failed for dorm %s: %s", dorm_id, e4)
+
+    # Attempt 5: Text + General (no topic) + Plain text
+    if topic_id:
+        try:
+            await bot.send_message(
+                chat_id=dorm_id,
+                text=clean_text
+            )
+            return True, "Delivered plain text to general group chat."
+        except Exception as e5:
+            errs.append(f"Text+General: {e5}")
+            logger.error("Attempt 5 (text+general) failed for dorm %s: %s", dorm_id, e5)
+
+    return False, f"All delivery attempts failed: {'; '.join(errs)}"
+
+async def send_dorm_announcement(
+    context: ContextTypes.DEFAULT_TYPE,
+    dorm_id: int,
+    force: bool = False,
+    now_date: Optional[date] = None,
+) -> tuple[bool, str]:
+    """
+    Announce cleaning duty for a dorm.
+    If force=True, delivers announcement even if previously marked as announced.
+    """
+    if now_date is None:
+        now_date = config.get_current_date()
+
+    dorm = await db.get_dorm(dorm_id)
+    if not dorm:
+        return False, f"Dorm {dorm_id} not found."
+
+    members = await db.get_dorm_members(dorm_id)
+    pairs = await db.get_dorm_pairs(dorm_id)
+    if not pairs:
+        return False, "No pairs configured for this dorm."
+
+    members_by_id = {m["user_id"]: m["name"] for m in members}
+    week_info = get_dorm_week_info(dorm, pairs, members_by_id, now_date)
+    if not week_info or week_info.week_number < 1:
+        return False, "Schedule has not started yet."
+
+    eligible_approver_ids = [
+        m["user_id"] for m in members
+        if m["user_id"] not in (week_info.cleaner1_id, week_info.cleaner2_id)
+    ]
+    if not eligible_approver_ids:
+        eligible_approver_ids = [week_info.cleaner1_id]
+
+    week_record = await db.get_or_create_week(
+        week_start=week_info.week_start,
+        week_number=week_info.week_number,
+        cleaner1_id=week_info.cleaner1_id,
+        cleaner2_id=week_info.cleaner2_id,
+        eligible_approver_ids=eligible_approver_ids,
+        dorm_id=dorm_id
+    )
+
+    if not force and week_record.get("announced") == 1:
+        return False, f"Week {week_info.week_number} has already been announced."
+
+    approver_id = week_record["approver_id"]
+    approver_name = members_by_id.get(approver_id, f"ID {approver_id}")
+    c1_name = week_info.cleaner1_name
+    c2_name = week_info.cleaner2_name
+
+    # 1. Post in the dorm group chat
+    group_text = (
+        f"📢 **Week {week_info.week_number} Duty Announcement!**\n\n"
+        f"Cleaners this week: **{c1_name}** & **{c2_name}**\n"
+        f"Approver: **{approver_name}**\n"
+        f"Deadline: Friday 8:00 PM\n\n"
+        f"💬 Roommates, let's encourage **{c1_name}** and **{c2_name}** to keep them motivated! "
+        f"Feel free to help them with cleaning if you like. 🙌"
+    )
+
+    announcement_meme = config.get_meme_file("announcement")
+    topic_id = dorm.get("topic_id")
+
+    success, detail = await post_group_announcement_safe(
+        context, dorm_id, topic_id, group_text, announcement_meme
+    )
+
+    if not success:
+        logger.error("Group announcement delivery failed for dorm %s: %s", dorm_id, detail)
+        return False, f"Group delivery failed: {detail}"
+
+    # Follow-up reaction meme
+    me_meme = config.get_meme_file("me")
+    if me_meme and me_meme.is_file():
+        try:
+            with open(me_meme, "rb") as photo:
+                await context.bot.send_photo(
+                    chat_id=dorm_id,
+                    message_thread_id=topic_id,
+                    photo=photo,
+                    caption=f"**{c1_name} and {c2_name} be like:**",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+        except Exception:
+            pass
+
+    # 2. Private DMs to Cleaners
+    cleaner_btn = InlineKeyboardMarkup([
+        [InlineKeyboardButton("We cleaned", callback_data=f"cleaned_{dorm_id}_{week_info.week_start}")]
+    ])
+    await send_dm_with_fallback(
+        context,
+        user_id=week_info.cleaner1_id,
+        member_name=c1_name,
+        text=(
+            f"You have cleaning duty this week with **{c2_name}**.\n"
+            f"Deadline: Friday 8:00 PM.\n\n"
+            "When done, tap 'We cleaned' below and send a photo."
+        ),
+        reply_markup=cleaner_btn,
+        dorm_id=dorm_id,
+        topic_id=topic_id,
+    )
+    await send_dm_with_fallback(
+        context,
+        user_id=week_info.cleaner2_id,
+        member_name=c2_name,
+        text=(
+            f"You have cleaning duty this week with **{c1_name}**.\n"
+            f"Deadline: Friday 8:00 PM.\n\n"
+            "When done, tap 'We cleaned' below and send a photo."
+        ),
+        reply_markup=cleaner_btn,
+        dorm_id=dorm_id,
+        topic_id=topic_id,
+    )
+
+    # 3. Private DM to Approver
+    approver_dm_text = (
+        f"You are this week's approver.\n"
+        f"Cleaners: **{c1_name}** & **{c2_name}**.\n\n"
+        "Please check their photo when they send it."
+    )
+    await send_dm_with_fallback(
+        context,
+        user_id=approver_id,
+        member_name=approver_name,
+        text=approver_dm_text,
+        dorm_id=dorm_id,
+        topic_id=topic_id,
+    )
+
+    await db.mark_announced(week_info.week_start, dorm_id=dorm_id)
+    logger.info("Monday announcement completed for dorm %s, week %s (%s)", dorm_id, week_info.week_start, detail)
+    return True, f"✅ Week {week_info.week_number} announcement sent to group and cleaners ({detail})"
+
+# ---------------------------------------------------------------------------
 # Monday Announcement Job (08:00 Africa/Addis_Ababa)
 # ---------------------------------------------------------------------------
 async def monday_announcement_job(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    Announce this week's cleaning duty for all active dorms on Monday morning.
-    - Picks a random approver from the dorm's non-cleaning members.
-    - Announces duty in the dorm group topic.
-    - DMs cleaners with deadline & 'We cleaned' button.
-    - DMs approver about review duty.
-    - Idempotent: Never sends twice for the same week per dorm.
-    """
+    """Announce this week's cleaning duty for all active dorms on Monday morning."""
     dorms = await db.get_all_active_dorms()
     if not dorms and getattr(config, "GROUP_ID", 0):
         await db.seed_default_dorm()
         dorms = await db.get_all_active_dorms()
 
-    now_date = config.get_current_date()
-
     for dorm in dorms:
         dorm_id = dorm["dorm_id"]
-        topic_id = dorm.get("topic_id")
         try:
-            members = await db.get_dorm_members(dorm_id)
-            pairs = await db.get_dorm_pairs(dorm_id)
-            if not pairs:
-                logger.warning("Dorm %s has no pairs configured. Skipping announcement.", dorm_id)
-                continue
-
-            members_by_id = {m["user_id"]: m["name"] for m in members}
-            week_info = get_dorm_week_info(dorm, pairs, members_by_id, now_date)
-
-            if not week_info or week_info.week_number < 1:
-                logger.info("Schedule for dorm %s not started yet. Skipping.", dorm_id)
-                continue
-
-            eligible_approver_ids = [
-                m["user_id"] for m in members
-                if m["user_id"] not in (week_info.cleaner1_id, week_info.cleaner2_id)
-            ]
-            if not eligible_approver_ids:
-                eligible_approver_ids = [week_info.cleaner1_id]
-
-            week_record = await db.get_or_create_week(
-                week_start=week_info.week_start,
-                week_number=week_info.week_number,
-                cleaner1_id=week_info.cleaner1_id,
-                cleaner2_id=week_info.cleaner2_id,
-                eligible_approver_ids=eligible_approver_ids,
-                dorm_id=dorm_id
-            )
-
-            if week_record.get("announced") == 1:
-                continue
-
-            approver_id = week_record["approver_id"]
-            approver_name = members_by_id.get(approver_id, f"ID {approver_id}")
-            c1_name = week_info.cleaner1_name
-            c2_name = week_info.cleaner2_name
-
-            # 1. Post in the dorm group chat
-            group_text = (
-                f"📢 **Week {week_info.week_number} Duty Announcement!**\n\n"
-                f"Cleaners this week: **{c1_name}** & **{c2_name}**\n"
-                f"Approver: **{approver_name}**\n"
-                f"Deadline: Friday 8:00 PM\n\n"
-                f"💬 Roommates, let's encourage **{c1_name}** and **{c2_name}** to keep them motivated! "
-                f"Feel free to help them with cleaning if you like. 🙌"
-            )
-            announcement_meme = config.get_meme_file("announcement")
-            try:
-                if announcement_meme:
-                    with open(announcement_meme, "rb") as photo:
-                        await context.bot.send_photo(
-                            chat_id=dorm_id,
-                            message_thread_id=topic_id,
-                            photo=photo,
-                            caption=group_text,
-                            parse_mode=ParseMode.MARKDOWN
-                        )
-                else:
-                    await context.bot.send_message(
-                        chat_id=dorm_id,
-                        message_thread_id=topic_id,
-                        text=group_text,
-                        parse_mode=ParseMode.MARKDOWN
-                    )
-            except Exception as e:
-                logger.error("Failed to post Monday announcement to dorm %s: %s", dorm_id, e)
-
-            # Follow-up reaction meme: "{cleaner1} and {cleaner2} be like:"
-            me_meme = config.get_meme_file("me")
-            if me_meme:
-                try:
-                    with open(me_meme, "rb") as photo:
-                        await context.bot.send_photo(
-                            chat_id=dorm_id,
-                            message_thread_id=topic_id,
-                            photo=photo,
-                            caption=f"**{c1_name} and {c2_name} be like:**",
-                            parse_mode=ParseMode.MARKDOWN
-                        )
-                except Exception as me_err:
-                    logger.warning("Could not send me.jpg meme to dorm %s: %s", dorm_id, me_err)
-
-            # 2. Private DM to Cleaner 1 & Cleaner 2 (scoped callback)
-            cleaner_btn = InlineKeyboardMarkup([
-                [InlineKeyboardButton("We cleaned", callback_data=f"cleaned_{dorm_id}_{week_info.week_start}")]
-            ])
-            await send_dm_with_fallback(
-                context,
-                user_id=week_info.cleaner1_id,
-                member_name=c1_name,
-                text=(
-                    f"You have cleaning duty this week with **{c2_name}**.\n"
-                    f"Deadline: Friday 8:00 PM.\n\n"
-                    "When done, tap 'We cleaned' below and send a photo."
-                ),
-                reply_markup=cleaner_btn,
-                dorm_id=dorm_id,
-                topic_id=topic_id,
-            )
-            await send_dm_with_fallback(
-                context,
-                user_id=week_info.cleaner2_id,
-                member_name=c2_name,
-                text=(
-                    f"You have cleaning duty this week with **{c1_name}**.\n"
-                    f"Deadline: Friday 8:00 PM.\n\n"
-                    "When done, tap 'We cleaned' below and send a photo."
-                ),
-                reply_markup=cleaner_btn,
-                dorm_id=dorm_id,
-                topic_id=topic_id,
-            )
-
-            # 3. Private DM to Approver
-            approver_dm_text = (
-                f"You are this week's approver.\n"
-                f"Cleaners: **{c1_name}** & **{c2_name}**.\n\n"
-                "Please check their photo when they send it."
-            )
-            await send_dm_with_fallback(
-                context,
-                user_id=approver_id,
-                member_name=approver_name,
-                text=approver_dm_text,
-                dorm_id=dorm_id,
-                topic_id=topic_id,
-            )
-
-            # Mark as announced in DB
-            await db.mark_announced(week_info.week_start, dorm_id=dorm_id)
-            logger.info("Monday announcement completed for dorm %s, week %s", dorm_id, week_info.week_start)
+            await send_dorm_announcement(context, dorm_id, force=False)
         except Exception as e:
             logger.error("Error running Monday announcement for dorm %s: %s", dorm_id, e)
 
