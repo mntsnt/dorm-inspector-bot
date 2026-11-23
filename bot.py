@@ -57,12 +57,25 @@ class HealthCheckHandler(http.server.BaseHTTPRequestHandler):
         pass
 
 def start_health_server() -> None:
-    """Start a lightweight HTTP server on $PORT to satisfy cloud readiness probes."""
-    port_str = os.environ.get("PORT", "3000")
+    """Start the live status dashboard and health check server on $PORT."""
+    port_str = os.environ.get("PORT", "8000")
     try:
         port = int(port_str)
     except ValueError:
-        port = 3000
+        port = 8000
+
+    try:
+        import web
+        thread = threading.Thread(
+            target=web.run_web_server,
+            kwargs={"host": "0.0.0.0", "port": port},
+            daemon=True
+        )
+        thread.start()
+        logger.info("Live Status Dashboard & Health server listening on http://0.0.0.0:%d", port)
+        return
+    except Exception as e:
+        logger.warning("Could not launch FastAPI web dashboard, falling back to basic server: %s", e)
 
     class ReusableTCPServer(socketserver.TCPServer):
         allow_reuse_address = True
