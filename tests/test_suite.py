@@ -1036,5 +1036,114 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         # Clean natural phrasing
         self.assertEqual(sanitized, "Hello! Clean the floor right now! Who is next?. Let me check.")
 
+    async def test_gemini_interactions_api_success(self):
+        """Verify query_gemini successfully parses modern Interactions API response."""
+        from services import ai_service
+        mock_resp = MagicMock(status_code=200, json=lambda: {
+            "object": "interaction",
+            "model": "gemini-3.8-flash",
+            "status": "completed",
+            "steps": [
+                {
+                    "type": "model_output",
+                    "text": "Cleaners are Bilisuma and Nahom. Floor must be swept."
+                }
+            ]
+        })
+        with patch("httpx.AsyncClient.post", return_value=mock_resp):
+            result = await ai_service.query_gemini("test-key", "Who cleans?", "context", "Bilisuma")
+            self.assertEqual(result, "Cleaners are Bilisuma and Nahom. Floor must be swept.")
+
+    async def test_gemini_interactions_api_content_structure(self):
+        """Verify query_gemini parses Interactions API response with content array."""
+        from services import ai_service
+        mock_resp = MagicMock(status_code=200, json=lambda: {
+            "steps": [
+                {
+                    "type": "model_output",
+                    "content": [
+                        {"type": "text", "text": "Approver this week is Hassan."}
+                    ]
+                }
+            ]
+        })
+        with patch("httpx.AsyncClient.post", return_value=mock_resp):
+            result = await ai_service.query_gemini("test-key", "Who is approver?", "context", "Nahom")
+            self.assertEqual(result, "Approver this week is Hassan.")
+
+    def test_fallback_inspector_reply_accurate_facts(self):
+        """Verify fallback_inspector_reply extracts accurate facts from context without emojis."""
+        from services.ai_service import fallback_inspector_reply
+
+        context = (
+            "Dorm: Test Dorm\n"
+            "Today's Date: Monday, Nov 23, 2026\n"
+            "All Roommates: Bilisuma, Nahom, Hassan\n"
+            "Current Week: Week 1 (Nov 23 – Nov 27)\n"
+            "Current Duty: Cleaners: Bilisuma & Nahom | Approver: Hassan | Status: In progress (deadline Friday 8:00 PM)\n"
+            "Unpaid Fines: No unpaid fines! Everyone is clean.\n"
+            "Tsidat Tokens Leaderboard: 1. Nahom: 25 Tsidat\n"
+        )
+
+        reply1 = fallback_inspector_reply("who is cleaning this week?", context)
+        self.assertIn("Bilisuma & Nahom", reply1)
+        self.assertIn("Friday 8:00 PM", reply1)
+
+        reply2 = fallback_inspector_reply("who is the approver?", context)
+        self.assertIn("Hassan", reply2)
+
+        reply3 = fallback_inspector_reply("any fines?", context)
+        self.assertIn("No unpaid fines", reply3)
+
+    async def test_ai_mention_natural_name(self):
+        """Verify that typing 'inspector who is cleaning' triggers the AI handler."""
+        await db.init_db()
+        from handlers import ai_chat
+        update = MagicMock()
+        update.effective_chat.id = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+        update.effective_chat.type = "supergroup"
+        update.effective_user.id = 7220854785  # Bilisuma
+        update.effective_user.first_name = "Bilisuma"
+        update.effective_message.text = "inspector who is cleaning this week?"
+        update.effective_message.message_id = 999
+        update.effective_message.reply_text = AsyncMock()
+
+        context = MagicMock()
+        context.bot.username = "DormInspectorBot"
+
+        with patch("handlers.ai_chat.ask_ai", new_callable=AsyncMock) as mock_ask:
+            mock_ask.return_value = "Bilisuma and Nahom are on duty."
+            await ai_chat.handle_ai_mention(update, context)
+            mock_ask.assert_called_once()
+            update.effective_message.reply_text.assert_called_once_with(
+                "Bilisuma and Nahom are on duty.",
+                reply_to_message_id=999
+            )
+
+    async def test_inspector_command_trigger(self):
+        """Verify /inspector command triggers ask_ai."""
+        await db.init_db()
+        from handlers import ai_chat
+        update = MagicMock()
+        update.effective_chat.id = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+        update.effective_chat.type = "supergroup"
+        update.effective_user.id = 7220854785
+        update.effective_user.first_name = "Bilisuma"
+        update.effective_message.message_id = 1000
+        update.effective_message.reply_text = AsyncMock()
+
+        context = MagicMock()
+        context.args = ["who", "is", "approver?"]
+        context.bot.username = "DormInspectorBot"
+
+        with patch("handlers.ai_chat.ask_ai", new_callable=AsyncMock) as mock_ask:
+            mock_ask.return_value = "Approver this week is Hassan."
+            await ai_chat.inspector_command(update, context)
+            mock_ask.assert_called_once_with("who is approver?", dorm_id=update.effective_chat.id, user_name="Bilisuma")
+            update.effective_message.reply_text.assert_called_once_with(
+                "Approver this week is Hassan.",
+                reply_to_message_id=1000
+            )
+
 if __name__ == "__main__":
     unittest.main()
