@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 import uvicorn
 
 import config
@@ -123,18 +123,21 @@ async def list_active_dorms() -> List[Dict[str, Any]]:
         cleaner2_name = week_info.cleaner2_name if week_info else "TBD"
 
         week_record = await db.get_week(week_info.week_start, dorm_id=d_id) if week_info else None
-        duty_status = "In Progress"
-        if week_record:
-            f_status = week_record.get("final_status", "pending")
-            p_status = week_record.get("photo_status", "none")
-            if f_status == "completed":
-                duty_status = "Cleaned & Approved"
-            elif f_status == "fined":
-                duty_status = "Fined"
-            elif p_status == "submitted":
-                duty_status = "Photo Review Pending"
-            elif p_status == "approved":
-                duty_status = "Photo Approved"
+        if not week_info or week_info.week_number < 1:
+            duty_status = f"Starts {d.get('start_date', 'Soon')}"
+        else:
+            duty_status = "In Progress"
+            if week_record:
+                f_status = week_record.get("final_status", "pending")
+                p_status = week_record.get("photo_status", "none")
+                if f_status == "completed":
+                    duty_status = "Cleaned & Approved"
+                elif f_status == "fined":
+                    duty_status = "Fined"
+                elif p_status == "submitted":
+                    duty_status = "Photo Review Pending"
+                elif p_status == "approved":
+                    duty_status = "Photo Approved"
 
         results.append({
             "dorm_id": d_id,
@@ -153,13 +156,24 @@ async def list_active_dorms() -> List[Dict[str, Any]]:
 
     return results
 
-@app.get("/api/dorms/{dorm_id}", response_class=JSONResponse)
-async def get_dorm_detail(dorm_id: int) -> Dict[str, Any]:
-    """Detailed live metrics for a specific dorm."""
-    dorm = await db.get_dorm(dorm_id)
-    if not dorm:
-        raise HTTPException(status_code=404, detail="Dorm not found")
+@app.get("/api/dorms/{dorm_identifier}", response_class=JSONResponse)
+async def get_dorm_detail(dorm_identifier: str) -> Dict[str, Any]:
+    """Detailed live metrics for a specific dorm by ID or dorm code."""
+    dorm = None
+    clean_id = dorm_identifier.strip()
+    try:
+        dorm_int = int(clean_id)
+        dorm = await db.get_dorm(dorm_int)
+    except ValueError:
+        pass
 
+    if not dorm:
+        dorm = await db.get_dorm_by_code(clean_id)
+
+    if not dorm:
+        raise HTTPException(status_code=404, detail=f"Dorm '{dorm_identifier}' not found")
+
+    dorm_id = dorm["dorm_id"]
     pairs = await db.get_dorm_pairs(dorm_id)
     members = await db.get_dorm_members(dorm_id)
     members_by_id = {m["user_id"]: m["name"] for m in members}
@@ -169,31 +183,37 @@ async def get_dorm_detail(dorm_id: int) -> Dict[str, Any]:
     week_record = await db.get_week(week_info.week_start, dorm_id=dorm_id) if week_info else None
 
     # Current duty status determination
-    duty_state = "In progress (Deadline Friday 8:00 PM)"
-    status_code = "in_progress"
     approver_name = "Not yet assigned"
 
-    if week_record:
-        if week_record.get("approver_id"):
-            approver_name = members_by_id.get(week_record["approver_id"], f"ID {week_record['approver_id']}")
-        f_status = week_record.get("final_status", "pending")
-        p_status = week_record.get("photo_status", "none")
-        if f_status == "completed":
-            rating = week_record.get("rating", 5)
-            duty_state = f"Cleaned & Approved ({rating}★ Stars)"
-            status_code = "completed"
-        elif f_status == "fined":
-            duty_state = f"Missed Deadline (Fined {dorm.get('fine_amount', 100)} ETB)"
-            status_code = "fined"
-        elif p_status == "submitted":
-            duty_state = "Photo Submitted (Review Pending)"
-            status_code = "submitted"
-        elif p_status == "rejected":
-            duty_state = "Photo Rejected (Needs Recleaning)"
-            status_code = "rejected"
-        elif week_record.get("done_reported"):
-            duty_state = "Cleaners Reported Done (Photo Awaited)"
-            status_code = "done_reported"
+    if not week_info or week_info.week_number < 1:
+        start_d = dorm.get("start_date") or getattr(config, "START_DATE_STR", "Nov 23")
+        duty_state = f"Schedule starts Monday, {start_d}"
+        status_code = "not_started"
+    else:
+        duty_state = "In progress (Deadline Friday 8:00 PM)"
+        status_code = "in_progress"
+
+        if week_record:
+            if week_record.get("approver_id"):
+                approver_name = members_by_id.get(week_record["approver_id"], f"ID {week_record['approver_id']}")
+            f_status = week_record.get("final_status", "pending")
+            p_status = week_record.get("photo_status", "none")
+            if f_status == "completed":
+                rating = week_record.get("rating", 5)
+                duty_state = f"Cleaned & Approved ({rating}★ Stars)"
+                status_code = "completed"
+            elif f_status == "fined":
+                duty_state = f"Missed Deadline (Fined {dorm.get('fine_amount', 100)} ETB)"
+                status_code = "fined"
+            elif p_status == "submitted":
+                duty_state = "Photo Submitted (Review Pending)"
+                status_code = "submitted"
+            elif p_status == "rejected":
+                duty_state = "Photo Rejected (Needs Recleaning)"
+                status_code = "rejected"
+            elif week_record.get("done_reported"):
+                duty_state = "Cleaners Reported Done (Photo Awaited)"
+                status_code = "done_reported"
 
     # Next 4 weeks schedule preview
     schedule_preview = []
@@ -261,7 +281,33 @@ async def get_dorm_by_code_endpoint(dorm_code: str) -> Dict[str, Any]:
     dorm = await db.get_dorm_by_code(clean_code)
     if not dorm:
         raise HTTPException(status_code=404, detail=f"Dorm with code '{dorm_code}' not found")
-    return await get_dorm_detail(dorm["dorm_id"])
+    return await get_dorm_detail(str(dorm["dorm_id"]))
+
+@app.get("/api/dorms/{dorm_identifier}/schedule", response_class=JSONResponse)
+async def get_dorm_schedule(dorm_identifier: str) -> List[Dict[str, Any]]:
+    """Convenience endpoint returning rotation schedule for a dorm."""
+    detail = await get_dorm_detail(dorm_identifier)
+    return detail.get("schedule", [])
+
+@app.get("/api/dorms/{dorm_identifier}/fines", response_class=JSONResponse)
+async def get_dorm_fines(dorm_identifier: str) -> List[Dict[str, Any]]:
+    """Convenience endpoint returning unpaid fines summary for a dorm."""
+    detail = await get_dorm_detail(dorm_identifier)
+    return detail.get("fines", [])
+
+@app.get("/api/dorms/{dorm_identifier}/leaderboard", response_class=JSONResponse)
+async def get_dorm_leaderboard(dorm_identifier: str) -> List[Dict[str, Any]]:
+    """Convenience endpoint returning Tsidat token leaderboard for a dorm."""
+    detail = await get_dorm_detail(dorm_identifier)
+    return detail.get("leaderboard", [])
+
+@app.get("/fines", include_in_schema=False)
+async def redirect_fines():
+    return RedirectResponse(url="/", status_code=307)
+
+@app.get("/leaderboard", include_in_schema=False)
+async def redirect_leaderboard():
+    return RedirectResponse(url="/", status_code=307)
 
 # ---------------------------------------------------------------------------
 # Single-Page HTML Dashboard UI (Minimal, Fixed Single-Screen Layout)
@@ -294,6 +340,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     .badge-progress { background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3); }
     .badge-fined { background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); }
     .badge-submitted { background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3); }
+    .badge-not-started { background: rgba(148, 163, 184, 0.15); color: #94a3b8; border: 1px solid rgba(148, 163, 184, 0.3); }
     ::-webkit-scrollbar { width: 4px; height: 4px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: #1e283d; border-radius: 4px; }
@@ -722,6 +769,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       if (code === 'completed') return 'badge-completed';
       if (code === 'fined') return 'badge-fined';
       if (code === 'submitted') return 'badge-submitted';
+      if (code === 'not_started') return 'badge-not-started';
       return 'badge-progress';
     }
 
@@ -818,6 +866,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 </html>
 """
 
+@app.get("/dashboard", response_class=HTMLResponse)
 @app.get("/", response_class=HTMLResponse)
 async def serve_dashboard() -> str:
     """Serve the single-page responsive status dashboard."""

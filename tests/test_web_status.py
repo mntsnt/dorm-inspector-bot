@@ -37,13 +37,14 @@ class TestWebStatusDashboard(unittest.IsolatedAsyncioTestCase):
         self.tmp_dir.cleanup()
 
     async def test_dashboard_html_page_served(self):
-        """GET / serves the single-page HTML status dashboard."""
-        response = await self.client.get("/")
-        self.assertEqual(response.status_code, 200)
-        self.assertIn("text/html", response.headers.get("content-type", ""))
-        self.assertIn("Dorm Inspector • Live Status Dashboard", response.text)
-        self.assertIn("stat-dorms", response.text)
-        self.assertIn("stat-members", response.text)
+        """GET / and /dashboard serve the single-page HTML status dashboard."""
+        for path in ("/", "/dashboard"):
+            response = await self.client.get(path)
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("text/html", response.headers.get("content-type", ""))
+            self.assertIn("Dorm Inspector • Live Status Dashboard", response.text)
+            self.assertIn("stat-dorms", response.text)
+            self.assertIn("stat-members", response.text)
 
     async def test_health_check_endpoints(self):
         """GET /health and /api/health return 200 healthy status."""
@@ -80,6 +81,55 @@ class TestWebStatusDashboard(unittest.IsolatedAsyncioTestCase):
         self.assertIn(default_dorm["cleaner1"], ("Bilisuma", "Nahom"))
         self.assertIn(default_dorm["cleaner2"], ("Bilisuma", "Nahom"))
 
+    async def test_dorm_detail_by_id_and_code(self):
+        """GET /api/dorms/{id_or_code} and /api/dorms/code/{code} resolve correctly."""
+        # 1. By integer ID
+        res_id = await self.client.get(f"/api/dorms/{config.DEFAULT_GROUP_ID}")
+        self.assertEqual(res_id.status_code, 200)
+        data_id = res_id.json()
+        self.assertEqual(data_id["dorm_id"], config.DEFAULT_GROUP_ID)
+        dorm_code = data_id.get("dorm_code")
+        self.assertIsNotNone(dorm_code)
+
+        # 2. By string dorm code in the universal /api/dorms/{dorm_identifier} endpoint
+        res_code = await self.client.get(f"/api/dorms/{dorm_code}")
+        self.assertEqual(res_code.status_code, 200)
+        self.assertEqual(res_code.json()["dorm_id"], config.DEFAULT_GROUP_ID)
+
+        # 3. By explicit code endpoint /api/dorms/code/{code}
+        res_explicit = await self.client.get(f"/api/dorms/code/{dorm_code}")
+        self.assertEqual(res_explicit.status_code, 200)
+        self.assertEqual(res_explicit.json()["dorm_id"], config.DEFAULT_GROUP_ID)
+
+    async def test_dorm_sub_routes(self):
+        """GET /api/dorms/{id_or_code}/schedule, fines, and leaderboard."""
+        code_res = await self.client.get(f"/api/dorms/{config.DEFAULT_GROUP_ID}")
+        dorm_code = code_res.json()["dorm_code"]
+
+        for identifier in (str(config.DEFAULT_GROUP_ID), dorm_code):
+            # Schedule
+            sched_res = await self.client.get(f"/api/dorms/{identifier}/schedule")
+            self.assertEqual(sched_res.status_code, 200)
+            self.assertIsInstance(sched_res.json(), list)
+            self.assertGreaterEqual(len(sched_res.json()), 1)
+
+            # Fines
+            fines_res = await self.client.get(f"/api/dorms/{identifier}/fines")
+            self.assertEqual(fines_res.status_code, 200)
+            self.assertIsInstance(fines_res.json(), list)
+
+            # Leaderboard
+            lead_res = await self.client.get(f"/api/dorms/{identifier}/leaderboard")
+            self.assertEqual(lead_res.status_code, 200)
+            self.assertIsInstance(lead_res.json(), list)
+
+    async def test_legacy_redirect_routes(self):
+        """GET /fines and /leaderboard redirect cleanly to /."""
+        for path in ("/fines", "/leaderboard"):
+            res = await self.client.get(path, follow_redirects=False)
+            self.assertIn(res.status_code, (301, 302, 307))
+            self.assertEqual(res.headers.get("location"), "/")
+
     async def test_dorm_detail_api(self):
         """GET /api/dorms/{dorm_id} returns detailed schedule, leaderboard, and fines."""
         response = await self.client.get(f"/api/dorms/{config.DEFAULT_GROUP_ID}")
@@ -104,6 +154,8 @@ class TestWebStatusDashboard(unittest.IsolatedAsyncioTestCase):
         """GET /api/dorms/{invalid_id} returns 404."""
         response = await self.client.get("/api/dorms/-999999999999")
         self.assertEqual(response.status_code, 404)
+        response2 = await self.client.get("/api/dorms/INVALID-CODE-XYZ")
+        self.assertEqual(response2.status_code, 404)
 
 if __name__ == "__main__":
     unittest.main()

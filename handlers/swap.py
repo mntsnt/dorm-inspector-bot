@@ -64,9 +64,9 @@ async def swap_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         week_record = await db.get_or_create_week(
             week_start=week_info.week_start,
             week_number=week_info.week_number,
-            cleaner1_id=week_info.cleaner1.user_id,
-            cleaner2_id=week_info.cleaner2.user_id,
-            eligible_approver_ids=[m["user_id"] for m in members if m["user_id"] not in (week_info.cleaner1.user_id, week_info.cleaner2.user_id)],
+            cleaner1_id=week_info.cleaner1_id,
+            cleaner2_id=week_info.cleaner2_id,
+            eligible_approver_ids=[m["user_id"] for m in members if m["user_id"] not in (week_info.cleaner1_id, week_info.cleaner2_id)],
             dorm_id=target_dorm_id
         )
 

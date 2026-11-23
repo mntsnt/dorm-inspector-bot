@@ -456,11 +456,11 @@ async def query_gemini(api_key: str, user_prompt: str, dorm_context: str, user_n
     ]
 
     generate_models = [
-        "gemini-2.5-flash",
         "gemini-2.0-flash",
         "gemini-1.5-flash",
-        "gemini-3.5-flash-lite",
+        "gemini-2.5-flash",
         "gemini-3.5-flash",
+        "gemini-3.5-flash-lite",
         "gemini-3.8-flash",
     ]
 

@@ -328,7 +328,17 @@ async def announce_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
 
     is_group = chat.type in ("group", "supergroup")
-    target_dorm_id = chat.id if is_group else getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+    if is_group:
+        target_dorm_id = chat.id
+    else:
+        user_dorms = await db.get_user_dorms(user.id)
+        admin_dorms = [d for d in user_dorms if d.get("user_is_admin") == 1 or d.get("admin_id") == user.id]
+        if admin_dorms:
+            target_dorm_id = admin_dorms[0]["dorm_id"]
+        elif user.id == getattr(config, "ADMIN_ID", 0):
+            target_dorm_id = getattr(config, "GROUP_ID", 0) or getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+        else:
+            target_dorm_id = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
 
     dorm = await db.get_dorm(target_dorm_id)
     dorm_admin_id = dorm["admin_id"] if dorm else getattr(config, "ADMIN_ID", 0)

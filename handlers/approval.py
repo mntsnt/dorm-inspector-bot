@@ -216,16 +216,24 @@ async def rate_photo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     user = query.from_user
 
     parts = query.data.split("_")
-    if len(parts) < 4:
+    if len(parts) >= 4:
+        try:
+            stars = int(parts[1])
+            dorm_id = int(parts[2])
+            week_start = parts[3]
+        except (ValueError, IndexError):
+            await query.answer("Invalid rating data.", show_alert=True)
+            return
+    elif len(parts) == 3:
+        try:
+            stars = int(parts[1])
+            week_start = parts[2]
+            dorm_id = await db.resolve_dorm_for_user(user.id) or getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+        except (ValueError, IndexError):
+            await query.answer("Invalid rating data.", show_alert=True)
+            return
+    else:
         await query.answer("Invalid rating reference.", show_alert=True)
-        return
-
-    try:
-        stars = int(parts[1])
-        dorm_id = int(parts[2])
-        week_start = parts[3]
-    except (ValueError, IndexError):
-        await query.answer("Invalid rating data.", show_alert=True)
         return
 
     member = await db.get_dorm_member(dorm_id, user.id)
