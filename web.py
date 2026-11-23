@@ -139,6 +139,7 @@ async def list_active_dorms() -> List[Dict[str, Any]]:
         results.append({
             "dorm_id": d_id,
             "dorm_name": d["dorm_name"],
+            "dorm_code": d.get("dorm_code") or "DORM-101",
             "admin_id": d["admin_id"],
             "fine_amount": d["fine_amount"],
             "start_date": d.get("start_date") or getattr(config, "START_DATE_STR", "2026-11-23"),
@@ -233,6 +234,7 @@ async def get_dorm_detail(dorm_id: int) -> Dict[str, Any]:
     return {
         "dorm_id": dorm_id,
         "dorm_name": dorm["dorm_name"],
+        "dorm_code": dorm.get("dorm_code") or "DORM-101",
         "fine_amount": dorm.get("fine_amount", 100),
         "status": dorm.get("status", "active"),
         "members": [{"user_id": m["user_id"], "name": m["name"], "is_admin": m.get("is_admin", 0)} for m in members],
@@ -251,6 +253,15 @@ async def get_dorm_detail(dorm_id: int) -> Dict[str, Any]:
         "fines": fines,
         "history": formatted_history
     }
+
+@app.get("/api/dorms/code/{dorm_code}", response_class=JSONResponse)
+async def get_dorm_by_code_endpoint(dorm_code: str) -> Dict[str, Any]:
+    """Detailed live metrics for a dorm looked up by its dorm code."""
+    clean_code = dorm_code.strip()
+    dorm = await db.get_dorm_by_code(clean_code)
+    if not dorm:
+        raise HTTPException(status_code=404, detail=f"Dorm with code '{dorm_code}' not found")
+    return await get_dorm_detail(dorm["dorm_id"])
 
 # ---------------------------------------------------------------------------
 # Single-Page HTML Dashboard UI (Minimal, Fixed Single-Screen Layout)
@@ -306,8 +317,26 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       </div>
     </div>
 
+    <!-- Dorm Code Lookup Input Box -->
+    <div class="flex items-center gap-1.5 bg-black/40 border border-gray-800 rounded-lg px-2 py-1 focus-within:border-emerald-500/50 transition">
+      <span class="text-gray-400 text-xs">🔑</span>
+      <input 
+        id="dorm-code-input" 
+        type="text" 
+        placeholder="Enter Dorm Code..." 
+        class="bg-transparent text-white placeholder-gray-500 text-[11px] font-mono uppercase focus:outline-none w-28 sm:w-36"
+        onkeydown="if(event.key==='Enter') lookupDormByCode()"
+      />
+      <button 
+        onclick="lookupDormByCode()" 
+        class="px-2 py-0.5 rounded bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 font-semibold text-[10px] border border-emerald-500/30 transition"
+      >
+        View
+      </button>
+    </div>
+
     <!-- Active Dorm Selector Tabs -->
-    <div id="dorm-selector-tabs" class="flex items-center gap-1.5 overflow-x-auto py-0.5">
+    <div id="dorm-selector-tabs" class="flex items-center gap-1.5 overflow-x-auto py-0.5 max-w-xs md:max-w-md">
       <div class="px-2.5 py-1 rounded-lg bg-gray-800 text-[10px] text-gray-400 animate-pulse">Loading...</div>
     </div>
 
@@ -332,6 +361,15 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     </div>
   </header>
 
+  <!-- Inline Notification/Error Banner -->
+  <div id="code-alert-banner" class="hidden mb-2 px-3 py-1.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-[11px] flex items-center justify-between flex-shrink-0">
+    <div class="flex items-center gap-2">
+      <span>⚠️</span>
+      <span id="code-alert-text">Dorm code not found.</span>
+    </div>
+    <button onclick="clearCodeError()" class="text-gray-400 hover:text-white text-xs">✕</button>
+  </div>
+
   <!-- 4-Column Minimal Fixed Dashboard Grid -->
   <main class="flex-1 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-2.5 overflow-y-auto lg:overflow-hidden min-h-0">
 
@@ -347,7 +385,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         </div>
 
         <div>
-          <h2 id="selected-dorm-title" class="text-base font-extrabold text-white truncate">--</h2>
+          <div class="flex items-center justify-between gap-1.5">
+            <h2 id="selected-dorm-title" class="text-base font-extrabold text-white truncate">--</h2>
+            <button id="selected-dorm-code-badge" onclick="copyDormCode()" class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-gray-800 hover:bg-gray-700 text-emerald-400 border border-gray-700 transition flex-shrink-0" title="Click to copy dorm code & share link">
+              -- 📋
+            </button>
+          </div>
           <p id="selected-dorm-week-header" class="text-[11px] text-emerald-400 font-medium mt-0.5">Week 1 Duty</p>
         </div>
 
@@ -479,6 +522,63 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     let activeDormId = null;
     let allDormsCache = [];
 
+    function showCodeError(msg) {
+      const banner = document.getElementById('code-alert-banner');
+      const text = document.getElementById('code-alert-text');
+      if (banner && text) {
+        text.innerText = msg;
+        banner.classList.remove('hidden');
+      }
+    }
+
+    function clearCodeError() {
+      const banner = document.getElementById('code-alert-banner');
+      if (banner) banner.classList.add('hidden');
+    }
+
+    function copyDormCode() {
+      const current = allDormsCache.find(d => d.dorm_id === activeDormId);
+      const code = current ? (current.dorm_code || 'DORM-101') : 'DORM-101';
+      const shareUrl = `${window.location.origin}/?code=${encodeURIComponent(code)}`;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(shareUrl).then(() => {
+          const badge = document.getElementById('selected-dorm-code-badge');
+          if (badge) {
+            badge.innerText = "COPIED! ✓";
+            setTimeout(() => { badge.innerText = `${code} 📋`; }, 1500);
+          }
+        });
+      }
+    }
+
+    async function lookupDormByCode() {
+      const input = document.getElementById('dorm-code-input');
+      const code = input ? input.value.trim().toUpperCase() : '';
+      if (!code) return;
+      await loadDormByCode(code);
+    }
+
+    async function loadDormByCode(code) {
+      try {
+        clearCodeError();
+        const res = await fetch(`/api/dorms/code/${encodeURIComponent(code)}`);
+        if (!res.ok) {
+          showCodeError(`Dorm code '${code}' not found. Ask your dorm admin or check /code in Telegram.`);
+          return;
+        }
+        const data = await res.json();
+        activeDormId = data.dorm_id;
+        localStorage.setItem('saved_dorm_code', data.dorm_code);
+        const input = document.getElementById('dorm-code-input');
+        if (input) input.value = data.dorm_code;
+        window.history.replaceState(null, '', `?code=${encodeURIComponent(data.dorm_code)}`);
+        renderDormTabs(allDormsCache);
+        applyDormDetails(data);
+      } catch (e) {
+        showCodeError("Network error checking dorm code.");
+      }
+    }
+
     async function fetchDashboardData() {
       const refreshIcon = document.getElementById('refresh-icon');
       if (refreshIcon) refreshIcon.classList.add('animate-spin');
@@ -501,10 +601,25 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         if (dormsRes.ok) {
           allDormsCache = await dormsRes.json();
           renderDormTabs(allDormsCache);
-          if (allDormsCache.length > 0) {
-            if (!activeDormId || !allDormsCache.find(d => d.dorm_id === activeDormId)) {
-              activeDormId = allDormsCache[0].dorm_id;
+
+          // Check query param code or saved code
+          const urlParams = new URLSearchParams(window.location.search);
+          const urlCode = urlParams.get('code') || urlParams.get('dorm');
+          const savedCode = localStorage.getItem('saved_dorm_code');
+
+          if (urlCode) {
+            await loadDormByCode(urlCode);
+          } else if (allDormsCache.length > 0) {
+            let targetDorm = null;
+            if (savedCode) {
+              targetDorm = allDormsCache.find(d => (d.dorm_code || '').toUpperCase() === savedCode.toUpperCase());
             }
+            if (!targetDorm) {
+              targetDorm = allDormsCache.find(d => d.dorm_id === activeDormId) || allDormsCache[0];
+            }
+            activeDormId = targetDorm.dorm_id;
+            const input = document.getElementById('dorm-code-input');
+            if (input && !input.value) input.value = targetDorm.dorm_code || 'DORM-101';
             await fetchDormDetails(activeDormId);
           } else {
             document.getElementById('selected-dorm-title').innerText = "No Active Dorms";
@@ -533,11 +648,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50 font-bold shadow-sm'
           : 'panel-subtle text-gray-400 hover:text-gray-200 border-gray-800';
 
+        const codeTag = d.dorm_code ? `<span class="text-[9px] px-1 rounded bg-black/40 text-emerald-400 font-mono">${d.dorm_code}</span>` : '';
+
         return `
           <button onclick="selectDorm(${d.dorm_id})" class="px-2.5 py-1 rounded-lg text-[10px] border transition flex items-center gap-1.5 ${activeClass}">
             <span>🏢</span>
             <span>${d.dorm_name}</span>
-            <span class="text-[9px] px-1 rounded bg-black/40 text-gray-300 font-mono">${d.member_count}m</span>
+            ${codeTag}
           </button>
         `;
       }).join('');
@@ -545,8 +662,49 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
     async function selectDorm(dormId) {
       activeDormId = dormId;
+      const found = allDormsCache.find(d => d.dorm_id === dormId);
+      if (found && found.dorm_code) {
+        localStorage.setItem('saved_dorm_code', found.dorm_code);
+        const input = document.getElementById('dorm-code-input');
+        if (input) input.value = found.dorm_code;
+        window.history.replaceState(null, '', `?code=${encodeURIComponent(found.dorm_code)}`);
+      }
+      clearCodeError();
       renderDormTabs(allDormsCache);
       await fetchDormDetails(dormId);
+    }
+
+    function applyDormDetails(data) {
+      document.getElementById('selected-dorm-title').innerText = data.dorm_name;
+      const codeBadge = document.getElementById('selected-dorm-code-badge');
+      if (codeBadge) codeBadge.innerText = `${data.dorm_code || 'DORM-101'} 📋`;
+      const codeInput = document.getElementById('dorm-code-input');
+      if (codeInput && !codeInput.value) codeInput.value = data.dorm_code || '';
+      document.getElementById('selected-dorm-fine').innerText = `${data.fine_amount} ETB (50/50)`;
+      document.getElementById('selected-dorm-approver').innerText = data.current_week.approver || 'Not assigned';
+
+      // Week header & badge
+      const curWeek = data.current_week;
+      document.getElementById('selected-dorm-week-header').innerText = `Week ${curWeek.week_number} Duty • ${curWeek.duty_state}`;
+
+      const badge = document.getElementById('selected-dorm-status-badge');
+      badge.innerText = curWeek.duty_state;
+      badge.className = 'px-2 py-0.5 rounded-full text-[10px] font-semibold ' + getBadgeClass(curWeek.status_code);
+
+      document.getElementById('cleaner-1-name').innerText = curWeek.cleaner1 || 'TBD';
+      document.getElementById('cleaner-2-name').innerText = curWeek.cleaner2 || 'TBD';
+
+      // Render schedule preview
+      renderSchedule(data.schedule);
+
+      // Render leaderboard
+      renderLeaderboard(data.leaderboard);
+
+      // Render fines
+      renderFines(data.fines);
+
+      // Render history
+      renderHistory(data.history);
     }
 
     async function fetchDormDetails(dormId) {
@@ -554,34 +712,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         const res = await fetch(`/api/dorms/${dormId}`);
         if (!res.ok) return;
         const data = await res.json();
-
-        document.getElementById('selected-dorm-title').innerText = data.dorm_name;
-        document.getElementById('selected-dorm-fine').innerText = `${data.fine_amount} ETB (50/50)`;
-        document.getElementById('selected-dorm-approver').innerText = data.current_week.approver || 'Not assigned';
-
-        // Week header & badge
-        const curWeek = data.current_week;
-        document.getElementById('selected-dorm-week-header').innerText = `Week ${curWeek.week_number} Duty • ${curWeek.duty_state}`;
-
-        const badge = document.getElementById('selected-dorm-status-badge');
-        badge.innerText = curWeek.duty_state;
-        badge.className = 'px-2 py-0.5 rounded-full text-[10px] font-semibold ' + getBadgeClass(curWeek.status_code);
-
-        document.getElementById('cleaner-1-name').innerText = curWeek.cleaner1 || 'TBD';
-        document.getElementById('cleaner-2-name').innerText = curWeek.cleaner2 || 'TBD';
-
-        // Render schedule preview
-        renderSchedule(data.schedule);
-
-        // Render leaderboard
-        renderLeaderboard(data.leaderboard);
-
-        // Render fines
-        renderFines(data.fines);
-
-        // Render history
-        renderHistory(data.history);
-
+        applyDormDetails(data);
       } catch (err) {
         console.error("Error loading dorm details:", err);
       }

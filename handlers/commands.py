@@ -241,6 +241,20 @@ async def get_status_content(user_id: Optional[int] = None, dorm_id: Optional[in
         return "No active cleaning schedule found. Send /setup to configure your dorm.", keyboard
 
     resolved_id = dorm["dorm_id"]
+    dorm_code = dorm.get("dorm_code") or "DORM-101"
+    dash_url = f"{getattr(config, 'DASHBOARD_URL', 'https://dorm-inspector-bot-1.app.aletcloud.com')}?code={dorm_code}"
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("Schedule", callback_data="menu_schedule"),
+            InlineKeyboardButton("Submit Cleaning", callback_data="menu_done"),
+        ],
+        [
+            InlineKeyboardButton("🌐 Live Dashboard", url=dash_url),
+            InlineKeyboardButton("Main Menu", callback_data="menu_home"),
+        ]
+    ])
+
     pairs = await db.get_dorm_pairs(resolved_id)
     members = await db.get_dorm_members(resolved_id)
     members_by_id = {m["user_id"]: m["name"] for m in members}
@@ -256,7 +270,8 @@ async def get_status_content(user_id: Optional[int] = None, dorm_id: Optional[in
             c2 = members_by_id.get(pairs[0]["cleaner2_id"], f"ID {pairs[0]['cleaner2_id']}")
             first_cleaners = f"**{c1}** & **{c2}**"
         msg = (
-            f"Cleaning has not started yet for **{dorm['dorm_name']}**.\n\n"
+            f"Cleaning has not started yet for **{dorm['dorm_name']}**.\n"
+            f"🔑 **Dorm Code:** `{dorm_code}`\n\n"
             f"Starts: {start_date}\n"
             f"First cleaners: {first_cleaners}"
         )
@@ -302,7 +317,8 @@ async def get_status_content(user_id: Optional[int] = None, dorm_id: Optional[in
 
     msg = (
         f"**{dorm['dorm_name']}** — Week #{week_info.week_number} "
-        f"({week_info.monday_date.strftime('%b %d')} – {week_info.friday_date.strftime('%b %d')})\n\n"
+        f"({week_info.monday_date.strftime('%b %d')} – {week_info.friday_date.strftime('%b %d')})\n"
+        f"🔑 **Dorm Code:** `{dorm_code}`\n\n"
         f"Cleaners: **{c1_name}** & **{c2_name}**\n"
         f"Approver: **{approver_name}**\n"
         f"Status: {duty_state}"
@@ -311,12 +327,17 @@ async def get_status_content(user_id: Optional[int] = None, dorm_id: Optional[in
 
 async def get_schedule_content(dorm_id: Optional[int] = None, user_id: Optional[int] = None) -> Tuple[str, InlineKeyboardMarkup]:
     """Generate 4-week schedule text and navigation buttons."""
+    dorm = await _resolve_target_dorm(dorm_id=dorm_id, user_id=user_id)
+    dorm_code = dorm.get("dorm_code") or "DORM-101" if dorm else "DORM-101"
+    dash_url = f"{getattr(config, 'DASHBOARD_URL', 'https://dorm-inspector-bot-1.app.aletcloud.com')}?code={dorm_code}"
+
     keyboard = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("Status", callback_data="menu_status"),
             InlineKeyboardButton("Fines", callback_data="menu_fines"),
         ],
         [
+            InlineKeyboardButton("🌐 Live Dashboard", url=dash_url),
             InlineKeyboardButton("Main Menu", callback_data="menu_home"),
         ]
     ])
@@ -1195,6 +1216,83 @@ async def leave_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         except Exception:
             pass
 
+async def dorm_code_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show this dorm's unique dorm code and web dashboard link."""
+    user = update.effective_user
+    chat = update.effective_chat
+    msg = update.effective_message
+    if not user or not chat or not msg:
+        return
+
+    is_group = chat.type in ("group", "supergroup")
+    dorm_id = chat.id if is_group else None
+    dorm = await _resolve_target_dorm(dorm_id=dorm_id, user_id=user.id)
+    if not dorm:
+        await msg.reply_text("You are not part of an active dorm. Use /setup to configure one.")
+        return
+
+    code = dorm.get("dorm_code") or "DORM-101"
+    dash_base = getattr(config, "DASHBOARD_URL", "https://dorm-inspector-bot-1.app.aletcloud.com")
+    web_url = f"{dash_base}?code={code}"
+
+    reply_text = (
+        f"🔑 **Dorm Code for {dorm['dorm_name']}**\n\n"
+        f"Code: `{code}`\n\n"
+        f"🌐 **Website:** [Open Live Dashboard]({web_url})\n\n"
+        f"Anyone can enter `{code}` on the website to view this dorm's live cleaning schedule, photo approvals, fines, and Tsidat leaderboard!"
+    )
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🌐 Open Live Dashboard", url=web_url)]
+    ])
+    await msg.reply_text(reply_text, parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard)
+
+async def set_dorm_code_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin command to customize their dorm code."""
+    user = update.effective_user
+    chat = update.effective_chat
+    msg = update.effective_message
+    if not user or not chat or not msg:
+        return
+
+    is_group = chat.type in ("group", "supergroup")
+    dorm_id = chat.id if is_group else None
+    dorm = await _resolve_target_dorm(dorm_id=dorm_id, user_id=user.id)
+    if not dorm:
+        await msg.reply_text("Could not determine which dorm to update.")
+        return
+
+    target_dorm_id = dorm["dorm_id"]
+    dorm_admin_id = dorm.get("admin_id") or getattr(config, "ADMIN_ID", 0)
+    if user.id != dorm_admin_id and user.id != getattr(config, "ADMIN_ID", 0):
+        await msg.reply_text("Only the dorm admin can change the dorm code.")
+        return
+
+    if not context.args:
+        current_code = dorm.get("dorm_code") or "DORM-101"
+        await msg.reply_text(
+            f"Usage: `/set_code <new_code>`\n\n"
+            f"Current Code: `{current_code}`\n"
+            f"Example: `/set_code BLOCK3-102`",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    new_code = context.args[0].strip().upper()
+    success, result = await db.set_dorm_code(target_dorm_id, new_code)
+    if not success:
+        await msg.reply_text(f"⚠️ {result}")
+        return
+
+    dash_base = getattr(config, "DASHBOARD_URL", "https://dorm-inspector-bot-1.app.aletcloud.com")
+    web_url = f"{dash_base}?code={result}"
+    await msg.reply_text(
+        f"✅ **Dorm Code Updated!**\n\n"
+        f"New Code: `{result}`\n"
+        f"Dashboard Link: [Open Dashboard]({web_url})\n\n"
+        f"Roommates can now use `{result}` on the website to view your dorm.",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
 # ---------------------------------------------------------------------------
 # Handler Registration
 # ---------------------------------------------------------------------------
@@ -1208,6 +1306,10 @@ def register_command_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("status", status_command))
     application.add_handler(CommandHandler("schedule", schedule_command))
+    application.add_handler(CommandHandler("code", dorm_code_command))
+    application.add_handler(CommandHandler("dormcode", dorm_code_command))
+    application.add_handler(CommandHandler("set_code", set_dorm_code_command))
+    application.add_handler(CommandHandler("setcode", set_dorm_code_command))
     application.add_handler(CommandHandler("fines", fines_command))
     application.add_handler(CommandHandler("history", history_command))
     application.add_handler(CommandHandler("members", members_command))
@@ -1223,7 +1325,7 @@ def register_command_handlers(application: Application) -> None:
 
     application.add_handler(
         MessageHandler(
-            filters.TEXT & ~filters.COMMAND & filters.Regex(r"(?i)^(Status|Schedule|Submit Cleaning|Fines|History|Help|Main Menu|Members|Tsidat|Tokens|Spin|Roulette|👥 Members|📋 Status|📅 Schedule|🧼 Submit Cleaning|💸 Fines|📜 History|ℹ️ Help|🏠 Main Menu|🪙 Tsidat Tokens|🎲 Dorm Roulette)$"),
+            filters.TEXT & ~filters.COMMAND & filters.Regex(r"(?i)^(Status|Schedule|Submit Cleaning|Fines|History|Help|Main Menu|Members|Tsidat|Tokens|Spin|Roulette|Dorm Code|Code|🔑 Dorm Code|👥 Members|📋 Status|📅 Schedule|🧼 Submit Cleaning|💸 Fines|📜 History|ℹ️ Help|🏠 Main Menu|🪙 Tsidat Tokens|🎲 Dorm Roulette)$"),
             reply_keyboard_text_handler
         )
     )

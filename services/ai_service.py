@@ -189,8 +189,13 @@ async def build_dorm_context(dorm_id: int, user_id: Optional[int] = None) -> str
                 f"Instruction: Treat as dorm manager."
             )
 
+    dorm_code = dorm.get("dorm_code") or "DORM-101" if dorm else "DORM-101"
+    dash_url = f"{getattr(config, 'DASHBOARD_URL', 'https://dorm-inspector-bot-1.app.aletcloud.com')}?code={dorm_code}"
+
     return (
         f"Dorm: {d_name}\n"
+        f"Dorm Code: {dorm_code}\n"
+        f"Website: {dash_url}\n"
         f"Today's Date: {today_str}\n"
         f"All Roommates: {all_roommates_str}\n"
         f"Current Week: {week_str}\n"
@@ -334,6 +339,8 @@ def fallback_inspector_reply(
     roommates = context_lines.get("All Roommates", "Roommates")
     user_role = context_lines.get("Role", "UNKNOWN")
     partner = context_lines.get("Partner", "")
+    dorm_code = context_lines.get("Dorm Code", "DORM-101")
+    website = context_lines.get("Website", f"{getattr(config, 'DASHBOARD_URL', 'https://dorm-inspector-bot-1.app.aletcloud.com')}?code={dorm_code}")
 
     # Extract cleaner names from Current Duty line if available
     c1 = "Cleaner 1"
@@ -407,7 +414,11 @@ def fallback_inspector_reply(
     if any(k in p_lower for k in ("roommate", "member", "who live", "everyone")):
         return f"Room roster: {roommates}."
 
-    # 9. General / greeting / fallback based on user role
+    # 9. Question about dorm code / website / dashboard
+    if any(k in p_lower for k in ("code", "website", "dashboard", "site", "link", "url", "portal")):
+        return f"Dorm code is {dorm_code}. View live status at {website}."
+
+    # 10. General / greeting / fallback based on user role
     if user_role == "CLEANER ON DUTY":
         p_text = f" with {partner}" if partner else ""
         return f"You are on duty{p_text} this week. Make sure proof is submitted before Friday 8:00 PM."

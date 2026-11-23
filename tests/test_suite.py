@@ -1237,5 +1237,78 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Alice and Bob are cleaning this week. You are the approver", fallback_inspector_reply("what is the duty?", approver_ctx))
         self.assertIn("Alice and Bob are cleaning this week. You are off duty", fallback_inspector_reply("what is the duty?", offduty_ctx))
 
+    async def test_dorm_code_db_operations(self):
+        """Verify dorm code assignment, lookup, and custom updating."""
+        await db.init_db()
+        await db.seed_default_dorm()
+
+        # 1. Default dorm should have DORM-101
+        default_dorm = await db.get_dorm_by_code("DORM-101")
+        self.assertIsNotNone(default_dorm)
+        self.assertEqual(default_dorm["dorm_code"], "DORM-101")
+
+        # 2. Case-insensitive and prefix-insensitive lookup
+        lookup_lower = await db.get_dorm_by_code("dorm-101")
+        self.assertIsNotNone(lookup_lower)
+        self.assertEqual(lookup_lower["dorm_id"], default_dorm["dorm_id"])
+
+        lookup_bare = await db.get_dorm_by_code("101")
+        self.assertIsNotNone(lookup_bare)
+        self.assertEqual(lookup_bare["dorm_id"], default_dorm["dorm_id"])
+
+        # 3. Create a secondary dorm and verify it receives a code
+        sec_id = -100555666777
+        sec_dorm = await db.create_or_update_dorm(sec_id, 9999, "Block B Room 12")
+        self.assertTrue(sec_dorm["dorm_code"].startswith("DORM-"))
+
+        # 4. Update custom dorm code
+        ok, code = await db.set_dorm_code(sec_id, "BLOCK-B12")
+        self.assertTrue(ok)
+        self.assertEqual(code, "BLOCK-B12")
+
+        found_sec = await db.get_dorm_by_code("block-b12")
+        self.assertIsNotNone(found_sec)
+        self.assertEqual(found_sec["dorm_id"], sec_id)
+
+    async def test_web_api_dorm_code_endpoint(self):
+        """Verify FastAPI /api/dorms/code/{code} endpoint."""
+        await db.init_db()
+        await db.seed_default_dorm()
+        from web import app
+        from httpx import AsyncClient, ASGITransport
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            # Valid code
+            res = await client.get("/api/dorms/code/DORM-101")
+            self.assertEqual(res.status_code, 200)
+            data = res.json()
+            self.assertEqual(data["dorm_code"], "DORM-101")
+            self.assertIn("current_week", data)
+
+            # Invalid code
+            res404 = await client.get("/api/dorms/code/NONEXISTENT999")
+            self.assertEqual(res404.status_code, 404)
+
+    async def test_dorm_code_command(self):
+        """Verify /code command replies with dorm code and dashboard link."""
+        await db.init_db()
+        await db.seed_default_dorm()
+        from handlers import commands
+
+        update = MagicMock()
+        update.effective_chat.id = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+        update.effective_chat.type = "supergroup"
+        update.effective_user.id = 6163528558
+        update.effective_message.reply_text = AsyncMock()
+
+        context = MagicMock()
+        await commands.dorm_code_command(update, context)
+
+        update.effective_message.reply_text.assert_called_once()
+        text_arg = update.effective_message.reply_text.call_args[0][0]
+        self.assertIn("DORM-101", text_arg)
+        self.assertIn("?code=DORM-101", text_arg)
+
 if __name__ == "__main__":
     unittest.main()
