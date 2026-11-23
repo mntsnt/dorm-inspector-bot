@@ -14,8 +14,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application files
 COPY . .
 
-# Expose port for cloud platform health checks
-EXPOSE 3000
+# Expose port for cloud platform health checks & web status dashboard
+ENV PORT=8000
+EXPOSE 8000
 
 # Default command
 CMD ["python", "bot.py"]

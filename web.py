@@ -318,9 +318,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <div>
           <h1 class="text-lg font-bold tracking-tight text-white flex items-center gap-2">
             Dorm Inspector
-            <span class="text-xs px-2 py-0.5 rounded-full bg-brand-500/10 text-brand-400 border border-brand-500/30 font-semibold uppercase tracking-wider">Production</span>
+            <span class="text-xs px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 font-semibold uppercase tracking-wider">AletCloud</span>
           </h1>
-          <p class="text-xs text-gray-400 hidden sm:block">Automated Cleaning Rotation & Room Inspection</p>
+          <p class="text-xs text-gray-400 hidden sm:block font-mono">dorm-inspector-bot.app.aletcloud.com</p>
         </div>
       </div>
 
@@ -516,8 +516,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <!-- Footer -->
   <footer class="border-t border-gray-800/80 bg-gray-950/60 mt-auto py-6">
     <div class="max-w-7xl mx-auto px-4 text-center text-xs text-gray-500 flex flex-col sm:flex-row items-center justify-between gap-2">
-      <p>Dorm Inspector Bot • Powered by SQLite WAL Engine</p>
-      <p class="text-gray-400">Telegram University Dorm Management System</p>
+      <p>Dorm Inspector Bot • Hosted on <span class="text-emerald-400 font-semibold">AletCloud</span> (<a href="https://dorm-inspector-bot.app.aletcloud.com" class="hover:underline">dorm-inspector-bot.app.aletcloud.com</a>)</p>
+      <p class="text-gray-400">Telegram University Dorm Management Platform</p>
     </div>
   </footer>
 
