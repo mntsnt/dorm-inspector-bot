@@ -117,6 +117,11 @@ async def handle_ai_mention(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if member:
         user_name = member["name"]
 
+    try:
+        await db.upsert_user(user.id, user_name, chat_id=chat.id, username=user.username)
+    except Exception:
+        pass
+
     response_text = await ask_ai(
         cleaned_prompt,
         dorm_id=dorm_id,
@@ -182,6 +187,11 @@ async def inspector_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     member = await db.get_dorm_member(dorm_id, user.id)
     if member:
         user_name = member["name"]
+
+    try:
+        await db.upsert_user(user.id, user_name, chat_id=chat.id, username=user.username)
+    except Exception:
+        pass
 
     response_text = await ask_ai(
         query,

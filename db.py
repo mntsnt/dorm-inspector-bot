@@ -568,9 +568,11 @@ def _upsert_user_sync(user_id: int, name: str, chat_id: Optional[int], username:
                 username = COALESCE(excluded.username, users.username),
                 updated_at = CURRENT_TIMESTAMP;
         """, (user_id, name, chat_id, username))
-        # Also sync chat_id to any dorm_members records for this user
+        # Also sync chat_id and username to any dorm_members records for this user
         if chat_id:
             conn.execute("UPDATE dorm_members SET chat_id = ? WHERE user_id = ?", (chat_id, user_id))
+        if username:
+            conn.execute("UPDATE dorm_members SET username = ? WHERE user_id = ?", (username, user_id))
         conn.commit()
 
 async def upsert_user(user_id: int, name: str, chat_id: Optional[int] = None, username: Optional[str] = None) -> None:
@@ -721,13 +723,29 @@ def _get_dorm_members_sync(dorm_id: int) -> List[Dict[str, Any]]:
     default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
     with _get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM dorm_members WHERE dorm_id = ? ORDER BY joined_at ASC", (dorm_id,))
+        cursor.execute("""
+            SELECT dm.dorm_id, dm.user_id, dm.name, dm.chat_id, 
+                   COALESCE(dm.username, u.username) AS username, 
+                   dm.is_admin, dm.pair_number, dm.joined_at
+            FROM dorm_members dm
+            LEFT JOIN users u ON dm.user_id = u.user_id
+            WHERE dm.dorm_id = ?
+            ORDER BY dm.joined_at ASC
+        """, (dorm_id,))
         rows = cursor.fetchall()
         if rows:
             return [dict(r) for r in rows]
         if dorm_id in (default_gid, getattr(config, "GROUP_ID", 0), 0):
             _seed_default_dorm_sync()
-            cursor.execute("SELECT * FROM dorm_members WHERE dorm_id = ? ORDER BY joined_at ASC", (dorm_id,))
+            cursor.execute("""
+                SELECT dm.dorm_id, dm.user_id, dm.name, dm.chat_id, 
+                       COALESCE(dm.username, u.username) AS username, 
+                       dm.is_admin, dm.pair_number, dm.joined_at
+                FROM dorm_members dm
+                LEFT JOIN users u ON dm.user_id = u.user_id
+                WHERE dm.dorm_id = ?
+                ORDER BY dm.joined_at ASC
+            """, (dorm_id,))
             return [dict(r) for r in cursor.fetchall()]
         return []
 
@@ -739,7 +757,14 @@ def _get_dorm_member_sync(dorm_id: int, user_id: int) -> Optional[Dict[str, Any]
     default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
     with _get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM dorm_members WHERE dorm_id = ? AND user_id = ?", (dorm_id, user_id))
+        cursor.execute("""
+            SELECT dm.dorm_id, dm.user_id, dm.name, dm.chat_id, 
+                   COALESCE(dm.username, u.username) AS username, 
+                   dm.is_admin, dm.pair_number, dm.joined_at
+            FROM dorm_members dm
+            LEFT JOIN users u ON dm.user_id = u.user_id
+            WHERE dm.dorm_id = ? AND dm.user_id = ?
+        """, (dorm_id, user_id))
         row = cursor.fetchone()
         if row:
             return dict(row)
@@ -748,7 +773,14 @@ def _get_dorm_member_sync(dorm_id: int, user_id: int) -> Optional[Dict[str, Any]
             cm = config.get_member(user_id)
             if cm:
                 _seed_default_dorm_sync()
-                cursor.execute("SELECT * FROM dorm_members WHERE dorm_id = ? AND user_id = ?", (dorm_id, user_id))
+                cursor.execute("""
+                    SELECT dm.dorm_id, dm.user_id, dm.name, dm.chat_id, 
+                           COALESCE(dm.username, u.username) AS username, 
+                           dm.is_admin, dm.pair_number, dm.joined_at
+                    FROM dorm_members dm
+                    LEFT JOIN users u ON dm.user_id = u.user_id
+                    WHERE dm.dorm_id = ? AND dm.user_id = ?
+                """, (dorm_id, user_id))
                 row = cursor.fetchone()
                 if row:
                     return dict(row)

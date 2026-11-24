@@ -60,6 +60,7 @@ async def build_dorm_context(dorm_id: int, user_id: Optional[int] = None) -> str
     pairs = await db.get_dorm_pairs(dorm_id)
     members = await db.get_dorm_members(dorm_id)
     members_by_id = {m["user_id"]: m["name"] for m in members}
+    members_uname_by_id = {m["user_id"]: m["username"].lstrip("@") for m in members if m.get("username")}
 
     # Ensure members from config fallback are included if DB hasn't populated them
     if user_id and user_id not in members_by_id:
@@ -75,15 +76,19 @@ async def build_dorm_context(dorm_id: int, user_id: Optional[int] = None) -> str
     record = None
     if week_info and week_info.week_number >= 1:
         week_str = f"Week {week_info.week_number} ({week_info.monday_date.strftime('%b %d')} – {week_info.friday_date.strftime('%b %d')})"
-        c1 = week_info.cleaner1_name
-        c2 = week_info.cleaner2_name
+        c1_uname = members_uname_by_id.get(week_info.cleaner1_id)
+        c2_uname = members_uname_by_id.get(week_info.cleaner2_id)
+        c1 = f"{week_info.cleaner1_name} (@{c1_uname})" if c1_uname else week_info.cleaner1_name
+        c2 = f"{week_info.cleaner2_name} (@{c2_uname})" if c2_uname else week_info.cleaner2_name
         record = await db.get_week(week_info.week_start, dorm_id=dorm_id)
         approver = "Not yet assigned"
         status = "In progress (deadline Friday 8:00 PM)"
         if record:
             app_id = record.get("approver_id")
             if app_id:
-                approver = members_by_id.get(app_id, f"ID {app_id}")
+                app_uname = members_uname_by_id.get(app_id)
+                app_name = members_by_id.get(app_id, f"ID {app_id}")
+                approver = f"{app_name} (@{app_uname})" if app_uname else app_name
             final_status = record.get("final_status", "pending")
             if final_status == "completed":
                 rating = record.get("rating", 5)
@@ -106,8 +111,16 @@ async def build_dorm_context(dorm_id: int, user_id: Optional[int] = None) -> str
     fine_entries = [f"{f['user_name']}: {f['total_unpaid']} ETB" for f in fines if f.get('total_unpaid', 0) > 0]
     fines_str = ", ".join(fine_entries) if fine_entries else "No unpaid fines! Everyone is clean."
 
-    # All Registered Roommates
-    all_roommates_str = ", ".join(m["name"] for m in members) if members else "None"
+    # All Registered Roommates with optional Telegram usernames for direct mentions
+    roster_parts = []
+    for m in members:
+        name = m["name"]
+        uname = m.get("username")
+        if uname:
+            roster_parts.append(f"{name} (@{uname.lstrip('@')})")
+        else:
+            roster_parts.append(name)
+    all_roommates_str = ", ".join(roster_parts) if roster_parts else "None"
 
     # Today's Date and Upcoming Schedule (Next 3 weeks)
     today = config.get_current_date()
@@ -128,6 +141,8 @@ async def build_dorm_context(dorm_id: int, user_id: Optional[int] = None) -> str
     user_context = ""
     if user_id:
         user_name = members_by_id.get(user_id, "Roommate")
+        user_uname = members_uname_by_id.get(user_id)
+        user_display = f"{user_name} (@{user_uname})" if user_uname else user_name
         dorm_admin_id = dorm.get("admin_id") if dorm else getattr(config, "ADMIN_ID", 0)
         is_admin = (user_id == dorm_admin_id or user_id == getattr(config, "ADMIN_ID", 0))
 
@@ -155,7 +170,7 @@ async def build_dorm_context(dorm_id: int, user_id: Optional[int] = None) -> str
                 partner_str = ", ".join(other_cleaners) if other_cleaners else "solo"
                 user_context = (
                     f"\n=== SPEAKING USER CONTEXT ===\n"
-                    f"User: {user_name} (ID: {user_id})\n"
+                    f"User: {user_display} (ID: {user_id})\n"
                     f"Role: CLEANER ON DUTY\n"
                     f"Partner: {partner_str}\n"
                     f"Duty Status: YOU ARE ON CLEANING DUTY THIS WEEK with {partner_str}. Deadline is Friday 8:00 PM. Photo proof required.\n"
@@ -166,7 +181,7 @@ async def build_dorm_context(dorm_id: int, user_id: Optional[int] = None) -> str
             elif app_id and user_id == app_id:
                 user_context = (
                     f"\n=== SPEAKING USER CONTEXT ===\n"
-                    f"User: {user_name} (ID: {user_id})\n"
+                    f"User: {user_display} (ID: {user_id})\n"
                     f"Role: APPROVER (INSPECTOR)\n"
                     f"Duty Status: YOU DO NOT CLEAN THE ROOM! You are the designated approver. Your job is to inspect and rate {week_info.cleaner_display}'s cleaning on Friday.\n"
                     f"Admin Status: {'Yes (Dorm Admin)' if is_admin else 'No'}\n"
@@ -175,7 +190,7 @@ async def build_dorm_context(dorm_id: int, user_id: Optional[int] = None) -> str
             elif user_id in members_by_id or config.is_member(user_id):
                 user_context = (
                     f"\n=== SPEAKING USER CONTEXT ===\n"
-                    f"User: {user_name} (ID: {user_id})\n"
+                    f"User: {user_display} (ID: {user_id})\n"
                     f"Role: OFF-DUTY ROOMMATE\n"
                     f"Duty Status: OFF DUTY. You do NOT have cleaning duty this week! Cleaners on duty are {week_info.cleaner_display}.\n"
                     f"Admin Status: {'Yes (Dorm Admin)' if is_admin else 'No'}\n"
@@ -185,7 +200,7 @@ async def build_dorm_context(dorm_id: int, user_id: Optional[int] = None) -> str
             elif is_admin:
                 user_context = (
                     f"\n=== SPEAKING USER CONTEXT ===\n"
-                    f"User: {user_name} (ID: {user_id})\n"
+                    f"User: {user_display} (ID: {user_id})\n"
                     f"Role: DORM ADMIN\n"
                     f"Duty Status: Dorm manager.\n"
                     f"Guideline: Treat as dorm manager and helpful friend.{behavior_notes}"
@@ -193,7 +208,7 @@ async def build_dorm_context(dorm_id: int, user_id: Optional[int] = None) -> str
         elif is_admin:
             user_context = (
                 f"\n=== SPEAKING USER CONTEXT ===\n"
-                f"User: {user_name} (ID: {user_id})\n"
+                f"User: {user_display} (ID: {user_id})\n"
                 f"Role: DORM ADMIN\n"
                 f"Duty Status: Managing dorm.\n"
                 f"Guideline: Treat as dorm manager and helpful friend.{behavior_notes}"
@@ -270,7 +285,15 @@ SYSTEM_PROMPT = (
     "4. NO REPETITIVE CANNED FORMULAS: NEVER repeat the same greetings, opening lines, or standard template phrases. Every response must feel fresh, responsive, and unique.\n"
     "5. ONLY MENTION CLEANING WHEN ASKED: You have live dorm facts below for reference. But CRITICAL: DO NOT constantly tell roommates 'you are on duty' or 'you are off duty' unless they explicitly ask about cleaning, who cleans, or the chore schedule! When chatting about other topics, focus 100% on what was asked.\n"
     "6. HUMAN TEXT, LESS SYMBOLS: Write in clean, natural human sentences. Avoid symbol clutter: no asterisks, no hashtag headers, no markdown bullet lists, no symbol spam, and zero emoji spam. Write smooth, complete human sentences like a real person typing on Telegram.\n"
-    "7. COMPLETE EXPLANATIONS — NEVER CUT OFF SENTENCES: Walk through explanations thoroughly from start to finish. Never leave a sentence half-finished or cut off in the middle. Always end with a complete sentence and proper punctuation."
+    "7. COMPLETE EXPLANATIONS — NEVER CUT OFF SENTENCES: Walk through explanations thoroughly from start to finish. Never leave a sentence half-finished or cut off in the middle. Always end with a complete sentence and proper punctuation.\n"
+    "8. FLEXIBLE RESPONSE LENGTH (MATCH THE CHAT & CONTEXT):\n"
+    "   - SHORT & PUNCHY (1-2 sentences): When a roommate sends casual banter, short greetings, jokes, quick check-ins, or simple yes/no questions, keep your reply SHORT and punchy! Never write long lectures for short remarks. Example: 'I hear you, Nahom. Keep that kitchen clean and don't slack off.'\n"
+    "   - MEDIUM (2-4 sentences): For normal questions, routine advice, sharing opinions, or chore status checks.\n"
+    "   - DETAILED (Longer): ONLY when a roommate explicitly asks you to explain something in-depth, break down a topic, write a recipe, or teach a concept. Never bloat simple chat with unnecessary text.\n"
+    "9. MENTION DORM MATES BY TELEGRAM USERNAME (@username) WHEN HELPFUL:\n"
+    "   - Live dorm facts include roommates' names and their Telegram usernames (@username) when known.\n"
+    "   - When assigning responsibility, calling someone out for duty, answering who cleans, nudging someone to swap, or joking with someone in the group, feel free to mention their @username naturally (e.g. '@nahom_t grab the mop', 'Ask @bilisuma about that', '@hassan_k is on inspection duty').\n"
+    "   - Use usernames naturally when relevant for accountability or humor—do not spam them on every sentence."
 )
 
 def extract_gemini_text(data: Any) -> str:
@@ -569,10 +592,22 @@ async def query_gemini(
         f"========================="
     )
 
+    # Determine dynamic response length guidance based on chat and context
+    p_len = len(user_prompt.strip())
+    p_lower = user_prompt.lower()
+    is_explanation_request = any(w in p_lower for w in ("explain", "how do", "how does", "what is", "why is", "tell me about", "teach me", "break down", "recipe", "write a", "can you explain"))
+    is_short_prompt = not is_explanation_request and p_len < 65
+
+    length_guidance = ""
+    if is_short_prompt:
+        length_guidance = " (Instruction: The user's input is brief. Respond concisely in 1 to 2 punchy, in-character sentences! Do not lecture.)"
+    elif is_explanation_request:
+        length_guidance = " (Instruction: Provide a thorough, complete explanation.)"
+
     prompt_text = (
         f"{full_system_context}\n\n"
         f"{history_str}"
-        f"Roommate '{user_name}' asks: {user_prompt}"
+        f"Roommate '{user_name}' asks: {user_prompt}{length_guidance}"
     )
 
     # Format structured multi-turn contents array for generateContent API
@@ -596,7 +631,7 @@ async def query_gemini(
         if multi_turn_contents and multi_turn_contents[0]["role"] != "user":
             multi_turn_contents.pop(0)
 
-    curr_user_text = f"{user_name}: {user_prompt}" if user_name else user_prompt
+    curr_user_text = f"{user_name}: {user_prompt}{length_guidance}" if user_name else f"{user_prompt}{length_guidance}"
     if multi_turn_contents and multi_turn_contents[-1]["role"] == "user":
         multi_turn_contents[-1]["parts"][0]["text"] += f"\n{curr_user_text}"
     else:
@@ -759,7 +794,18 @@ async def query_openai(
                 txt = f"{h['user_name']}: {txt}"
             messages.append({"role": role, "content": txt})
 
-    messages.append({"role": "user", "content": f"{user_name}: {user_prompt}"})
+    p_len = len(user_prompt.strip())
+    p_lower = user_prompt.lower()
+    is_explanation_request = any(w in p_lower for w in ("explain", "how do", "how does", "what is", "why is", "tell me about", "teach me", "break down", "recipe", "write a", "can you explain"))
+    is_short_prompt = not is_explanation_request and p_len < 65
+
+    length_guidance = ""
+    if is_short_prompt:
+        length_guidance = " (Instruction: The user's input is brief. Respond concisely in 1 to 2 punchy, in-character sentences! Do not lecture.)"
+    elif is_explanation_request:
+        length_guidance = " (Instruction: Provide a thorough, complete explanation.)"
+
+    messages.append({"role": "user", "content": f"{user_name}: {user_prompt}{length_guidance}"})
 
     async with httpx.AsyncClient(timeout=15.0) as client:
         last_exc = None

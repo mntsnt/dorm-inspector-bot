@@ -1785,5 +1785,35 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(btn_no_code.text, "🌐 Open Dashboard")
         self.assertEqual(btn_no_code.url, "https://inspector.app.aletcloud.com/")
 
+    async def test_ai_flexible_response_length_and_username_mentions(self):
+        """Verify the Inspector supports flexible length (short vs detailed) and usernames."""
+        from services import ai_service
+        # 1. System Prompt contains flexible length & telegram username guidelines
+        sys_prompt = ai_service.SYSTEM_PROMPT
+        self.assertIn("FLEXIBLE RESPONSE LENGTH", sys_prompt)
+        self.assertIn("SHORT & PUNCHY", sys_prompt)
+        self.assertIn("MENTION DORM MATES BY TELEGRAM USERNAME", sys_prompt)
+        self.assertIn("@username", sys_prompt)
+
+        # 2. Database user username sync
+        await db.init_db()
+        test_user_id = 99887766
+        test_dorm_id = -100555666777
+        await db.create_or_update_dorm(dorm_id=test_dorm_id, admin_id=test_user_id, dorm_name="Mention Dorm")
+        await db.add_dorm_member(dorm_id=test_dorm_id, user_id=test_user_id, name="Dawit")
+        await db.upsert_user(test_user_id, "Dawit", username="dawit_t")
+
+        members = await db.get_dorm_members(test_dorm_id)
+        d_member = next(m for m in members if m["user_id"] == test_user_id)
+        self.assertEqual(d_member["username"], "dawit_t")
+
+        # 3. Context builder injects @username for roommates
+        context = await ai_service.build_dorm_context(test_dorm_id, user_id=test_user_id)
+        self.assertIn("Dawit (@dawit_t)", context)
+
+        # 4. Short greeting fallback produces punchy response
+        short_reply = ai_service.fallback_inspector_reply("sup inspector", context, user_name="Dawit")
+        self.assertTrue(len(short_reply.split()) <= 30)
+
 if __name__ == "__main__":
     unittest.main()
