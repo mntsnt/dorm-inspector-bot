@@ -115,6 +115,15 @@ def get_dorm_week_info(
         cleaner3_name=c3_name,
     )
 
+def _week_has_cleaning_activity(week_record: Optional[Dict[str, Any]]) -> bool:
+    if not week_record:
+        return False
+    return (
+        week_record.get("final_status") != "pending"
+        or bool(week_record.get("done_reported"))
+        or week_record.get("photo_status") not in (None, "", "none")
+    )
+
 # ---------------------------------------------------------------------------
 # DM Helper with Group Fallback
 # ---------------------------------------------------------------------------
@@ -316,8 +325,8 @@ async def send_dorm_announcement(
 
     if week_record.get("announced") == 1:
         return False, f"Week {week_info.week_number} has already been announced."
-    if week_record.get("final_status") == "completed" or week_record.get("photo_status") == "approved":
-        return False, f"Week {week_info.week_number} duty is already completed and approved."
+    if _week_has_cleaning_activity(week_record):
+        return False, f"Week {week_info.week_number} already has cleaning activity; announcement skipped."
     if not await db.claim_week_announcement(week_info.week_start, dorm_id=dorm_id):
         return False, f"Week {week_info.week_number} announcement is already in progress or complete."
 
@@ -726,7 +735,7 @@ async def monitor_and_fallback_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             announce_target = datetime.combine(week_info.monday_date, announce_naive_time).replace(tzinfo=config.TIMEZONE)
 
             if now >= announce_target:
-                is_done = week_record and (week_record.get("final_status") == "completed" or week_record.get("photo_status") == "approved")
+                is_done = _week_has_cleaning_activity(week_record)
                 if not is_done and (not week_record or week_record.get("announced") != 1):
                     logger.info("Missed Monday announcement detected for dorm %s, week %s. Sending now...", dorm_id, week_info.week_start)
                     await send_dorm_announcement(context, dorm_id)

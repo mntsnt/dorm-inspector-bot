@@ -183,7 +183,9 @@ async def build_dorm_context(dorm_id: int, user_id: Optional[int] = None) -> str
             elif final_status == "fined":
                 status = f"Not cleaned. Fined {fine_amt} ETB total."
             elif record.get("photo_status") == "submitted":
-                status = "Cleaners submitted photo, waiting for approver review."
+                status = "Cleaners finished cleaning and submitted photo, waiting for approver review."
+            elif record.get("done_reported"):
+                status = "Cleaners reported cleaning complete, waiting for photo proof."
         duty_str = f"Cleaners: {c1} & {c2} | Approver: {approver} | Status: {status}"
 
     # Tsidat Leaderboard
@@ -254,6 +256,13 @@ async def build_dorm_context(dorm_id: int, user_id: Optional[int] = None) -> str
                     or record.get("photo_status") == "approved"
                 )
             )
+            has_reported_cleaning = bool(
+                record and (
+                    record.get("done_reported")
+                    or record.get("photo_status") in ("submitted", "approved")
+                    or record.get("final_status") == "completed"
+                )
+            )
 
             if user_id in cleaner_ids:
                 other_cleaners = [name for uid, name in zip(cleaner_ids, week_info.cleaner_names) if uid != user_id]
@@ -268,6 +277,22 @@ async def build_dorm_context(dorm_id: int, user_id: Optional[int] = None) -> str
                         f"Duty Status: COMPLETED & APPROVED! User already cleaned the dorm this week, submitted photo proof, and was APPROVED by {app_name}. They are DONE for the week! No cleaning, reminders, or proof required.\n"
                         f"Admin Status: {'Yes (Dorm Admin)' if is_admin else 'No'}\n"
                         f"Guideline: Never tell this user their duty is on or that they need to clean. Confirm they have successfully completed their duty and are done for the week.{behavior_notes}"
+                    )
+                elif record and has_reported_cleaning:
+                    photo_submitted = record.get("photo_status") == "submitted"
+                    photo_status_text = (
+                        "Their photo is submitted and waiting for the approver's review."
+                        if photo_submitted
+                        else "They still need to send photo proof to the approver."
+                    )
+                    user_context = (
+                        f"\n=== SPEAKING USER CONTEXT ===\n"
+                        f"User: {user_display} (ID: {user_id})\n"
+                        f"Role: CLEANER (CLEANING REPORTED)\n"
+                        f"Partner: {partner_str}\n"
+                        f"Duty Status: User already completed the cleaning. {photo_status_text} They must not be asked to clean again.\n"
+                        f"Admin Status: {'Yes (Dorm Admin)' if is_admin else 'No'}\n"
+                        f"Guideline: Confirm cleaning is done. If photo proof is still missing, ask only for the photo; otherwise tell them to wait for review. Never tell them to clean again.{behavior_notes}"
                     )
                 else:
                     user_context = (
@@ -289,6 +314,20 @@ async def build_dorm_context(dorm_id: int, user_id: Optional[int] = None) -> str
                         f"Duty Status: YOU ALREADY INSPECTED AND APPROVED THIS WEEK'S CLEANING! Inspection is complete for the week.\n"
                         f"Admin Status: {'Yes (Dorm Admin)' if is_admin else 'No'}\n"
                         f"Guideline: Never tell this user to clean. If they ask general questions, chat warmly with a wide perspective as a friendly mentor.{behavior_notes}"
+                    )
+                elif has_reported_cleaning:
+                    review_status = (
+                        "The cleaners submitted photo proof and are waiting for your review."
+                        if record and record.get("photo_status") == "submitted"
+                        else "The cleaners reported finishing; photo proof is still pending."
+                    )
+                    user_context = (
+                        f"\n=== SPEAKING USER CONTEXT ===\n"
+                        f"User: {user_display} (ID: {user_id})\n"
+                        f"Role: APPROVER (INSPECTOR)\n"
+                        f"Duty Status: YOU DO NOT CLEAN THE ROOM! {review_status}\n"
+                        f"Admin Status: {'Yes (Dorm Admin)' if is_admin else 'No'}\n"
+                        f"Guideline: Do not say cleaners still need to clean. Ask only for a review when proof is submitted.{behavior_notes}"
                     )
                 else:
                     user_context = (
@@ -542,6 +581,22 @@ def fallback_inspector_reply(
                 return f"{' '.join(c_tags)} Look at the chat! Check your cleaning duty and deadline right now."
 
     is_duty_done = "completed" in current_duty.lower() or "approved" in current_duty.lower() or "COMPLETED" in user_role
+    is_cleaning_reported = (
+        "CLEANING REPORTED" in user_role
+        or "cleaners finished cleaning" in current_duty.lower()
+        or "cleaners reported cleaning complete" in current_duty.lower()
+    )
+    photo_waiting_review = "submitted photo" in current_duty.lower()
+
+    def reported_cleaning_reply() -> str:
+        if photo_waiting_review:
+            return "You have already cleaned and sent the photo. The approver is reviewing it; you are done cleaning for the week."
+        return "You have already cleaned. Please send the required photo proof if you have not; you do not need to clean again."
+
+    def reported_cleaning_status() -> str:
+        if photo_waiting_review:
+            return f"{cleaners_display} have finished cleaning and submitted photo proof; the approver's review is pending."
+        return f"{cleaners_display} have reported the cleaning complete; photo proof is still pending."
 
     # 1. Question about user's own cleaning duty ("am i cleaning", "is it my turn", "do i have duty", etc.)
     if any(q in p_lower for q in (
@@ -551,6 +606,8 @@ def fallback_inspector_reply(
         name_str = f" {user_name}" if user_name and user_name != "Roommate" else ""
         if user_role.startswith("CLEANER") and is_duty_done:
             return f"You have already completed your cleaning duty this week{name_str}, and it was approved! You are done for the week. Great job!"
+        elif user_role.startswith("CLEANER") and is_cleaning_reported:
+            return reported_cleaning_reply()
         elif user_role == "CLEANER ON DUTY":
             p_text = f" with {partner}" if partner else ""
             return f"Yes{name_str}, you are on cleaning duty{p_text} this week. Submit photo proof before Friday 8:00 PM."
@@ -589,16 +646,22 @@ def fallback_inspector_reply(
             )
         if user_role.startswith("CLEANER") and is_duty_done:
             return f"This week's cleaning duty has already been completed by {cleaners_display} and approved! You are done for the week."
+        elif user_role.startswith("CLEANER") and is_cleaning_reported:
+            return reported_cleaning_reply()
         elif user_role == "CLEANER ON DUTY":
             p_text = f"with {partner} " if partner else ""
             return f"You are cleaning {p_text}this week. Submit proof before Friday 8:00 PM."
         elif user_role == "APPROVER (INSPECTOR)":
             if is_duty_done:
                 return f"This week's cleaning has already been completed by {cleaners_display.replace('&', 'and')} and you approved it!"
+            if is_cleaning_reported:
+                return reported_cleaning_status() + " You are the approver."
             return f"{cleaners_display.replace('&', 'and')} are cleaning this week. You are the approver inspecting their work."
         elif user_role == "OFF-DUTY ROOMMATE":
             if is_duty_done:
                 return f"This week's cleaning has already been completed by {cleaners_display.replace('&', 'and')} and approved. You are off duty."
+            if is_cleaning_reported:
+                return reported_cleaning_status() + " You are off duty."
             return f"{cleaners_display.replace('&', 'and')} are cleaning this week. You are off duty."
         if current_duty:
             if is_duty_done:
@@ -666,6 +729,8 @@ def fallback_inspector_reply(
         ):
             if user_role.startswith("CLEANER") and is_duty_done:
                 return f"You completed and passed this week's cleaning duty! Well done {user_name}."
+            elif user_role.startswith("CLEANER") and is_cleaning_reported:
+                return reported_cleaning_reply()
             elif user_role == "CLEANER ON DUTY":
                 p_text = f" with {partner}" if partner else ""
                 return f"You are on duty{p_text} this week. Make sure proof is submitted before Friday 8:00 PM."

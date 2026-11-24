@@ -108,6 +108,8 @@ async def handle_ai_mention(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     cleaned_prompt = re.sub(r"@?inspector\b", "", cleaned_prompt, flags=re.IGNORECASE).strip()
     cleaned_prompt = re.sub(r"^[,:\s]+", "", cleaned_prompt).strip()
     if not cleaned_prompt:
+        if is_group:
+            return
         cleaned_prompt = "Hello!"
 
     # Show typing indicator

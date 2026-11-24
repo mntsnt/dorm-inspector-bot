@@ -15,7 +15,7 @@ Any student can add the bot to their dorm's Telegram group or topic, run `/setup
 - 🎭 **Ethiopian Student Meme Integration:** Features 8 integrated meme moments (`welcome.jpg`, `announcement.jpg`, `suspicious_dog.jpg`, `reminder.jpg`, `approved.jpg`, `rejected.jpg`, `fined.jpg`, `paid.jpg`).
 - 🔄 **Deterministic Weekly Rotation:** Cycles pairs weekly Monday through Friday. Weekends are always off-duty.
 - 🎲 **Fair Approver Rotation:** Approver is randomly picked each Monday from non-cleaning roommates.
-- 📸 **Photo Verification & Inspection:** Cleaners submit photos in the dorm group/topic or by DM. The assigned approver reviews and approves or rejects with a 1–5-star rating and optional note.
+- 📸 **Photo Verification & Inspection:** Any assigned cleaner can submit proof in the dorm group/topic or by DM; one photo covers the whole cleaning team. The assigned approver reviews and approves or rejects it with a 1–5-star rating and optional note. Approval releases all assigned cleaners for the week.
 - ⏰ **Daytime Reminders & Friday Deadline:** Cleaners get at most one reminder every six hours between 8:00 AM and 8:00 PM (Addis Ababa time), stopping once they report cleaning. At Friday 8:00 PM, weeks without photo proof are closed and fined; pending proof is sent to the approver instead.
 - 🎁 **Tsidat Rewards:** Cleaners earn up to 25 tokens from the approver's 1–5-star rating, plus an early-cleaning bonus: +5 Monday, +4 Tuesday, +3 Wednesday, +2 Thursday, or +1 Friday. The approver earns +5 for a manual review.
 - 🛡️ **Review Timeout:** If submitted proof is not reviewed within 24 hours, the bot auto-approves it at 3 stars. The approver bonus is only awarded for a manual review.
@@ -99,7 +99,8 @@ Once everyone is connected, the admin taps **"🚀 Launch when roster is ready"*
    ┌─────────────────────────────────────────────────────────────┐
    │ MONDAY – FRIDAY (Cleaning & Submission)                     │
    │ • Cleaners clean any day and tap "We cleaned" or send /done │
-   │ • Cleaner sends proof photo in the group/topic or in DM    │
+   │ • Any one cleaner sends proof in the group/topic or in DM  │
+   │ • One approved photo completes duty for the whole team     │
    │ • Approver reviews the photo and gives a 1–5-star rating   │
    │ • Approval congratulates cleaners, awards tokens, and ends │
    │   reminders and further weekly duty announcements          │

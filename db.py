@@ -1116,6 +1116,9 @@ def _claim_week_announcement_sync(week_start: str, dorm_id: int = 0) -> bool:
             WHERE week_start = ?
               AND (dorm_id = ? OR (dorm_id = 0 AND ? = ?))
               AND announced = 0
+              AND final_status = 'pending'
+              AND COALESCE(done_reported, 0) = 0
+              AND (photo_status IS NULL OR photo_status IN ('', 'none'))
               AND (
                   announcement_claimed_at IS NULL
                   OR announcement_claimed_at < ?

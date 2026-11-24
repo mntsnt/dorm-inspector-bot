@@ -272,6 +272,18 @@ async def handle_cleaner_done(
         await msg.reply_text("✅ Cleaning for this week is already completed and approved! You are done for the week.")
         return
 
+    if week_record.get("photo_status") == "submitted":
+        submitter_name = members_by_id.get(
+            week_record.get("photo_submitted_by"),
+            "Your cleaning partner"
+        )
+        await msg.reply_text(
+            f"{submitter_name} already submitted the shared cleaning photo. "
+            "Both cleaners are done cleaning; no second photo is needed. "
+            "The approver will review the submitted proof."
+        )
+        return
+
     if not await db.mark_done_reported(target_week_start, dorm_id=dorm_id, user_id=user_id):
         await msg.reply_text("This week's cleaning submission is already closed or awaiting review.")
         return
@@ -392,7 +404,14 @@ async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
         return
     if week_record.get("photo_status") == "submitted":
         if not is_group:
-            await update.message.reply_text("Your photo is already submitted and waiting for the approver.")
+            submitter_name = members_by_id.get(
+                week_record.get("photo_submitted_by"),
+                "Your cleaning partner"
+            )
+            await update.message.reply_text(
+                f"{submitter_name} already submitted the shared cleaning photo. "
+                "It is waiting for approver review; no second photo is needed."
+            )
         return
 
     # Get the highest resolution photo
@@ -402,7 +421,8 @@ async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
     if not await db.submit_photo(week_info.week_start, photo_file_id, user.id, dorm_id=dorm_id):
         if not is_group:
             await update.message.reply_text(
-                "The photo could not be accepted because this week is closed or another photo is already awaiting review."
+                "The photo could not be accepted because this week is closed or a shared photo is already awaiting review. "
+                "One approved photo is enough for all assigned cleaners."
             )
         return
 
@@ -444,7 +464,7 @@ async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
         # Forward/send photo to the dorm group chat
         group_caption = (
             f"Cleaned by **{c_disp}** (sent by {submitter_name}) at **{cleaned_at}**.\n"
-            f"Waiting for **{approver_name}** to approve."
+            f"Waiting for **{approver_name}** to approve. One photo covers all assigned cleaners."
         )
         try:
             await context.bot.send_photo(
@@ -461,9 +481,9 @@ async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
     # Send photo with Approve / Reject buttons in private DM to the Approver
     if approver_id:
         approver_caption = (
-            f"Photo sent by **{c_disp}** ({dorm['dorm_name']}).\n"
+            f"Photo submitted by **{submitter_name}** for **{c_disp}** ({dorm['dorm_name']}).\n"
             f"Cleaned at **{cleaned_at or 'time not recorded'}**.\n"
-            "Please approve or reject:"
+            "One approved photo completes duty for the assigned cleaners. Please approve or reject:"
         )
         try:
             await context.bot.send_photo(
@@ -487,7 +507,10 @@ async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
 
     # Confirm to cleaner in DM if triggered in DM
     if not is_group:
-        reply_text = f"Photo received! Sent to the group and to **{approver_name}** to review."
+        reply_text = (
+            f"Photo received! One photo is enough for all assigned cleaners. "
+            f"It was sent to the group and to **{approver_name}** for review."
+        )
         await update.message.reply_text(reply_text, parse_mode=ParseMode.MARKDOWN)
 
 # ---------------------------------------------------------------------------

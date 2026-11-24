@@ -242,16 +242,87 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(week["photo_status"], "none")
 
         # Cleaner submits photo
-        await db.submit_photo(w_info.week_start, file_id="photo_12345", user_id=c1.user_id)
+        self.assertTrue(await db.submit_photo(
+            w_info.week_start, file_id="photo_12345", user_id=c1.user_id
+        ))
+        self.assertFalse(await db.submit_photo(
+            w_info.week_start, file_id="photo_from_partner", user_id=c2.user_id
+        ))
         week_after_photo = await db.get_week(w_info.week_start)
         self.assertEqual(week_after_photo["photo_status"], "submitted")
         self.assertEqual(week_after_photo["photo_file_id"], "photo_12345")
+        self.assertEqual(week_after_photo["photo_submitted_by"], c1.user_id)
 
         # Approver approves photo
         await db.update_photo_status(w_info.week_start, status="approved", final_status="completed")
         week_approved = await db.get_week(w_info.week_start)
         self.assertEqual(week_approved["photo_status"], "approved")
         self.assertEqual(week_approved["final_status"], "completed")
+
+    async def test_partner_does_not_need_to_submit_a_second_photo(self):
+        """Once one cleaner submits proof, the partner is told to wait for review."""
+        from handlers.cleaning import handle_cleaner_done, photo_message_handler
+
+        await db.init_db()
+        dorm_id = -1005555001
+        await db.create_or_update_dorm(
+            dorm_id=dorm_id,
+            admin_id=105,
+            dorm_name="Shared Proof Dorm",
+            start_date="2026-11-23"
+        )
+        for user_id, name in (
+            (102, "Cleaner A"),
+            (103, "Cleaner B"),
+            (104, "Approver"),
+            (105, "Admin"),
+        ):
+            await db.add_dorm_member(dorm_id, user_id, name)
+        await db.set_dorm_pairs(dorm_id, [(102, 103), (104, 105)])
+        await db.get_or_create_week(
+            "2026-11-23", 1, 102, 103, [104, 105], dorm_id=dorm_id
+        )
+        self.assertTrue(await db.submit_photo(
+            "2026-11-23", "shared-proof", 102, dorm_id=dorm_id
+        ))
+
+        done_update = MagicMock()
+        done_update.effective_user.id = 103
+        done_update.effective_message.chat.type = "private"
+        done_update.effective_message.reply_text = AsyncMock()
+        context = MagicMock()
+        photo_update = MagicMock()
+        photo_update.effective_user.id = 103
+        photo_update.effective_user.first_name = "Cleaner B"
+        photo_update.effective_chat.type = "private"
+        photo_update.message.photo = [MagicMock(file_id="duplicate-proof")]
+        photo_update.message.caption = None
+        photo_update.message.reply_text = AsyncMock()
+
+        with (
+            patch("config.get_current_date", return_value=date(2026, 11, 24)),
+            patch(
+                "config.get_current_time",
+                return_value=datetime(2026, 11, 24, 15, 0, tzinfo=config.TIMEZONE)
+            ),
+        ):
+            await handle_cleaner_done(
+                done_update, context, 103, dorm_id=dorm_id, week_start="2026-11-23"
+            )
+            await photo_message_handler(photo_update, context)
+
+        self.assertIn(
+            "no second photo is needed",
+            done_update.effective_message.reply_text.call_args.args[0].lower()
+        )
+        self.assertIn(
+            "no second photo is needed",
+            photo_update.message.reply_text.call_args.args[0].lower()
+        )
+        self.assertEqual(
+            (await db.get_week("2026-11-23", dorm_id=dorm_id))["photo_file_id"],
+            "shared-proof"
+        )
 
     async def test_approval_awards_tiered_early_bonus_once(self):
         """Approved cleaners receive their rating plus the weekday bonus exactly once."""
@@ -1133,7 +1204,7 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
             week_number=1,
             cleaner1_id=1001,
             cleaner2_id=1002,
-            eligible_approver_ids=[1003, 1004],
+            eligible_approver_ids=[1004],
             dorm_id=test_dorm_id
         )
         self.assertEqual(week_1["cleaner1_id"], 1001)
@@ -1549,6 +1620,45 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         update.effective_message.reply_text.assert_awaited_once()
         self.assertIn("automatically on Monday", update.effective_message.reply_text.call_args.args[0])
 
+    async def test_announcement_is_skipped_after_cleaning_is_reported(self):
+        """A completed cleaning report suppresses the group announcement and its DMs."""
+        from scheduler import send_dorm_announcement
+
+        await db.init_db()
+        dorm_id = -1005555446
+        await db.create_or_update_dorm(
+            dorm_id=dorm_id,
+            admin_id=105,
+            dorm_name="Reported Cleaning Dorm",
+            start_date="2026-11-23"
+        )
+        for user_id, name in (
+            (102, "Bilisuma"),
+            (103, "Nahom"),
+            (104, "Approver"),
+            (105, "Admin"),
+        ):
+            await db.add_dorm_member(dorm_id, user_id, name)
+        await db.set_dorm_pairs(dorm_id, [(102, 103), (104, 105)])
+        await db.get_or_create_week(
+            "2026-11-23", 1, 102, 103, [104, 105], dorm_id=dorm_id
+        )
+        self.assertTrue(await db.mark_done_reported("2026-11-23", dorm_id, user_id=102))
+        self.assertFalse(await db.claim_week_announcement("2026-11-23", dorm_id=dorm_id))
+
+        context = MagicMock()
+        with (
+            patch("scheduler.post_group_announcement_safe", new_callable=AsyncMock) as post_group,
+            patch("scheduler.send_dm_with_fallback", new_callable=AsyncMock) as send_dm,
+        ):
+            result = await send_dorm_announcement(
+                context, dorm_id, now_date=date(2026, 11, 24)
+            )
+
+        self.assertFalse(result[0])
+        post_group.assert_not_awaited()
+        send_dm.assert_not_awaited()
+
     async def test_ai_mention_natural_name(self):
         """Verify that typing '@inspector who is cleaning' triggers AI, while bare mention does not."""
         await db.init_db()
@@ -1567,6 +1677,13 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         context.bot.username = "DormInspectorBot"
 
         # 1. Bare word "inspector" without @ should NOT trigger in group (user requirement)
+        with patch("handlers.ai_chat.ask_ai", new_callable=AsyncMock) as mock_ask:
+            await ai_chat.handle_ai_mention(update, context)
+            mock_ask.assert_not_called()
+            update.effective_message.reply_text.assert_not_called()
+
+        # A direct bot mention without a question must not trigger an unsolicited group reply.
+        update.effective_message.text = "@DormInspectorBot"
         with patch("handlers.ai_chat.ask_ai", new_callable=AsyncMock) as mock_ask:
             await ai_chat.handle_ai_mention(update, context)
             mock_ask.assert_not_called()
@@ -1680,6 +1797,20 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Role: CLEANER ON DUTY", ctx_cleaner)
         self.assertIn("Partner: CleanerB", ctx_cleaner)
         self.assertIn("YOU ARE ON CLEANING DUTY THIS WEEK", ctx_cleaner)
+
+        await db.mark_done_reported("2026-11-23", test_dorm_id, user_id=cleaner1_id)
+        with patch("config.get_current_date", return_value=date(2026, 11, 24)):
+            ctx_cleaner_reported = await ai_service.build_dorm_context(
+                test_dorm_id, user_id=cleaner1_id
+            )
+        self.assertIn("Role: CLEANER (CLEANING REPORTED)", ctx_cleaner_reported)
+        self.assertIn("User already completed the cleaning", ctx_cleaner_reported)
+        self.assertNotIn("YOU ARE ON CLEANING DUTY THIS WEEK", ctx_cleaner_reported)
+        reported_reply = ai_service.fallback_inspector_reply(
+            "Am I on duty?", ctx_cleaner_reported, user_name="CleanerA"
+        )
+        self.assertIn("already cleaned", reported_reply)
+        self.assertNotIn("on cleaning duty", reported_reply)
 
         # 2. Approver context
         ctx_approver = await ai_service.build_dorm_context(test_dorm_id, user_id=approver_id)
@@ -2868,6 +2999,19 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         is_cleaner, role_name, _ = await commands.get_user_week_role(week_info.cleaner1_id, dorm_id=dorm_id)
         self.assertFalse(is_cleaner, "Cleaner should not have active cleaner flag once approved")
         self.assertEqual(role_name, "CLEANER_DONE")
+
+        for cleaner_id in week_info.cleaner_ids:
+            is_cleaner, role_name, _ = await commands.get_user_week_role(
+                cleaner_id, dorm_id=dorm_id
+            )
+            self.assertFalse(is_cleaner, f"Cleaner {cleaner_id} should be off duty after approval")
+            self.assertEqual(role_name, "CLEANER_DONE")
+        cleaner_balances = [
+            await db.get_tsidat_balance(dorm_id, cleaner_id)
+            for cleaner_id in week_info.cleaner_ids
+        ]
+        self.assertTrue(all(balance > 0 for balance in cleaner_balances))
+        self.assertEqual(len(set(cleaner_balances)), 1)
 
         # 5. Verify /status content says done for the week and does not show 'Submit Cleaning' button
         status_text, status_kb = await commands.get_status_content(user_id=week_info.cleaner1_id, dorm_id=dorm_id)
