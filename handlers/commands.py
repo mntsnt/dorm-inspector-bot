@@ -8,6 +8,7 @@ Seamlessly handles both group-scoped commands and private DM interactions.
 from datetime import date, datetime, timedelta
 import logging
 import random
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from telegram import (
@@ -22,6 +23,7 @@ from telegram.constants import ParseMode
 from telegram.error import BadRequest, TelegramError
 from telegram.ext import (
     Application,
+    ApplicationHandlerStop,
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
@@ -724,11 +726,13 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 except Exception as e:
                     logger.warning("Could not ping dorm group %s on member join: %s", dorm["dorm_id"], e)
 
+                context.user_data["awaiting_name"] = dorm["dorm_id"]
                 welcome_dm = (
                     f"🎉 **You successfully joined {dorm['dorm_name']}!**\n\n"
-                    "You are now registered in the dorm cleaning schedule.\n"
-                    "You will receive duty announcements, reminders, and verification prompts here in DM.\n\n"
-                    "Tap below to see your dorm's status."
+                    "👤 **What is your name?**\n"
+                    "Please reply with your real name (e.g. *Nahom* or *Bilisuma*) or send `/name <your_name>` "
+                    "so your roommates and the inspector recognize you on the chore schedule and leaderboard.\n\n"
+                    "You will receive duty announcements, reminders, and verification prompts here in DM."
                 )
                 is_cleaner, _, _ = await get_user_week_role(user.id, dorm_id=dorm["dorm_id"])
                 code = dorm.get("dorm_code") or "DORM-101"
@@ -857,6 +861,18 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 logger.warning("Could not send reply keyboard: %s", e)
 
         await update.effective_message.reply_text(welcome_text, reply_markup=inline_markup, parse_mode=ParseMode.MARKDOWN)
+
+        name_confirmed = await db.get_setting(f"name_confirmed_{user.id}")
+        is_setname_arg = context.args and len(context.args) > 0 and context.args[0].lower() in ("setname", "name")
+        if not name_confirmed or is_setname_arg:
+            context.user_data["awaiting_name"] = dorm_id
+            name_prompt = (
+                f"👤 **What is your name?**\n\n"
+                f"Currently your name is listed as **{member_name}**.\n"
+                f"Please reply with your real name (e.g. *Nahom* or *Bilisuma*) or type `/name <your_name>` "
+                f"so your roommates can easily recognize you on the chore schedule."
+            )
+            await update.effective_message.reply_text(name_prompt, parse_mode=ParseMode.MARKDOWN)
     else:
         # In a group chat
         await update.effective_message.reply_text(
@@ -1442,6 +1458,111 @@ async def set_dorm_code_command(update: Update, context: ContextTypes.DEFAULT_TY
         parse_mode=ParseMode.MARKDOWN
     )
 
+async def set_name_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /name or /setname command to set or update member display name."""
+    user = update.effective_user
+    chat = update.effective_chat
+    if not user or not chat:
+        return
+
+    target_dorm = await _resolve_user_dorm(user.id)
+    dorm_id = target_dorm["dorm_id"] if target_dorm else None
+
+    if not context.args:
+        context.user_data["awaiting_name"] = dorm_id
+        await update.effective_message.reply_text(
+            "👤 **What is your name?**\n\n"
+            "Usage: `/name <your_name>`\n"
+            "Example: `/name Nahom`\n\n"
+            "Or reply directly to this message with your name.",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    new_name = " ".join(context.args).strip()
+    new_name = re.sub(r"[*_`~[\]()#]", "", new_name).strip()
+    if len(new_name) < 2 or len(new_name) > 40:
+        await update.effective_message.reply_text("Please provide a name between 2 and 40 characters.")
+        return
+
+    await db.update_member_name(user.id, new_name, dorm_id=dorm_id)
+    await db.set_setting(f"name_confirmed_{user.id}", "1")
+    context.user_data.pop("awaiting_name", None)
+
+    if getattr(config, "MEMBERS", None):
+        for m in config.MEMBERS:
+            if m.user_id == user.id:
+                m.name = new_name
+                break
+
+    await update.effective_message.reply_text(
+        f"✅ Your name has been set to **{new_name}**!",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+async def handle_name_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Capture user's name when they reply in private chat after bot asked for it."""
+    chat = update.effective_chat
+    user = update.effective_user
+    message = update.effective_message
+    if not chat or not user or not message or not message.text:
+        return
+
+    if chat.type != "private":
+        return
+
+    text = message.text.strip()
+    if text.startswith("/"):
+        return
+
+    menu_buttons = {
+        "status", "schedule", "submit cleaning", "fines", "history", "help",
+        "main menu", "members", "tsidat", "tokens", "spin", "roulette",
+        "dorm code", "code", "🔑 dorm code", "👥 members", "📋 status",
+        "📅 schedule", "🧼 submit cleaning", "💸 fines", "📜 history",
+        "ℹ️ help", "🏠 main menu", "🪙 tsidat tokens", "🎲 dorm roulette"
+    }
+    if text.lower() in menu_buttons:
+        return
+
+    if not context.user_data.get("awaiting_name"):
+        return
+
+    dorm_id = context.user_data.pop("awaiting_name")
+    new_name = re.sub(r"[*_`~[\]()#]", "", text).strip()
+    if len(new_name) < 2 or len(new_name) > 40:
+        await message.reply_text(
+            "Please provide a real name between 2 and 40 characters (or type `/name <your_name>`)."
+        )
+        raise ApplicationHandlerStop
+
+    await db.update_member_name(user.id, new_name, dorm_id=dorm_id)
+    await db.set_setting(f"name_confirmed_{user.id}", "1")
+
+    if getattr(config, "MEMBERS", None):
+        for m in config.MEMBERS:
+            if m.user_id == user.id:
+                m.name = new_name
+                break
+
+    dorm = await db.get_dorm(dorm_id) if dorm_id else None
+    d_name = dorm["dorm_name"] if dorm else "your dorm"
+    code = dorm.get("dorm_code") if dorm else "DORM-101"
+    is_cleaner, _, _ = await get_user_week_role(user.id, dorm_id=dorm_id)
+
+    await message.reply_text(
+        f"✅ Nice to meet you, **{new_name}**!\n\n"
+        f"Your name is now registered for **{d_name}**.",
+        reply_markup=get_reply_keyboard(is_cleaner=is_cleaner),
+        parse_mode=ParseMode.MARKDOWN
+    )
+    await message.reply_text(
+        "Main Menu:",
+        reply_markup=get_main_menu_inline_keyboard(is_cleaner=is_cleaner, dorm_code=code),
+        parse_mode=ParseMode.MARKDOWN
+    )
+    raise ApplicationHandlerStop
+
 # ---------------------------------------------------------------------------
 # Handler Registration
 # ---------------------------------------------------------------------------
@@ -1449,6 +1570,8 @@ def register_command_handlers(application: Application) -> None:
     """Attach general command, inline callback, and reply keyboard handlers."""
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("menu", start_command))
+    application.add_handler(CommandHandler("name", set_name_command))
+    application.add_handler(CommandHandler("setname", set_name_command))
     application.add_handler(CommandHandler("claim", claim_command))
     application.add_handler(CommandHandler("leave", leave_command))
     application.add_handler(CommandHandler("leavedorm", leave_command))
@@ -1476,5 +1599,12 @@ def register_command_handlers(application: Application) -> None:
         MessageHandler(
             filters.TEXT & ~filters.COMMAND & filters.Regex(r"(?i)^(Status|Schedule|Submit Cleaning|Fines|History|Help|Main Menu|Members|Tsidat|Tokens|Spin|Roulette|Dorm Code|Code|🔑 Dorm Code|👥 Members|📋 Status|📅 Schedule|🧼 Submit Cleaning|💸 Fines|📜 History|ℹ️ Help|🏠 Main Menu|🪙 Tsidat Tokens|🎲 Dorm Roulette)$"),
             reply_keyboard_text_handler
+        )
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND,
+            handle_name_reply
         )
     )

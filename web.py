@@ -488,9 +488,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           VIEW DASHBOARD →
         </button>
 
-        <div id="portal-quick-container" class="pt-3 border-t border-white/10">
-          <span class="text-[10px] font-mono uppercase tracking-wider text-white/40 block mb-2">AVAILABLE ACTIVE DORMS</span>
-          <div id="portal-quick-dorms" class="flex flex-wrap gap-2"></div>
+        <div class="pt-3 border-t border-white/10 text-center">
+          <p class="text-[11px] font-mono text-white/40 leading-normal">
+            Need your dorm code? Ask in your dorm Telegram group or type <span class="text-white/80 bg-white/10 px-1 py-0.5 rounded font-bold">/code</span> in the chat.
+          </p>
         </div>
       </div>
     </div>
@@ -867,32 +868,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       }
     }
 
-    async function populateQuickDorms() {
-      const container = document.getElementById('portal-quick-dorms');
-      if (!container) return;
-      try {
-        const res = await fetch('/api/dorms');
-        if (res.ok) {
-          const dorms = await res.json();
-          if (dorms && dorms.length > 0) {
-            container.innerHTML = dorms.map(d => `
-              <button onclick="quickSelectDorm('${d.dorm_code}')" class="px-2.5 py-1 rounded border border-white/20 hover:border-white text-white/80 hover:text-white font-mono text-[10px] transition cursor-pointer">
-                ${d.dorm_code} (${d.dorm_name})
-              </button>
-            `).join('');
-            return;
-          }
-        }
-      } catch (e) {}
-      container.innerHTML = '<span class="text-white/40 text-[10px] font-mono">No dorms active yet.</span>';
-    }
-
-    function quickSelectDorm(code) {
-      const input = document.getElementById('portal-code-input');
-      if (input) input.value = code;
-      submitPortalCode();
-    }
-
     // --- Banner Notifications ---
     function showCodeError(msg) {
       const banner = document.getElementById('code-alert-banner');
@@ -1148,14 +1123,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           if (loaded) {
             closePortalModal();
           } else {
-            populateQuickDorms();
             openPortalModal();
             showCodeError(`Dorm code '${urlCode}' not found. Please verify with /code in Telegram.`);
           }
         } else {
           // Opened directly without a code (e.g. visiting https://inspector.app.aletcloud.com/):
-          // Always show the first page for dorm mates to insert their dorm code!
-          populateQuickDorms();
+          // Always show the entrance page for dorm mates to insert their dorm code!
           openPortalModal();
         }
       } catch (err) {

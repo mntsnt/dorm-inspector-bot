@@ -191,10 +191,10 @@ async def setup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     setup_text = (
         f"🧼 **Dorm Inspector Setup: {dorm_name}**\n\n"
-        f"Admin: **{user.first_name}**\n"
+        f"Admin: **{user.first_name}** (Send `/name <your_name>` to adjust display name)\n"
         "Cleaners: **2 members per week** (Select below to adjust)\n"
         f"Default Fine: **100 ETB total** (50 ETB each)\n\n"
-        "Roommates, tap the button below to connect your account so the bot can DM you when on duty:"
+        "Roommates, tap the button below to join the dorm and set your name so the bot can DM you when on duty:"
     )
 
     keyboard = InlineKeyboardMarkup([
@@ -212,6 +212,22 @@ async def setup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     ])
 
     await msg.reply_text(setup_text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+
+    # Prompt admin in DM to confirm/set their preferred name
+    try:
+        admin_dm = (
+            f"👤 **Dorm Admin Setup: {dorm_name}**\n\n"
+            f"What is your name?\n"
+            f"Currently registered as: **{user.first_name}**\n\n"
+            "Please reply with your real name (or send `/name <your_name>`) so your roommates can recognize you on the chore schedule."
+        )
+        await context.bot.send_message(
+            chat_id=admin_id,
+            text=admin_dm,
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception:
+        pass
 
 # ---------------------------------------------------------------------------
 # Setup Inline Callbacks (Members List, Settings, Launch)

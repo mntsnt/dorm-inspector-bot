@@ -1859,5 +1859,93 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         call_kwargs = mock_msg.reply_text.call_args[1]
         self.assertEqual(call_kwargs.get("parse_mode"), ParseMode.MARKDOWN)
 
+    async def test_dashboard_privacy_no_available_dorms_leak(self):
+        """Verify web dashboard does NOT leak other dorm codes or list available active dorms."""
+        from httpx import ASGITransport, AsyncClient
+        from web import app
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get("/")
+            self.assertEqual(resp.status_code, 200)
+            html = resp.text
+
+            # Privacy verification: NO public dorm listing or quick select buttons
+            self.assertNotIn("AVAILABLE ACTIVE DORMS", html)
+            self.assertNotIn("populateQuickDorms", html)
+            self.assertNotIn("portal-quick-container", html)
+            self.assertNotIn("portal-quick-dorms", html)
+            # Private code guidance prompt is present instead
+            self.assertIn("Need your dorm code? Ask in your dorm Telegram group", html)
+
+    async def test_member_name_prompt_upon_joining_and_name_command(self):
+        """Verify that when a member or admin joins, the bot asks for their name and /name updates it."""
+        from handlers import commands
+        from unittest.mock import AsyncMock, MagicMock
+        from telegram.ext import ApplicationHandlerStop
+
+        await db.init_db()
+        test_dorm_id = -1009988776655
+        test_admin_id = 11223344
+        test_member_id = 55667788
+
+        await db.create_or_update_dorm(dorm_id=test_dorm_id, admin_id=test_admin_id, dorm_name="Privacy Dorm")
+
+        # 1. Member joins via deep link
+        update = MagicMock()
+        update.effective_user.id = test_member_id
+        update.effective_user.first_name = "UserFirst"
+        update.effective_user.username = "user_uname"
+        update.effective_chat.id = test_member_id
+        update.effective_chat.type = "private"
+        update.effective_message.reply_text = AsyncMock()
+
+        context = MagicMock()
+        context.args = [f"join_{abs(test_dorm_id)}"]
+        context.user_data = {}
+        context.bot.send_message = AsyncMock()
+
+        await commands.start_command(update, context)
+
+        # Verify bot asked for their name upon joining
+        self.assertEqual(context.user_data.get("awaiting_name"), test_dorm_id)
+        reply_calls = update.effective_message.reply_text.call_args_list
+        welcome_call_text = reply_calls[0][0][0]
+        self.assertIn("What is your name?", welcome_call_text)
+        self.assertIn("Please reply with your real name", welcome_call_text)
+
+        # 2. Member replies with their real name in private chat
+        reply_update = MagicMock()
+        reply_update.effective_user.id = test_member_id
+        reply_update.effective_user.first_name = "UserFirst"
+        reply_update.effective_user.username = "user_uname"
+        reply_update.effective_chat.id = test_member_id
+        reply_update.effective_chat.type = "private"
+        reply_update.effective_message.text = "Nahom Tadesse"
+        reply_update.effective_message.reply_text = AsyncMock()
+
+        with self.assertRaises(ApplicationHandlerStop):
+            await commands.handle_name_reply(reply_update, context)
+
+        # Name should be updated in DB and name_confirmed set
+        db_member = await db.get_dorm_member(test_dorm_id, test_member_id)
+        self.assertEqual(db_member["name"], "Nahom Tadesse")
+        self.assertEqual(await db.get_setting(f"name_confirmed_{test_member_id}"), "1")
+        self.assertNotIn("awaiting_name", context.user_data)
+
+        # 3. /name command allows updating name at any time
+        name_cmd_update = MagicMock()
+        name_cmd_update.effective_user.id = test_member_id
+        name_cmd_update.effective_chat.id = test_member_id
+        name_cmd_update.effective_message.reply_text = AsyncMock()
+
+        name_cmd_context = MagicMock()
+        name_cmd_context.args = ["Nahom", "The", "Great"]
+        name_cmd_context.user_data = {}
+
+        await commands.set_name_command(name_cmd_update, name_cmd_context)
+        db_member_updated = await db.get_dorm_member(test_dorm_id, test_member_id)
+        self.assertEqual(db_member_updated["name"], "Nahom The Great")
+
 if __name__ == "__main__":
     unittest.main()

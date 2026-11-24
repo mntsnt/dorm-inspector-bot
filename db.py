@@ -578,6 +578,18 @@ def _upsert_user_sync(user_id: int, name: str, chat_id: Optional[int], username:
 async def upsert_user(user_id: int, name: str, chat_id: Optional[int] = None, username: Optional[str] = None) -> None:
     await asyncio.to_thread(_upsert_user_sync, user_id, name, chat_id, username)
 
+def _update_member_name_sync(user_id: int, new_name: str, dorm_id: Optional[int] = None) -> None:
+    with _get_connection() as conn:
+        conn.execute("UPDATE users SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?", (new_name, user_id))
+        if dorm_id:
+            conn.execute("UPDATE dorm_members SET name = ? WHERE user_id = ? AND dorm_id = ?", (new_name, user_id, dorm_id))
+        else:
+            conn.execute("UPDATE dorm_members SET name = ? WHERE user_id = ?", (new_name, user_id))
+        conn.commit()
+
+async def update_member_name(user_id: int, new_name: str, dorm_id: Optional[int] = None) -> None:
+    await asyncio.to_thread(_update_member_name_sync, user_id, new_name, dorm_id)
+
 def _get_user_chat_id_sync(user_id: int) -> Optional[int]:
     with _get_connection() as conn:
         cursor = conn.cursor()

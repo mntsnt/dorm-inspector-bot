@@ -398,3 +398,11 @@ def update_member_id(name: str, new_user_id: int) -> bool:
     except Exception as e:
         logger.error("Failed to update user_id for %s: %s", name, e)
         return False
+
+def update_member_name_in_config(user_id: int, new_name: str) -> bool:
+    """Update a member's name in memory if matched by user_id."""
+    for m in MEMBERS:
+        if m.user_id == user_id:
+            m.name = new_name
+            return True
+    return False
