@@ -173,19 +173,44 @@ async def list_active_dorms(request: Request) -> Any:
 
     return results
 
+@app.get("/api/dorms/default", response_class=JSONResponse)
+async def get_default_dorm() -> Dict[str, Any]:
+    """Retrieve detailed live metrics for the default / primary active dorm."""
+    default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+    dorm = await db.get_dorm(default_gid)
+    if not dorm:
+        active_dorms = await db.get_all_active_dorms()
+        if active_dorms:
+            dorm = active_dorms[0]
+    if not dorm:
+        dorm = await db.get_dorm_by_code("DEFAULT")
+    if not dorm:
+        raise HTTPException(status_code=404, detail="No active dorm found in system")
+    return await get_dorm_detail(str(dorm["dorm_id"]))
+
 @app.get("/api/dorms/{dorm_identifier}", response_class=JSONResponse)
 async def get_dorm_detail(dorm_identifier: str) -> Dict[str, Any]:
     """Detailed live metrics for a specific dorm by ID or dorm code."""
     dorm = None
     clean_id = dorm_identifier.strip()
-    try:
-        dorm_int = int(clean_id)
-        dorm = await db.get_dorm(dorm_int)
-    except ValueError:
-        pass
+    if clean_id.lower() in ("default", "active", "main", "primary"):
+        default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+        dorm = await db.get_dorm(default_gid)
+        if not dorm:
+            active_dorms = await db.get_all_active_dorms()
+            if active_dorms:
+                dorm = active_dorms[0]
+        if not dorm:
+            dorm = await db.get_dorm_by_code("DEFAULT")
+    else:
+        try:
+            dorm_int = int(clean_id)
+            dorm = await db.get_dorm(dorm_int)
+        except ValueError:
+            pass
 
-    if not dorm:
-        dorm = await db.get_dorm_by_code(clean_id)
+        if not dorm:
+            dorm = await db.get_dorm_by_code(clean_id)
 
     if not dorm:
         raise HTTPException(status_code=404, detail=f"Dorm '{dorm_identifier}' not found")
@@ -459,7 +484,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <div class="flex items-center gap-2">
           <span class="text-xs font-mono uppercase tracking-[0.2em] text-white/60">DORM INSPECTOR</span>
         </div>
-        <button id="portal-close-btn" onclick="closePortalModal()" class="hidden text-white/50 hover:text-white text-sm font-mono p-1">✕</button>
+        <button id="portal-close-btn" onclick="closePortalModal()" class="text-white/50 hover:text-white text-sm font-mono p-1 cursor-pointer" title="Close">✕</button>
       </div>
       
       <h2 class="text-xl sm:text-2xl font-bold tracking-tight text-white mb-2">ACCESS DORM DASHBOARD</h2>
@@ -503,17 +528,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       </div>
     </div>
   </div>
-  <script>
-    (function() {
-      try {
-        var p = new URLSearchParams(window.location.search);
-        if (!p.get('code') && !p.get('dorm')) {
-          var m = document.getElementById('code-portal-modal');
-          if (m) m.classList.remove('hidden');
-        }
-      } catch(e) {}
-    })();
-  </script>
 
   <!-- Minimal Monochrome Top Header Bar -->
   <header class="flex flex-wrap items-center justify-between gap-2.5 px-4 py-2.5 rounded-xl panel mb-3 flex-shrink-0">
@@ -546,7 +560,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       </div>
 
       <button 
-        onclick="openPortalModal()" 
+        onclick="openPortalModal(true)" 
         class="px-2.5 py-1 rounded-lg border border-white/30 hover:border-white text-white/80 hover:text-white font-mono text-[11px] transition flex items-center gap-1 cursor-pointer"
         title="Switch to another dorm"
       >
@@ -814,27 +828,44 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     }
 
     // --- Portal Modal (Code Entrance) ---
-    function openPortalModal() {
+    let userOpenedModal = false;
+
+    function openPortalModal(fromUserClick = false) {
+      if (fromUserClick) userOpenedModal = true;
       const modal = document.getElementById('code-portal-modal');
       const closeBtn = document.getElementById('portal-close-btn');
       const input = document.getElementById('portal-code-input');
       if (modal) {
         modal.classList.remove('hidden');
-        if (currentDormData && closeBtn) {
+        if (closeBtn) {
           closeBtn.classList.remove('hidden');
-        } else if (closeBtn) {
-          closeBtn.classList.add('hidden');
         }
         if (input) {
-          input.value = currentDormData ? currentDormData.dorm_code : '';
+          input.value = currentDormData ? currentDormData.dorm_code : (localStorage.getItem('saved_dorm_code') || '');
           setTimeout(() => input.focus(), 150);
         }
       }
     }
 
     function closePortalModal() {
+      userOpenedModal = false;
       const modal = document.getElementById('code-portal-modal');
       if (modal) modal.classList.add('hidden');
+    }
+
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        closePortalModal();
+      }
+    });
+
+    const portalBackdrop = document.getElementById('code-portal-modal');
+    if (portalBackdrop) {
+      portalBackdrop.addEventListener('click', (e) => {
+        if (e.target === portalBackdrop) {
+          closePortalModal();
+        }
+      });
     }
 
     async function submitPortalCode() {
@@ -904,6 +935,33 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             setTimeout(() => { badge.innerText = "COPY 📋"; }, 1500);
           }
         });
+      }
+    }
+
+    // --- Load Default Dorm ---
+    async function loadDefaultDorm() {
+      try {
+        clearCodeError();
+        const res = await fetch('/api/dorms/default');
+        if (!res.ok) {
+          const resDef = await fetch('/api/dorms/code/DEFAULT');
+          if (!resDef.ok) return false;
+          const data = await resDef.json();
+          currentDormData = data;
+          activeDormId = data.dorm_id;
+          if (data.dorm_code) localStorage.setItem('saved_dorm_code', data.dorm_code);
+          applyDormDetails(data);
+          return true;
+        }
+        const data = await res.json();
+        currentDormData = data;
+        activeDormId = data.dorm_id;
+        if (data.dorm_code) localStorage.setItem('saved_dorm_code', data.dorm_code);
+        applyDormDetails(data);
+        return true;
+      } catch (e) {
+        console.error("loadDefaultDorm error:", e);
+        return false;
       }
     }
 
@@ -1128,15 +1186,42 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           // Opened via Telegram bot "Open Dashboard" button: directly load into the dorm's dashboard!
           const loaded = await loadDormByCode(urlCode);
           if (loaded) {
-            closePortalModal();
+            if (!userOpenedModal) closePortalModal();
           } else {
-            openPortalModal();
-            showCodeError(`Dorm code '${urlCode}' not found. Please verify with /code in Telegram.`);
+            // Dorm code in URL not found - try localStorage or default dorm fallback
+            const savedCode = localStorage.getItem('saved_dorm_code');
+            let recovered = false;
+            if (savedCode && savedCode.toUpperCase() !== urlCode.toUpperCase()) {
+              recovered = await loadDormByCode(savedCode);
+            }
+            if (!recovered) {
+              recovered = await loadDefaultDorm();
+            }
+            if (recovered) {
+              if (!userOpenedModal) closePortalModal();
+              showCodeError(`Dorm code '${urlCode}' was not found. Loaded active dorm instead.`);
+            } else {
+              openPortalModal();
+              showCodeError(`Dorm code '${urlCode}' not found. Please verify with /code in Telegram.`);
+            }
           }
         } else {
-          // Opened directly without a code (e.g. visiting https://inspector.app.aletcloud.com/):
-          // Always show the entrance page for dorm mates to insert their dorm code!
-          openPortalModal();
+          // Direct visit without ?code= in URL:
+          // 1. Try previously saved dorm code from localStorage
+          const savedCode = localStorage.getItem('saved_dorm_code');
+          let loaded = false;
+          if (savedCode) {
+            loaded = await loadDormByCode(savedCode);
+          }
+          // 2. If no saved code or loading failed, load the default active dorm
+          if (!loaded) {
+            loaded = await loadDefaultDorm();
+          }
+          if (loaded) {
+            if (!userOpenedModal) closePortalModal();
+          } else {
+            openPortalModal();
+          }
         }
       } catch (err) {
         console.error("Dashboard refresh error:", err);

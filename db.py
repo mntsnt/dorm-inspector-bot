@@ -413,8 +413,8 @@ def _get_dorm_by_code_sync(code: str) -> Optional[Dict[str, Any]]:
         if row:
             return dict(row)
 
-        # 4. Check fallback to default dorm for legacy/common code ("DORM-101", "101", "DEFAULT")
-        if clean in ("DORM-101", "101", "DORM101", "DEFAULT") or compact in ("101", "DEFAULT"):
+        # 4. Check fallback to default dorm for legacy/common code ("DORM-101", "101", "DEFAULT", "ACTIVE", "MAIN")
+        if clean in ("DORM-101", "101", "DORM101", "DEFAULT", "ACTIVE", "MAIN", "PRIMARY") or compact in ("101", "DEFAULT", "ACTIVE", "MAIN", "PRIMARY"):
             default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
             cursor.execute("SELECT * FROM dorms WHERE dorm_id = ?", (default_gid,))
             row = cursor.fetchone()

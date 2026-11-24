@@ -156,6 +156,36 @@ class TestWebStatusDashboard(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(week1["week_number"], 1)
         self.assertTrue(week1["is_current"])
 
+    async def test_default_dorm_api(self):
+        """GET /api/dorms/default returns the active default dorm and subroutes."""
+        res = await self.client.get("/api/dorms/default")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertEqual(data["dorm_id"], config.DEFAULT_GROUP_ID)
+        self.assertIn("dorm_code", data)
+        self.assertIn("current_week", data)
+
+        # Sub-routes for default dorm
+        sched = await self.client.get("/api/dorms/default/schedule")
+        self.assertEqual(sched.status_code, 200)
+        self.assertIsInstance(sched.json(), list)
+
+        fines = await self.client.get("/api/dorms/default/fines")
+        self.assertEqual(fines.status_code, 200)
+        self.assertIsInstance(fines.json(), list)
+
+        lead = await self.client.get("/api/dorms/default/leaderboard")
+        self.assertEqual(lead.status_code, 200)
+        self.assertIsInstance(lead.json(), list)
+
+    async def test_dashboard_html_has_fallback_logic(self):
+        """Verify dashboard frontend contains loadDefaultDorm and no blocking inline modal script."""
+        resp = await self.client.get("/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("loadDefaultDorm", resp.text)
+        self.assertIn("saved_dorm_code", resp.text)
+        self.assertNotIn("if (!p.get('code') && !p.get('dorm'))", resp.text)
+
     async def test_dorm_detail_not_found(self):
         """GET /api/dorms/{invalid_id} returns 404."""
         response = await self.client.get("/api/dorms/-999999999999")
