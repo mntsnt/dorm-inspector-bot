@@ -122,75 +122,83 @@ async def build_dorm_context(dorm_id: int, user_id: Optional[int] = None) -> str
                 upcoming_lines.append(f"Week {fw.week_number} ({fw.monday_date.strftime('%b %d')}): {fw.cleaner1_name} & {fw.cleaner2_name}")
     upcoming_str = "; ".join(upcoming_lines) if upcoming_lines else "Schedule starting soon"
 
-    # Resolve speaking user's role context
+    # Resolve speaking user's role context and behavioral memory
     user_context = ""
     if user_id:
         user_name = members_by_id.get(user_id, "Roommate")
         dorm_admin_id = dorm.get("admin_id") if dorm else getattr(config, "ADMIN_ID", 0)
         is_admin = (user_id == dorm_admin_id or user_id == getattr(config, "ADMIN_ID", 0))
 
+        # Retrieve recent user topics/interactions to understand roommate habits and behavior
+        behavior_notes = ""
+        try:
+            user_past_msgs = await db.get_user_recent_chat_history(user_id, limit=4)
+            recent_user_topics = [
+                m["content"].strip() for m in user_past_msgs if m.get("content") and len(m["content"].strip()) < 80
+            ]
+            if recent_user_topics:
+                behavior_notes = (
+                    f"\nRecent topics from {user_name}: " + " | ".join(f'"{t}"' for t in recent_user_topics) + "\n"
+                    f"Behavior Memory: You remember {user_name}'s past conversations and habits. Feel free to reference past topics naturally like a friend who knows them well."
+                )
+        except Exception:
+            pass
+
         if week_info and week_info.week_number >= 1:
-            c1_id = week_info.cleaner1_id
-            c2_id = week_info.cleaner2_id
+            cleaner_ids = week_info.cleaner_ids
             app_id = record.get("approver_id") if record else None
 
-            if user_id == c1_id:
+            if user_id in cleaner_ids:
+                other_cleaners = [name for uid, name in zip(cleaner_ids, week_info.cleaner_names) if uid != user_id]
+                partner_str = ", ".join(other_cleaners) if other_cleaners else "solo"
                 user_context = (
-                    f"\n=== SPEAKING USER'S ROLE THIS WEEK ===\n"
+                    f"\n=== SPEAKING USER CONTEXT ===\n"
                     f"User: {user_name} (ID: {user_id})\n"
                     f"Role: CLEANER ON DUTY\n"
-                    f"Partner: {c2}\n"
-                    f"Duty Status: YOU ARE ON CLEANING DUTY THIS WEEK with {c2}. Deadline is Friday 8:00 PM. Submit photo proof before deadline.\n"
+                    f"Partner: {partner_str}\n"
+                    f"Duty Status: YOU ARE ON CLEANING DUTY THIS WEEK with {partner_str}. Deadline is Friday 8:00 PM. Photo proof required.\n"
                     f"Admin Status: {'Yes (Dorm Admin)' if is_admin else 'No'}\n"
-                    f"Instruction: Remind them to complete cleaning with their partner {c2} and submit proof before Friday 8:00 PM."
-                )
-            elif user_id == c2_id:
-                user_context = (
-                    f"\n=== SPEAKING USER'S ROLE THIS WEEK ===\n"
-                    f"User: {user_name} (ID: {user_id})\n"
-                    f"Role: CLEANER ON DUTY\n"
-                    f"Partner: {c1}\n"
-                    f"Duty Status: YOU ARE ON CLEANING DUTY THIS WEEK with {c1}. Deadline is Friday 8:00 PM. Submit photo proof before deadline.\n"
-                    f"Admin Status: {'Yes (Dorm Admin)' if is_admin else 'No'}\n"
-                    f"Instruction: Remind them to complete cleaning with their partner {c1} and submit proof before Friday 8:00 PM."
+                    f"Guideline: If user asks about their cleaning duty or schedule, answer accurately. "
+                    f"If user asks general questions or wants to chat (cooking, study, tech, jokes, campus life), answer helpfully with a wide perspective as a friendly dorm mate.{behavior_notes}"
                 )
             elif app_id and user_id == app_id:
                 user_context = (
-                    f"\n=== SPEAKING USER'S ROLE THIS WEEK ===\n"
+                    f"\n=== SPEAKING USER CONTEXT ===\n"
                     f"User: {user_name} (ID: {user_id})\n"
                     f"Role: APPROVER (INSPECTOR)\n"
-                    f"Duty Status: YOU DO NOT CLEAN THE ROOM! You are the designated approver. Your job is to inspect and rate {c1} & {c2}'s cleaning once photos are submitted.\n"
+                    f"Duty Status: YOU DO NOT CLEAN THE ROOM! You are the designated approver. Your job is to inspect and rate {week_info.cleaner_display}'s cleaning on Friday.\n"
                     f"Admin Status: {'Yes (Dorm Admin)' if is_admin else 'No'}\n"
-                    f"Instruction: NEVER tell this user to clean. Remind them to inspect and rate."
+                    f"Guideline: Never tell this user to clean. If they ask general questions, chat warmly with a wide perspective as a friendly mentor.{behavior_notes}"
                 )
             elif user_id in members_by_id or config.is_member(user_id):
                 user_context = (
-                    f"\n=== SPEAKING USER'S ROLE THIS WEEK ===\n"
+                    f"\n=== SPEAKING USER CONTEXT ===\n"
                     f"User: {user_name} (ID: {user_id})\n"
                     f"Role: OFF-DUTY ROOMMATE\n"
-                    f"Duty Status: OFF DUTY. You do NOT have cleaning duty this week! Cleaners on duty are {c1} & {c2}.\n"
+                    f"Duty Status: OFF DUTY. You do NOT have cleaning duty this week! Cleaners on duty are {week_info.cleaner_display}.\n"
                     f"Admin Status: {'Yes (Dorm Admin)' if is_admin else 'No'}\n"
-                    f"Instruction: NEVER tell this user to clean. Acknowledge they are off duty this week."
+                    f"Guideline: If user asks whether they clean, confirm they are off duty. "
+                    f"If user asks general questions or wants to chat (advice, cooking, campus, humor, study), answer thoroughly and warmly with a wide perspective as a friend.{behavior_notes}"
                 )
             elif is_admin:
                 user_context = (
-                    f"\n=== SPEAKING USER'S ROLE THIS WEEK ===\n"
+                    f"\n=== SPEAKING USER CONTEXT ===\n"
                     f"User: {user_name} (ID: {user_id})\n"
                     f"Role: DORM ADMIN\n"
-                    f"Duty Status: Managing the dorm cleaning schedule.\n"
-                    f"Instruction: Treat as dorm manager."
+                    f"Duty Status: Dorm manager.\n"
+                    f"Guideline: Treat as dorm manager and helpful friend.{behavior_notes}"
                 )
         elif is_admin:
             user_context = (
-                f"\n=== SPEAKING USER'S ROLE THIS WEEK ===\n"
+                f"\n=== SPEAKING USER CONTEXT ===\n"
                 f"User: {user_name} (ID: {user_id})\n"
                 f"Role: DORM ADMIN\n"
                 f"Duty Status: Managing dorm.\n"
-                f"Instruction: Treat as dorm manager."
+                f"Guideline: Treat as dorm manager and helpful friend.{behavior_notes}"
             )
 
     dorm_code = dorm.get("dorm_code") or "DORM-101" if dorm else "DORM-101"
-    dash_url = f"{getattr(config, 'DASHBOARD_URL', 'https://inspector.app.aletcloud.com')}?code={dorm_code}"
+    dash_url = f"{getattr(config, 'DASHBOARD_URL', 'https://dorm-inspector-bot-1.app.aletcloud.com')}?code={dorm_code}"
 
     return (
         f"Dorm: {d_name}\n"
@@ -201,7 +209,7 @@ async def build_dorm_context(dorm_id: int, user_id: Optional[int] = None) -> str
         f"Current Week: {week_str}\n"
         f"Current Duty: {duty_str}\n"
         f"Upcoming Weeks: {upcoming_str}\n"
-        f"Fine Amount: {fine_amt} ETB per missed week (split 50/50 between cleaners)\n"
+        f"Fine Amount: {fine_amt} ETB per missed week (split between cleaners)\n"
         f"Tsidat Tokens Leaderboard: {lb_str}\n"
         f"Unpaid Fines: {fines_str}\n"
         f"Rules: Duty announced Monday 8:00 AM. Deadline Friday 8:00 PM. Photo proof required. "
@@ -246,20 +254,18 @@ def sanitize_ai_response(text: str) -> str:
     return cleaned.strip()
 
 SYSTEM_PROMPT = (
-    "You are The Inspector, the university dorm inspector.\n"
-    "You are a real human writing a message in a Telegram dorm group chat or private DM. You are NOT an AI, bot, or virtual assistant.\n\n"
-    "STRICT RULES:\n"
-    "1. NO EMOJIS: Never use any emojis under any circumstances. Zero emojis allowed.\n"
-    "2. HUMAN-LIKE AND NATURAL: Write normally like a real person sending a message. No bot greetings, bullet points, headers, or corporate phrasing.\n"
-    "3. NO MULTIPLE SYMBOLS: Never repeat punctuation marks (no '!!', '???', '...'). Do not use asterisks, bold tags, or markdown styling.\n"
-    "4. STRICT BREVITY: Answer in 1 or 2 short sentences only (under 25 words). Never write multiple lines or paragraphs.\n"
-    "5. ROLE-AWARE CONTEXT (CRITICAL):\n"
-    "- If the speaking user is a CLEANER on duty: Remind them of their cleaning duty and Friday 8:00 PM deadline, or answer their questions about duty/swap/fines.\n"
-    "- If the speaking user is the APPROVER: Acknowledge they are the approver/inspector this week. They DO NOT clean! Never tell an approver to clean.\n"
-    "- If the speaking user is an OFF-DUTY ROOMMATE: Acknowledge they are off-duty while the assigned cleaners clean. Never tell an off-duty roommate to clean the room!\n"
-    "- If the speaking user asks 'am I cleaning?' or 'is it my turn?': Clearly answer yes or no based on their role.\n"
-    "6. BUSY INSPECTOR TONE: You are on rounds. You speak directly, bluntly, and with dry wit.\n"
-    "7. ACCURATE FACTS: Use the dorm context accurately for names, duty, tokens, and fines."
+    "You are The Inspector, a sharp, witty, and genuinely friendly university dorm inspector and roommate mentor.\n"
+    "You chat directly with students in their dorm Telegram group and private DMs. You are like a wise, clever friend living with them.\n\n"
+    "CORE GUIDELINES:\n"
+    "1. WIDE PERSPECTIVE & FRIENDSHIP: You can chat about ANYTHING! Answer any questions dorm mates ask: university life, study advice, exams, cooking & food, coding, science, movies, music, personal advice, jokes, or casual everyday banter. Be a supportive, engaging friend.\n"
+    "2. KNOW ROOMMATE BEHAVIORS & HABITS: Pay close attention to each roommate's behavior, personality, habits, and recurring topics from the conversation history. Treat them as someone you genuinely know: remember what they mentioned before (e.g. exams, habits, jokes, cooking, study hours, cleaning style) and build natural rapport as a caring, observant friend.\n"
+    "3. CONVERSATIONAL VARIETY: NEVER repeat the same canned responses or formulas. Vary your greetings, style, and tone so conversations feel alive and natural.\n"
+    "4. DUTY ROLE CONTEXT (WHEN RELEVANT): You have live dorm facts (who is cleaning, approver, fines, tokens) in the context below.\n"
+    "   - When a user asks about cleaning, duty schedule, fines, swapping, or who cleans: give them accurate facts based on their role.\n"
+    "   - When a user asks a general or unrelated question: ANSWER THEIR QUESTION DIRECTLY! Do NOT constantly tell them 'you are on duty' or 'you are off duty' when they're asking about something else. Only bring up duty when relevant.\n"
+    "5. CLEAN & NATURAL STYLE: Write like a real person typing on Telegram. No robotic disclaimers ('As an AI...'), no bulleted corporate reports, no markdown clutter. Zero emojis or at most one natural emoji. Avoid multiple exclamation marks or question marks.\n"
+    "6. PUNCHY & COMPLETE: Keep replies concise and natural (typically 1 to 4 sentences). Give full, useful answers without rambling.\n"
+    "7. MULTI-TURN MEMORY: You remember previous messages in the chat history. Refer back to earlier context naturally when students follow up."
 )
 
 def extract_gemini_text(data: Any) -> str:
@@ -318,11 +324,13 @@ def fallback_inspector_reply(
     user_prompt: str,
     dorm_context: str,
     user_id: Optional[int] = None,
-    user_name: str = "Roommate"
+    user_name: str = "Roommate",
+    history: Optional[List[Dict[str, Any]]] = None
 ) -> str:
     """
     Intelligent, zero-breakage in-character fallback response based on live dorm context and user role.
     Guarantees the bot always answers accurately without emojis or ugly tracebacks.
+    Acts as a wise, friendly dorm mate who can chat about anything while maintaining accurate dorm duty facts.
     """
     p_lower = user_prompt.lower()
 
@@ -340,33 +348,38 @@ def fallback_inspector_reply(
     user_role = context_lines.get("Role", "UNKNOWN")
     partner = context_lines.get("Partner", "")
     dorm_code = context_lines.get("Dorm Code", "DORM-101")
-    website = context_lines.get("Website", f"{getattr(config, 'DASHBOARD_URL', 'https://inspector.app.aletcloud.com')}?code={dorm_code}")
+    website = context_lines.get("Website", f"{getattr(config, 'DASHBOARD_URL', 'https://dorm-inspector-bot-1.app.aletcloud.com')}?code={dorm_code}")
 
     # Extract cleaner names from Current Duty line if available
     c1 = "Cleaner 1"
     c2 = "Cleaner 2"
+    cleaners_display = "Bilisuma & Nahom"
     if "Cleaners:" in current_duty:
         try:
             cleaners_part = current_duty.split("Cleaners:")[1].split("|")[0].strip()
+            cleaners_display = cleaners_part
             if "&" in cleaners_part:
-                c1, c2 = [c.strip() for c in cleaners_part.split("&", 1)]
+                c_names = [c.strip() for c in cleaners_part.split("&")]
+                c1 = c_names[0]
+                c2 = c_names[1] if len(c_names) > 1 else ""
         except Exception:
             pass
 
     # 1. Question about user's own cleaning duty ("am i cleaning", "is it my turn", "do i have duty", etc.)
     if any(q in p_lower for q in (
         "am i cleaning", "is it my turn", "do i have duty", "my duty", "am i on duty",
-        "do i clean", "am i supposed to clean", "is it me", "should i clean"
+        "do i clean", "am i supposed to clean", "is it me", "should i clean", "am i free"
     )):
+        name_str = f" {user_name}" if user_name and user_name != "Roommate" else ""
         if user_role == "CLEANER ON DUTY":
             p_text = f" with {partner}" if partner else ""
-            return f"Yes, you are on cleaning duty{p_text} this week. Submit photo proof before Friday 8:00 PM."
+            return f"Yes{name_str}, you are on cleaning duty{p_text} this week. Submit photo proof before Friday 8:00 PM."
         elif user_role == "APPROVER (INSPECTOR)":
-            return "No, you are the approver this week, not a cleaner. Your job is to inspect and rate."
+            return f"No{name_str}, you are the approver this week, not a cleaner. Your job is to inspect and rate."
         elif user_role == "OFF-DUTY ROOMMATE":
-            return f"No, you are off duty this week. {c1} and {c2} are cleaning."
+            return f"No{name_str}, you are off duty this week. {cleaners_display} are cleaning."
         elif user_role == "DORM ADMIN":
-            return "You are the dorm admin. You are off duty from cleaning this week."
+            return f"You are the dorm admin{name_str}. You are off duty from cleaning this week."
         elif current_duty:
             return f"{current_duty}. Deadline is Friday 8:00 PM."
 
@@ -385,12 +398,12 @@ def fallback_inspector_reply(
             p_text = f"with {partner} " if partner else ""
             return f"You are cleaning {p_text}this week. Submit proof before Friday 8:00 PM."
         elif user_role == "APPROVER (INSPECTOR)":
-            return f"{c1} and {c2} are cleaning this week. You are the approver inspecting their work."
+            return f"{cleaners_display.replace('&', 'and')} are cleaning this week. You are the approver inspecting their work."
         elif user_role == "OFF-DUTY ROOMMATE":
-            return f"{c1} and {c2} are cleaning this week. You are off duty."
+            return f"{cleaners_display.replace('&', 'and')} are cleaning this week. You are off duty."
         if current_duty:
-            return f"{current_duty}. Deadline is Friday 8:00 PM."
-        return "Duty starts Monday 8:00 AM. Check the schedule before Friday 8:00 PM."
+            return f"{cleaners_display} are cleaning this week. Deadline is Friday 8:00 PM."
+        return f"{cleaners_display} are cleaning this week. Deadline is Friday 8:00 PM."
 
     # 4. Question about fines
     if "fine" in p_lower or "penalty" in p_lower or "debt" in p_lower:
@@ -418,21 +431,75 @@ def fallback_inspector_reply(
     if any(k in p_lower for k in ("code", "website", "dashboard", "site", "link", "url", "portal")):
         return f"Dorm code is {dorm_code}. View live status at {website}."
 
-    # 10. General / greeting / fallback based on user role
-    if user_role == "CLEANER ON DUTY":
-        p_text = f" with {partner}" if partner else ""
-        return f"You are on duty{p_text} this week. Make sure proof is submitted before Friday 8:00 PM."
-    elif user_role == "APPROVER (INSPECTOR)":
-        return "You are the approver this week. Submit your rating once the cleaners upload photos."
-    elif user_role == "OFF-DUTY ROOMMATE":
-        return f"You are off duty this week. Enjoy your week while {c1} and {c2} handle cleaning."
-    elif user_role == "DORM ADMIN":
-        return "Inspection system is active. All dorm records are up to date."
+    # 10. Greetings & Casual Banter (Friendly Roommate Chat)
+    if any(w in p_lower for w in ("hello", "hi", "hey", "sup", "yo", "morning", "evening", "what's up", "wassup")):
+        if "inspector" in p_lower:
+            if user_role == "CLEANER ON DUTY":
+                p_text = f" with {partner}" if partner else ""
+                return f"You are on duty{p_text} this week. Make sure proof is submitted before Friday 8:00 PM."
+            elif user_role == "APPROVER (INSPECTOR)":
+                return "You are the approver this week. Submit your rating once the cleaners upload photos."
+            elif user_role == "OFF-DUTY ROOMMATE":
+                return f"You are off duty this week. Enjoy your week while {c1} and {c2} handle cleaning."
 
-    return "I am on rounds. Check the schedule for your assigned cleaning week."
+        greetings = [
+            f"Hey {user_name}! Doing my dorm rounds, what's on your mind?",
+            f"Yo {user_name}! Inspector here, everything good with you?",
+            f"Hey there {user_name}! Always good to see you. What's up?",
+            f"Greetings {user_name}! Hope your week is going great. How can I help?"
+        ]
+        idx = (sum(ord(c) for c in user_name) + len(user_prompt)) % len(greetings)
+        return greetings[idx]
 
-async def query_gemini(api_key: str, user_prompt: str, dorm_context: str, user_name: str) -> str:
-    """Send question to Google Gemini API using Interactions API with fallback to generateContent."""
+    # 11. "How are you" / "What are you doing"
+    if any(w in p_lower for w in ("how are you", "how are u", "what are you doing", "what r u doing", "how's it going", "how is it going")):
+        check_ins = [
+            f"Doing great {user_name}! Keeping the dorm organized and catching up with the crew. How about you?",
+            f"All good on dorm rounds {user_name}! Ready to help with whatever you need. What's on your mind?"
+        ]
+        return check_ins[len(user_prompt) % len(check_ins)]
+
+    # 12. Jokes & Humor
+    if any(w in p_lower for w in ("joke", "funny", "laugh", "humor")):
+        jokes = [
+            "Why did the dorm broom get promoted? Because it swept the competition.",
+            "Dorm life rule number one: If you can't find a clean plate, a frisbee is officially dinnerware.",
+            "There are two types of roommates: those who clean, and those who consider a clean cup a luxury."
+        ]
+        return jokes[len(user_prompt) % len(jokes)]
+
+    # 13. Food & Cooking
+    if any(w in p_lower for w in ("food", "eat", "cook", "hungry", "dinner", "lunch", "breakfast", "recipe", "pasta")):
+        return "For a quick dorm meal, stir-fry noodles, eggs with toast, or pasta with garlic and butter never disappoints! What ingredients do you have in the dorm?"
+
+    # 14. Studying & Exams
+    if any(w in p_lower for w in ("study", "exam", "test", "quiz", "homework", "class", "assignment")):
+        return "Pro tip for dorm studying: try 25-minute Pomodoro focus blocks and put your phone in another room. You'll crush it!"
+
+    # 15. Thanks & Appreciation
+    if any(w in p_lower for w in ("thank", "thanks", "thx", "appreciate", "good job", "cool")):
+        return f"Anytime {user_name}! Always here for the dorm crew."
+
+    # 16. Multi-turn context awareness (if asking about previous turns)
+    if history and any(w in p_lower for w in ("earlier", "before", "you said", "repeat", "what did")):
+        last_asst = next((h["content"] for h in reversed(history) if h.get("role") == "assistant"), None)
+        if last_asst:
+            return f"Earlier we were talking about: {last_asst[:120]}"
+
+    # 17. General friendly conversation fallback
+    return (
+        f"I'm here for you {user_name}! Always ready to chat about campus life, study tips, or dorm questions. "
+        "What's on your mind?"
+    )
+
+async def query_gemini(
+    api_key: str,
+    user_prompt: str,
+    dorm_context: str,
+    user_name: str,
+    history: Optional[List[Dict[str, Any]]] = None
+) -> str:
+    """Send question to Google Gemini API with conversational memory and wide perspective."""
     clean_key = api_key.strip().strip('"').strip("'").replace(" ", "").replace("\r", "").replace("\n", "")
 
     headers = {
@@ -440,13 +507,57 @@ async def query_gemini(api_key: str, user_prompt: str, dorm_context: str, user_n
         "x-goog-api-key": clean_key,
     }
 
-    prompt_text = (
+    # Format multi-turn conversation memory for prompt context
+    history_str = ""
+    if history:
+        hist_lines = []
+        for h in history[-8:]:
+            speaker = h.get("user_name") or ("The Inspector" if h.get("role") == "assistant" else "Roommate")
+            c_text = h.get("content", "").strip()
+            if c_text:
+                hist_lines.append(f"{speaker}: {c_text}")
+        if hist_lines:
+            history_str = "\n=== RECENT CONVERSATION HISTORY & BEHAVIOR ===\n" + "\n".join(hist_lines) + "\n=============================================\n\n"
+
+    full_system_context = (
         f"{SYSTEM_PROMPT}\n\n"
         f"=== LIVE DORM CONTEXT ===\n"
         f"{dorm_context}\n"
-        f"=========================\n\n"
+        f"========================="
+    )
+
+    prompt_text = (
+        f"{full_system_context}\n\n"
+        f"{history_str}"
         f"Roommate '{user_name}' asks: {user_prompt}"
     )
+
+    # Format structured multi-turn contents array for generateContent API
+    multi_turn_contents: List[Dict[str, Any]] = []
+    if history:
+        last_role = None
+        for h in history[-8:]:
+            role = "user" if h.get("role") == "user" else "model"
+            txt = h.get("content", "").strip()
+            if not txt:
+                continue
+            if role == "user" and h.get("user_name"):
+                txt = f"{h['user_name']}: {txt}"
+            if role == last_role and multi_turn_contents:
+                multi_turn_contents[-1]["parts"][0]["text"] += f"\n{txt}"
+            else:
+                multi_turn_contents.append({"role": role, "parts": [{"text": txt}]})
+                last_role = role
+
+        # Ensure first turn is from user as required by Gemini specification
+        if multi_turn_contents and multi_turn_contents[0]["role"] != "user":
+            multi_turn_contents.pop(0)
+
+    curr_user_text = f"{user_name}: {user_prompt}" if user_name else user_prompt
+    if multi_turn_contents and multi_turn_contents[-1]["role"] == "user":
+        multi_turn_contents[-1]["parts"][0]["text"] += f"\n{curr_user_text}"
+    else:
+        multi_turn_contents.append({"role": "user", "parts": [{"text": curr_user_text}]})
 
     interactions_models = [
         "gemini-3.8-flash",
@@ -456,12 +567,11 @@ async def query_gemini(api_key: str, user_prompt: str, dorm_context: str, user_n
     ]
 
     generate_models = [
+        "gemini-2.5-flash",
         "gemini-2.0-flash",
         "gemini-1.5-flash",
-        "gemini-2.5-flash",
-        "gemini-3.5-flash",
-        "gemini-3.5-flash-lite",
         "gemini-3.8-flash",
+        "gemini-3.5-flash",
     ]
 
     last_resp = None
@@ -502,22 +612,39 @@ async def query_gemini(api_key: str, user_prompt: str, dorm_context: str, user_n
                 logger.warning("Attempt with Interactions model %s failed: %s", model, e)
 
         # 2. Fallback: Google generateContent API (POST /v1beta/models/{model}:generateContent)
-        # Omit temperature to prevent HTTP 400 validation errors on Gemini 3.x / thinking models
-        generate_payload = {
-            "contents": [{"parts": [{"text": prompt_text}]}],
-            "generationConfig": {
-                "maxOutputTokens": 80,
-            },
-        }
-
         for model in generate_models:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={clean_key}"
+            # Primary payload with system_instruction and structured multi-turn conversation
+            generate_payload = {
+                "system_instruction": {
+                    "parts": [{"text": full_system_context}]
+                },
+                "contents": multi_turn_contents,
+                "generationConfig": {
+                    "maxOutputTokens": 350,
+                },
+            }
             try:
                 resp = await client.post(url, headers=headers, json=generate_payload)
                 if resp.status_code == 200:
                     text = extract_gemini_text(resp.json())
                     if text:
                         return text
+
+                # If system_instruction is not supported by endpoint, retry with flat prompt_text
+                if resp.status_code == 400:
+                    flat_payload = {
+                        "contents": [{"parts": [{"text": prompt_text}]}],
+                        "generationConfig": {
+                            "maxOutputTokens": 350,
+                        },
+                    }
+                    resp_flat = await client.post(url, headers=headers, json=flat_payload)
+                    if resp_flat.status_code == 200:
+                        text = extract_gemini_text(resp_flat.json())
+                        if text:
+                            return text
+
                 last_resp = resp
                 err_text = ""
                 try:
@@ -538,22 +665,39 @@ async def query_gemini(api_key: str, user_prompt: str, dorm_context: str, user_n
 
     return ""
 
-async def query_openai(api_key: str, user_prompt: str, dorm_context: str, user_name: str) -> str:
-    """Send question to OpenAI API (gpt-4o-mini)."""
+async def query_openai(
+    api_key: str,
+    user_prompt: str,
+    dorm_context: str,
+    user_name: str,
+    history: Optional[List[Dict[str, Any]]] = None
+) -> str:
+    """Send question to OpenAI API (gpt-4o-mini) with conversation history."""
     url = "https://api.openai.com/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
     }
     system_content = f"{SYSTEM_PROMPT}\n\n=== LIVE DORM CONTEXT ===\n{dorm_context}"
+    messages: List[Dict[str, Any]] = [{"role": "system", "content": system_content}]
+
+    if history:
+        for h in history[-8:]:
+            role = "user" if h.get("role") == "user" else "assistant"
+            txt = h.get("content", "").strip()
+            if not txt:
+                continue
+            if role == "user" and h.get("user_name"):
+                txt = f"{h['user_name']}: {txt}"
+            messages.append({"role": role, "content": txt})
+
+    messages.append({"role": "user", "content": f"{user_name}: {user_prompt}"})
+
     payload = {
         "model": "gpt-4o-mini",
-        "messages": [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": f"{user_name} asks: {user_prompt}"}
-        ],
-        "max_tokens": 60,
-        "temperature": 0.7
+        "messages": messages,
+        "max_tokens": 250,
+        "temperature": 0.75
     }
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.post(url, headers=headers, json=payload)
@@ -564,27 +708,42 @@ async def query_openai(api_key: str, user_prompt: str, dorm_context: str, user_n
             return choices[0]["message"]["content"].strip()
     return ""
 
-async def ask_ai(user_prompt: str, dorm_id: int, user_name: str = "Roommate", user_id: Optional[int] = None) -> str:
+async def ask_ai(
+    user_prompt: str,
+    dorm_id: int,
+    user_name: str = "Roommate",
+    user_id: Optional[int] = None,
+    chat_id: Optional[int] = None
+) -> str:
     """
-    Main entry point to query the AI assistant with live dorm context and user role.
+    Main entry point to query the AI assistant with live dorm context, behavioral memory, and user role.
+    Remembers previous conversation history per chat and records roommate interactions.
     Enforces strict multi-tenant isolation and resilient zero-breakage fallbacks:
     - Checks if the dorm has its own configured API key in the database.
     - Falls back to .env key for the primary/default dorm.
     - If key is missing or API call fails, provides accurate in-character response from live DB context.
     """
     default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+    target_chat_id = chat_id if chat_id is not None else dorm_id
 
-    # 1. Fetch this specific dorm's configured API key
+    # 1. Fetch conversational history memory for this specific chat
+    history: List[Dict[str, Any]] = []
+    try:
+        history = await db.get_recent_ai_chat_history(target_chat_id, limit=8)
+    except Exception as e:
+        logger.warning("Could not retrieve AI chat history: %s", e)
+
+    # 2. Fetch this specific dorm's configured API key
     key = await db.get_dorm_ai_key(dorm_id)
 
-    # 2. Only fallback to .env key for the primary/default dorm (protects admin quota)
+    # 3. Only fallback to .env key for the primary/default dorm (protects admin quota)
     is_primary_dorm = dorm_id in (default_gid, getattr(config, "GROUP_ID", 0), 0)
     if not key and is_primary_dorm:
         key = get_api_key()
 
     dorm_context = await build_dorm_context(dorm_id, user_id=user_id)
 
-    # 3. If no key is configured:
+    # 4. If no key is configured:
     # - Secondary dorms are instructed to configure their own key (strict isolation)
     # - Primary dorm falls back to accurate in-character live DB context
     if not key:
@@ -596,25 +755,42 @@ async def ask_ai(user_prompt: str, dorm_id: int, user_name: str = "Roommate", us
                 "2. Send /set_ai_key <your_api_key> in this chat or in private DM with the bot."
             )
         logger.info("No AI key configured for primary dorm %s, using live context fallback.", dorm_id)
-        return fallback_inspector_reply(user_prompt, dorm_context, user_id=user_id, user_name=user_name)
+        reply = fallback_inspector_reply(user_prompt, dorm_context, user_id=user_id, user_name=user_name, history=history)
+        try:
+            await db.add_ai_chat_message(dorm_id, target_chat_id, user_id or 0, user_name, "user", user_prompt)
+            await db.add_ai_chat_message(dorm_id, target_chat_id, 0, "The Inspector", "assistant", reply)
+        except Exception:
+            pass
+        return reply
 
     provider = "openai" if key.startswith("sk-") else "gemini"
 
+    final_reply = ""
     try:
         if provider == "gemini":
-            raw_result = await query_gemini(key, user_prompt, dorm_context, user_name)
+            raw_result = await query_gemini(key, user_prompt, dorm_context, user_name, history=history)
         else:
-            raw_result = await query_openai(key, user_prompt, dorm_context, user_name)
+            raw_result = await query_openai(key, user_prompt, dorm_context, user_name, history=history)
 
         if raw_result and raw_result.strip():
-            return sanitize_ai_response(raw_result)
-        return fallback_inspector_reply(user_prompt, dorm_context, user_id=user_id, user_name=user_name)
+            final_reply = sanitize_ai_response(raw_result)
+        else:
+            final_reply = fallback_inspector_reply(user_prompt, dorm_context, user_id=user_id, user_name=user_name, history=history)
     except httpx.HTTPStatusError as e:
         logger.warning("AI API HTTP error: %s - %s", e.response.status_code, e.response.text[:200])
-        return fallback_inspector_reply(user_prompt, dorm_context, user_id=user_id, user_name=user_name)
+        final_reply = fallback_inspector_reply(user_prompt, dorm_context, user_id=user_id, user_name=user_name, history=history)
     except Exception as e:
         logger.warning("AI API call error: %s", e)
-        return fallback_inspector_reply(user_prompt, dorm_context, user_id=user_id, user_name=user_name)
+        final_reply = fallback_inspector_reply(user_prompt, dorm_context, user_id=user_id, user_name=user_name, history=history)
+
+    # Persist interaction into chat history memory for future turns
+    try:
+        await db.add_ai_chat_message(dorm_id, target_chat_id, user_id or 0, user_name, "user", user_prompt)
+        await db.add_ai_chat_message(dorm_id, target_chat_id, 0, "The Inspector", "assistant", final_reply)
+    except Exception as e:
+        logger.warning("Could not persist AI chat history: %s", e)
+
+    return final_reply
 
 async def generate_dorm_roast(dorm_id: int) -> str:
     """Generate a witty, harmless, and hilarious university dorm roast & awards ceremony."""

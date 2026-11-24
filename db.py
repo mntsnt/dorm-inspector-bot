@@ -274,6 +274,22 @@ def _init_db_sync(db_path: Optional[Path] = None) -> None:
             );
         """)
 
+        # 9. AI Chat History Table (Conversational memory across group and private chats)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS ai_chat_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dorm_id INTEGER NOT NULL,
+                chat_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                user_name TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_ai_history_chat ON ai_chat_history(chat_id, id);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_ai_history_dorm ON ai_chat_history(dorm_id, id);")
+
         conn.commit()
     logger.info("Database schema initialized and verified successfully at %s", target_path)
 
@@ -1659,3 +1675,90 @@ def _decline_swap_sync(swap_id: int) -> bool:
 
 async def decline_swap(swap_id: int) -> bool:
     return await asyncio.to_thread(_decline_swap_sync, swap_id)
+
+# ---------------------------------------------------------------------------
+# AI Chat History & Conversational Memory Operations
+# ---------------------------------------------------------------------------
+def _add_ai_chat_message_sync(
+    dorm_id: int,
+    chat_id: int,
+    user_id: int,
+    user_name: str,
+    role: str,
+    content: str
+) -> None:
+    """Insert a chat message into history and prune old messages past retention limit."""
+    with _get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO ai_chat_history (dorm_id, chat_id, user_id, user_name, role, content)
+            VALUES (?, ?, ?, ?, ?, ?);
+        """, (dorm_id, chat_id, user_id, user_name, role, content.strip()))
+
+        # Keep history per chat lean (max 40 messages, prune oldest)
+        cursor.execute("SELECT COUNT(*) as cnt FROM ai_chat_history WHERE chat_id = ?", (chat_id,))
+        row = cursor.fetchone()
+        if row and row["cnt"] > 40:
+            cursor.execute("""
+                DELETE FROM ai_chat_history WHERE id IN (
+                    SELECT id FROM ai_chat_history WHERE chat_id = ? ORDER BY id ASC LIMIT ?
+                )
+            """, (chat_id, row["cnt"] - 30))
+        conn.commit()
+
+async def add_ai_chat_message(
+    dorm_id: int,
+    chat_id: int,
+    user_id: int,
+    user_name: str,
+    role: str,
+    content: str
+) -> None:
+    await asyncio.to_thread(_add_ai_chat_message_sync, dorm_id, chat_id, user_id, user_name, role, content)
+
+def _get_recent_ai_chat_history_sync(chat_id: int, limit: int = 8) -> List[Dict[str, Any]]:
+    """Retrieve recent chat history for a chat in chronological order (oldest to newest)."""
+    with _get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, dorm_id, chat_id, user_id, user_name, role, content, created_at
+            FROM ai_chat_history
+            WHERE chat_id = ?
+            ORDER BY id DESC
+            LIMIT ?
+        """, (chat_id, limit))
+        rows = cursor.fetchall()
+        # Return in ascending chronological order
+        return [dict(r) for r in reversed(rows)]
+
+async def get_recent_ai_chat_history(chat_id: int, limit: int = 8) -> List[Dict[str, Any]]:
+    return await asyncio.to_thread(_get_recent_ai_chat_history_sync, chat_id, limit)
+
+def _clear_ai_chat_history_sync(chat_id: int) -> int:
+    """Clear conversational memory for a specific chat."""
+    with _get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM ai_chat_history WHERE chat_id = ?", (chat_id,))
+        conn.commit()
+        return cursor.rowcount
+
+async def clear_ai_chat_history(chat_id: int) -> int:
+    return await asyncio.to_thread(_clear_ai_chat_history_sync, chat_id)
+
+def _get_user_recent_chat_history_sync(user_id: int, limit: int = 5) -> List[Dict[str, Any]]:
+    """Retrieve recent queries and topics from a specific user across dorm interactions."""
+    with _get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, dorm_id, chat_id, user_name, content, created_at
+            FROM ai_chat_history
+            WHERE user_id = ? AND role = 'user'
+            ORDER BY id DESC
+            LIMIT ?
+        """, (user_id, limit))
+        rows = cursor.fetchall()
+        return [dict(r) for r in reversed(rows)]
+
+async def get_user_recent_chat_history(user_id: int, limit: int = 5) -> List[Dict[str, Any]]:
+    return await asyncio.to_thread(_get_user_recent_chat_history_sync, user_id, limit)
+

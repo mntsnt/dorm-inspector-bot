@@ -52,6 +52,10 @@ async def handle_ai_mention(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         # In private chat, only respond if registered in a dorm or config
         user_dorms = await db.get_user_dorms(user.id)
         if not user_dorms and not config.is_member(user.id) and user.id != getattr(config, "ADMIN_ID", 6163528558):
+            await message.reply_text(
+                "Hey there! I am The Inspector. To chat with me and track your cleaning schedule, "
+                "join your dorm group or send /join <dorm_code>."
+            )
             return
 
     # Strip @bot_username and @inspector from prompt text
@@ -86,7 +90,13 @@ async def handle_ai_mention(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if member:
         user_name = member["name"]
 
-    response_text = await ask_ai(cleaned_prompt, dorm_id=dorm_id, user_name=user_name, user_id=user.id)
+    response_text = await ask_ai(
+        cleaned_prompt,
+        dorm_id=dorm_id,
+        user_name=user_name,
+        user_id=user.id,
+        chat_id=chat.id
+    )
 
     # Reply to the user's message as clean natural text with persistent keyboard in DM
     reply_kb = None
@@ -145,7 +155,13 @@ async def inspector_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if member:
         user_name = member["name"]
 
-    response_text = await ask_ai(query, dorm_id=dorm_id, user_name=user_name, user_id=user.id)
+    response_text = await ask_ai(
+        query,
+        dorm_id=dorm_id,
+        user_name=user_name,
+        user_id=user.id,
+        chat_id=chat.id
+    )
 
     reply_kb = None
     if not is_group:
@@ -168,10 +184,21 @@ async def inspector_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     except Exception as e:
         logger.warning("Could not send AI command reply: %s", e)
 
+async def reset_ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Clear AI conversational memory for the current chat."""
+    message = update.effective_message
+    chat = update.effective_chat
+    if not message or not chat:
+        return
+    await db.clear_ai_chat_history(chat.id)
+    await message.reply_text("Chat memory cleared! Starting a fresh conversation. What's on your mind?")
+
 def register_ai_handlers(application: Application) -> None:
     """Register AI chat handler for group mentions, commands, and replies."""
     application.add_handler(CommandHandler("inspector", inspector_command))
     application.add_handler(CommandHandler("ask", inspector_command))
+    application.add_handler(CommandHandler("clear_ai", reset_ai_command))
+    application.add_handler(CommandHandler("reset_ai", reset_ai_command))
     application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,

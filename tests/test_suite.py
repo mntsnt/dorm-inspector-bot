@@ -1163,7 +1163,8 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
                 "who is approver?",
                 dorm_id=update.effective_chat.id,
                 user_name="Bilisuma",
-                user_id=7220854785
+                user_id=7220854785,
+                chat_id=update.effective_chat.id
             )
             update.effective_message.reply_text.assert_called_once_with(
                 "Approver this week is Hassan.",
@@ -1577,6 +1578,120 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         found4 = await db.get_dorm_by_code(f"#{default_dorm['dorm_code'].lower()}")
         self.assertIsNotNone(found4)
         self.assertEqual(found4["dorm_id"], default_dorm["dorm_id"])
+
+    async def test_ai_chat_history_db_operations(self):
+        """Verify adding, retrieving, and clearing AI conversational memory in db."""
+        await db.init_db()
+        test_chat_id = -888777666
+        test_dorm_id = -888777666
+
+        # Initially empty
+        await db.clear_ai_chat_history(test_chat_id)
+        history0 = await db.get_recent_ai_chat_history(test_chat_id)
+        self.assertEqual(len(history0), 0)
+
+        # Add user message and assistant reply
+        await db.add_ai_chat_message(test_dorm_id, test_chat_id, 1001, "Nahom", "user", "What can I cook for dinner?")
+        await db.add_ai_chat_message(test_dorm_id, test_chat_id, 0, "The Inspector", "assistant", "Stir-fry noodles or pasta with garlic!")
+
+        history1 = await db.get_recent_ai_chat_history(test_chat_id, limit=5)
+        self.assertEqual(len(history1), 2)
+        self.assertEqual(history1[0]["role"], "user")
+        self.assertEqual(history1[0]["content"], "What can I cook for dinner?")
+        self.assertEqual(history1[1]["role"], "assistant")
+
+        # Test user recent topics
+        user_topics = await db.get_user_recent_chat_history(1001, limit=5)
+        self.assertGreaterEqual(len(user_topics), 1)
+        self.assertEqual(user_topics[0]["content"], "What can I cook for dinner?")
+
+        # Clear
+        deleted = await db.clear_ai_chat_history(test_chat_id)
+        self.assertEqual(deleted, 2)
+        history2 = await db.get_recent_ai_chat_history(test_chat_id)
+        self.assertEqual(len(history2), 0)
+
+    async def test_ai_wide_perspective_general_questions(self):
+        """Verify that asking general questions gives friendly, helpful answers without forcing 'you are off duty'."""
+        from services import ai_service
+        context = (
+            "Dorm: Test Dorm\n"
+            "Role: OFF-DUTY ROOMMATE\n"
+            "Current Duty: Cleaners: Alice & Bob | Approver: Charlie\n"
+        )
+
+        # 1. Joke
+        joke_reply = ai_service.fallback_inspector_reply("tell me a joke", context, user_name="Nahom")
+        self.assertNotIn("off duty", joke_reply.lower())
+        self.assertNotIn("cleaning duty", joke_reply.lower())
+        self.assertTrue(any(w in joke_reply.lower() for w in ("rule", "plate", "broom", "cup", "laugh", "frisbee", "roommate")))
+
+        # 2. Food / Cooking
+        food_reply = ai_service.fallback_inspector_reply("what should I cook for dinner?", context, user_name="Nahom")
+        self.assertNotIn("off duty", food_reply.lower())
+        self.assertTrue(any(w in food_reply.lower() for w in ("meal", "pasta", "noodles", "eggs", "cook", "ingredients")))
+
+        # 3. Studying
+        study_reply = ai_service.fallback_inspector_reply("how should I study for exams?", context, user_name="Nahom")
+        self.assertNotIn("off duty", study_reply.lower())
+        self.assertTrue(any(w in study_reply.lower() for w in ("study", "pomodoro", "focus", "exam")))
+
+        # 4. Casual friendly greeting
+        greeting_reply = ai_service.fallback_inspector_reply("hey what's up?", context, user_name="Nahom")
+        self.assertNotIn("off duty", greeting_reply.lower())
+        self.assertIn("Nahom", greeting_reply)
+
+    async def test_ai_chat_history_conversational_memory(self):
+        """Verify ask_ai records conversation turns and can access past history."""
+        await db.init_db()
+        from services import ai_service
+        chat_id = -999111222
+        dorm_id = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+        await db.clear_ai_chat_history(chat_id)
+
+        # Ensure default dorm exists
+        await db.seed_default_dorm()
+
+        # First interaction
+        reply1 = await ai_service.ask_ai("tell me a joke", dorm_id=dorm_id, user_name="Bilisuma", user_id=101, chat_id=chat_id)
+        self.assertTrue(len(reply1) > 0)
+
+        # History should now have 2 messages (user + assistant)
+        history = await db.get_recent_ai_chat_history(chat_id)
+        self.assertEqual(len(history), 2)
+        self.assertEqual(history[0]["content"], "tell me a joke")
+        self.assertEqual(history[0]["role"], "user")
+        self.assertEqual(history[1]["role"], "assistant")
+
+        # Second interaction (follow-up)
+        reply2 = await ai_service.ask_ai("what did you say earlier?", dorm_id=dorm_id, user_name="Bilisuma", user_id=101, chat_id=chat_id)
+        self.assertTrue(len(reply2) > 0)
+
+        # History now has 4 messages
+        history2 = await db.get_recent_ai_chat_history(chat_id)
+        self.assertEqual(len(history2), 4)
+
+    async def test_reset_ai_command(self):
+        """Verify /reset_ai command clears conversational memory and sends confirmation."""
+        await db.init_db()
+        from handlers import ai_chat
+        chat_id = -777666555
+        await db.add_ai_chat_message(chat_id, chat_id, 101, "Nahom", "user", "Remember this message")
+
+        update = MagicMock()
+        update.effective_chat.id = chat_id
+        update.effective_message.reply_text = AsyncMock()
+
+        context = MagicMock()
+        await ai_chat.reset_ai_command(update, context)
+
+        update.effective_message.reply_text.assert_called_once()
+        sent_text = update.effective_message.reply_text.call_args[0][0]
+        self.assertIn("memory cleared", sent_text.lower())
+
+        # Verify DB is cleared
+        history = await db.get_recent_ai_chat_history(chat_id)
+        self.assertEqual(len(history), 0)
 
 if __name__ == "__main__":
     unittest.main()
