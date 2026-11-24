@@ -1748,6 +1748,14 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Google Gemini", call_text_online)
         self.assertIn("...1234", call_text_online)
 
+        # 3. Groq key configured -> Online Groq status
+        await db.set_dorm_ai_key(test_dorm_id, "gsk_TestGroqKey9999")
+        await ai_chat.ai_status_command(mock_update, mock_context)
+        call_text_groq = mock_update.effective_message.reply_text.call_args[0][0]
+        self.assertIn("ONLINE", call_text_groq)
+        self.assertIn("Groq Cloud", call_text_groq)
+        self.assertIn("...9999", call_text_groq)
+
     async def test_ai_working_diagnostic_fallback_response(self):
         """Verify asking if the AI is working returns clear diagnostic instructions instead of repeating greetings."""
         from services import ai_service

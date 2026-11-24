@@ -285,7 +285,7 @@ async def set_ai_key_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"Current Status: **{status_str}**\n\n"
             f"Usage: `/set_ai_key <your_api_key>`\n"
             f"To remove: `/set_ai_key remove`\n\n"
-            f"💡 *Tip:* Free Google Gemini keys can be generated at [Google AI Studio](https://aistudio.google.com/).",
+            f"💡 *Tip:* Free keys can be generated at [Google AI Studio](https://aistudio.google.com/) (Gemini) or [Groq Console](https://console.groq.com/) (Llama 3.3).",
             parse_mode=ParseMode.MARKDOWN
         )
         return

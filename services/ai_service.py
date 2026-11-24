@@ -41,6 +41,8 @@ def get_api_key() -> str:
     return (
         os.getenv("GEMINI_API_KEY")
         or os.getenv("GOOGLE_API_KEY")
+        or os.getenv("GROQ_API_KEY")
+        or os.getenv("OPENROUTER_API_KEY")
         or os.getenv("AI_API_KEY")
         or os.getenv("GEMINI_KEY")
         or os.getenv("GOOGLE_GENAI_KEY")
@@ -717,10 +719,20 @@ async def query_openai(
     user_name: str,
     history: Optional[List[Dict[str, Any]]] = None
 ) -> str:
-    """Send question to OpenAI API (gpt-4o-mini) with conversation history."""
-    url = "https://api.openai.com/v1/chat/completions"
+    """Send question to OpenAI, Groq, or OpenRouter with conversation history."""
+    clean_key = api_key.strip().strip('"').strip("'")
+    if clean_key.startswith("gsk_"):
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        models_to_try = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+    elif clean_key.startswith("sk-or-"):
+        url = "https://openrouter.ai/api/v1/chat/completions"
+        models_to_try = ["meta-llama/llama-3.3-70b-instruct:free", "google/gemini-2.0-flash-exp:free"]
+    else:
+        url = "https://api.openai.com/v1/chat/completions"
+        models_to_try = ["gpt-4o-mini"]
+
     headers = {
-        "Authorization": f"Bearer {api_key}",
+        "Authorization": f"Bearer {clean_key}",
         "Content-Type": "application/json"
     }
     system_content = f"{SYSTEM_PROMPT}\n\n=== LIVE DORM CONTEXT ===\n{dorm_context}"
@@ -738,20 +750,33 @@ async def query_openai(
 
     messages.append({"role": "user", "content": f"{user_name}: {user_prompt}"})
 
-    payload = {
-        "model": "gpt-4o-mini",
-        "messages": messages,
-        "max_tokens": 1200,
-        "temperature": 0.85,
-        "top_p": 0.95
-    }
     async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.post(url, headers=headers, json=payload)
-        resp.raise_for_status()
-        data = resp.json()
-        choices = data.get("choices", [])
-        if choices and "message" in choices[0]:
-            return choices[0]["message"]["content"].strip()
+        last_exc = None
+        for model in models_to_try:
+            payload = {
+                "model": model,
+                "messages": messages,
+                "max_tokens": 1200,
+                "temperature": 0.85,
+                "top_p": 0.95
+            }
+            try:
+                resp = await client.post(url, headers=headers, json=payload)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    choices = data.get("choices", [])
+                    if choices and "message" in choices[0]:
+                        return choices[0]["message"]["content"].strip()
+                elif resp.status_code in (400, 404):
+                    logger.warning("Model %s unavailable on %s (%s). Trying fallback...", model, url, resp.status_code)
+                    continue
+                else:
+                    resp.raise_for_status()
+            except Exception as e:
+                last_exc = e
+                logger.warning("Attempt with %s failed: %s", model, e)
+        if last_exc:
+            raise last_exc
     return ""
 
 async def ask_ai(
@@ -809,7 +834,14 @@ async def ask_ai(
             pass
         return reply
 
-    provider = "openai" if key.startswith("sk-") else "gemini"
+    if key.startswith("gsk_"):
+        provider = "groq"
+    elif key.startswith("sk-or-"):
+        provider = "openrouter"
+    elif key.startswith("sk-"):
+        provider = "openai"
+    else:
+        provider = "gemini"
 
     final_reply = ""
     try:

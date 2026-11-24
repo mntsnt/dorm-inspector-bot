@@ -248,7 +248,14 @@ async def ai_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     key_source = "Dorm Database (/set_ai_key)" if dorm_key else ("Server Environment (.env)" if (env_key and is_primary) else "None")
 
     if active_key:
-        provider = "OpenAI (gpt-4o-mini)" if active_key.startswith("sk-") else "Google Gemini (gemini-1.5-flash / gemini-2.0-flash)"
+        if active_key.startswith("gsk_"):
+            provider = "Groq Cloud (LLaMA 3.3 70B - Free & Ultra-Fast)"
+        elif active_key.startswith("sk-or-"):
+            provider = "OpenRouter (Free Tier Models)"
+        elif active_key.startswith("sk-"):
+            provider = "OpenAI (gpt-4o-mini)"
+        else:
+            provider = "Google Gemini (gemini-1.5-flash / gemini-2.0-flash)"
         masked = f"...{active_key[-4:]}" if len(active_key) >= 4 else "configured"
         status_line = "🟢 **ONLINE (Conversational AI Active)**"
         details = (
@@ -265,11 +272,11 @@ async def ai_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             f"• **Provider:** Built-in Offline Rules Script\n"
             f"• **API Key:** None configured\n\n"
             "**Why am I repeating canned responses?**\n"
-            "Without an active Google Gemini key, I cannot generate freeform ChatGPT-style replies. I can only provide fixed offline status answers.\n\n"
-            "**How to activate full ChatGPT-style AI:**\n"
-            "1. Get a free API key at [Google AI Studio](https://aistudio.google.com/)\n"
-            "2. Send `/set_ai_key <your_key>` in this chat or DM\n"
-            "*(Or set `GEMINI_API_KEY` in the server hosting environment)*"
+            "Without an active AI key, I cannot generate freeform ChatGPT-style replies. I can only provide fixed offline status answers.\n\n"
+            "**How to activate full ChatGPT-style AI (100% Free):**\n"
+            "1. **Google Gemini (Recommended):** Get a free key at [Google AI Studio](https://aistudio.google.com/)\n"
+            "2. **Groq (Llama 3.3 70B):** Get a free key at [Groq Console](https://console.groq.com/)\n"
+            "3. Send `/set_ai_key <your_key>` in this chat or DM"
         )
 
     await message.reply_text(
