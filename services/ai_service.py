@@ -603,6 +603,8 @@ async def query_gemini(
         multi_turn_contents.append({"role": "user", "parts": [{"text": curr_user_text}]})
 
     interactions_models = [
+        "gemini-flash-lite-latest",
+        "gemini-flash-latest",
         "gemini-1.5-flash",
         "gemini-2.0-flash",
         "gemini-3.8-flash",
@@ -610,11 +612,14 @@ async def query_gemini(
     ]
 
     generate_models = [
-        "gemini-1.5-flash",
-        "gemini-2.0-flash",
-        "gemini-1.5-pro",
-        "gemini-2.5-flash",
+        "gemini-flash-lite-latest",
+        "gemini-flash-latest",
         "gemini-3.8-flash",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+        "gemini-3.5-flash",
+        "gemini-2.5-flash",
+        "gemini-1.5-pro",
     ]
 
     last_resp = None
@@ -699,7 +704,7 @@ async def query_gemini(
                 except Exception:
                     pass
 
-                if resp.status_code in (400, 404, 429):
+                if resp.status_code in (400, 404, 429, 503):
                     logger.warning("generateContent model %s unavailable (%s: %s). Trying next fallback...", model, resp.status_code, err_text[:100])
                     continue
                 else:
@@ -707,7 +712,7 @@ async def query_gemini(
             except Exception as e:
                 logger.warning("Attempt with generateContent model %s failed: %s", model, e)
 
-        if last_resp is not None and last_resp.status_code not in (200, 400, 404):
+        if last_resp is not None and last_resp.status_code not in (200, 400, 404, 503):
             last_resp.raise_for_status()
 
     return ""
@@ -723,7 +728,13 @@ async def query_openai(
     clean_key = api_key.strip().strip('"').strip("'")
     if clean_key.startswith("gsk_"):
         url = "https://api.groq.com/openai/v1/chat/completions"
-        models_to_try = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+        models_to_try = [
+            "qwen/qwen3.8-27b",
+            "openai/gpt-oss-120b",
+            "openai/gpt-oss-20b",
+            "llama-3.3-70b-versatile",
+            "llama-3.1-8b-instant",
+        ]
     elif clean_key.startswith("sk-or-"):
         url = "https://openrouter.ai/api/v1/chat/completions"
         models_to_try = ["meta-llama/llama-3.3-70b-instruct:free", "google/gemini-2.0-flash-exp:free"]
