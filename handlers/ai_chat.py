@@ -15,6 +15,33 @@ from services.ai_service import ask_ai
 
 logger = logging.getLogger(__name__)
 
+async def send_safe_reply(message, text: str, **kwargs) -> None:
+    """Send text reply safely, splitting into complete chunks if exceeding Telegram's 4096 character limit."""
+    if not text:
+        return
+    if len(text) <= 4000:
+        await message.reply_text(text, **kwargs)
+        return
+
+    # Split cleanly on paragraph or sentence boundaries
+    chunks = []
+    current = ""
+    for line in text.split("\n"):
+        if len(current) + len(line) + 1 > 4000:
+            if current:
+                chunks.append(current)
+            current = line
+        else:
+            current = f"{current}\n{line}" if current else line
+    if current:
+        chunks.append(current)
+
+    for idx, chunk in enumerate(chunks):
+        kw = dict(kwargs)
+        if idx < len(chunks) - 1:
+            kw.pop("reply_markup", None)
+        await message.reply_text(chunk, **kw)
+
 async def handle_ai_mention(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle @mentions, replies to the bot, or natural inspector references."""
     message = update.effective_message
@@ -113,7 +140,8 @@ async def handle_ai_mention(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         kwargs["reply_markup"] = reply_kb
 
     try:
-        await message.reply_text(
+        await send_safe_reply(
+            message,
             response_text,
             **kwargs
         )
@@ -177,7 +205,8 @@ async def inspector_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         kwargs["reply_markup"] = reply_kb
 
     try:
-        await message.reply_text(
+        await send_safe_reply(
+            message,
             response_text,
             **kwargs
         )
@@ -191,7 +220,7 @@ async def reset_ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if not message or not chat:
         return
     await db.clear_ai_chat_history(chat.id)
-    await message.reply_text("Chat memory cleared! Starting a fresh conversation. What's on your mind?")
+    await message.reply_text("Chat memory cleared! Clean slate. Don't make me repeat the dorm rules. What do you need?")
 
 def register_ai_handlers(application: Application) -> None:
     """Register AI chat handler for group mentions, commands, and replies."""

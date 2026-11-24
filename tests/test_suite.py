@@ -1693,5 +1693,32 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         history = await db.get_recent_ai_chat_history(chat_id)
         self.assertEqual(len(history), 0)
 
+    async def test_inspector_bossy_chatting_personality_and_complete_explanations(self):
+        """Verify the Inspector combines bossy authority with friendly chatting and complete explanations."""
+        from services import ai_service
+        from handlers import ai_chat
+
+        # 1. System Prompt contains dual personality & complete explanation rules
+        sys_prompt = ai_service.SYSTEM_PROMPT
+        self.assertIn("BOSSY INSPECTOR", sys_prompt)
+        self.assertIn("CHATTING", sys_prompt)
+        self.assertIn("COMPLETE EXPLANATIONS", sys_prompt)
+        self.assertIn("NEVER CUT OFF", sys_prompt)
+
+        # 2. Explanation requests in fallback provide complete, bossy, punctuated responses
+        context = "Dorm: Test Dorm\nCurrent Duty: Cleaners: Alice & Bob | Approver: Charlie\n"
+        reply = ai_service.fallback_inspector_reply("can you explain how Tsidat works?", context, user_name="Bilisuma")
+        self.assertIn("Bilisuma", reply)
+        self.assertTrue(any(w in reply for w in ("Inspector", "disciplined", "knowledgeable", "dorm")))
+        self.assertTrue(reply.endswith(".") or reply.endswith("!"))
+        self.assertNotIn("off duty", reply.lower())
+
+        # 3. send_safe_reply splits long messages without cutting mid-word
+        mock_msg = MagicMock()
+        mock_msg.reply_text = AsyncMock()
+        long_text = "Paragraph 1: " + ("A" * 2500) + "\n\nParagraph 2: " + ("B" * 2500)
+        await ai_chat.send_safe_reply(mock_msg, long_text)
+        self.assertEqual(mock_msg.reply_text.call_count, 2)
+
 if __name__ == "__main__":
     unittest.main()

@@ -254,18 +254,20 @@ def sanitize_ai_response(text: str) -> str:
     return cleaned.strip()
 
 SYSTEM_PROMPT = (
-    "You are The Inspector, a sharp, witty, and genuinely friendly university dorm inspector and roommate mentor.\n"
-    "You chat directly with students in their dorm Telegram group and private DMs. You are like a wise, clever friend living with them.\n\n"
-    "CORE GUIDELINES:\n"
-    "1. WIDE PERSPECTIVE & FRIENDSHIP: You can chat about ANYTHING! Answer any questions dorm mates ask: university life, study advice, exams, cooking & food, coding, science, movies, music, personal advice, jokes, or casual everyday banter. Be a supportive, engaging friend.\n"
-    "2. KNOW ROOMMATE BEHAVIORS & HABITS: Pay close attention to each roommate's behavior, personality, habits, and recurring topics from the conversation history. Treat them as someone you genuinely know: remember what they mentioned before (e.g. exams, habits, jokes, cooking, study hours, cleaning style) and build natural rapport as a caring, observant friend.\n"
-    "3. CONVERSATIONAL VARIETY: NEVER repeat the same canned responses or formulas. Vary your greetings, style, and tone so conversations feel alive and natural.\n"
-    "4. DUTY ROLE CONTEXT (WHEN RELEVANT): You have live dorm facts (who is cleaning, approver, fines, tokens) in the context below.\n"
-    "   - When a user asks about cleaning, duty schedule, fines, swapping, or who cleans: give them accurate facts based on their role.\n"
-    "   - When a user asks a general or unrelated question: ANSWER THEIR QUESTION DIRECTLY! Do NOT constantly tell them 'you are on duty' or 'you are off duty' when they're asking about something else. Only bring up duty when relevant.\n"
-    "5. CLEAN & NATURAL STYLE: Write like a real person typing on Telegram. No robotic disclaimers ('As an AI...'), no bulleted corporate reports, no markdown clutter. Zero emojis or at most one natural emoji. Avoid multiple exclamation marks or question marks.\n"
-    "6. PUNCHY & COMPLETE: Keep replies concise and natural (typically 1 to 4 sentences). Give full, useful answers without rambling.\n"
-    "7. MULTI-TURN MEMORY: You remember previous messages in the chat history. Refer back to earlier context naturally when students follow up."
+    "You are The Inspector, the notoriously bossy, charismatic, sharp-witted, and hilarious university dorm inspector.\n"
+    "You live in this dorm with the students and chat directly with them in their Telegram group and private DMs.\n\n"
+    "YOUR DUAL PERSONALITY (BOSSY INSPECTOR + CHATTING ROOMMATE COMPANION):\n"
+    "1. THE BOSSY INSPECTOR: You are in charge of this dorm and you know it. You carry a clipboard, command respect, and hold roommates to high standards. You have zero tolerance for excuses, slacking, messy desks, or crusty pans left in the sink. You boss roommates around with theatrical, hilarious authority ('Listen up!', 'Rule number one in this dorm...', 'Don't test my patience', 'I expect perfection by Friday 8:00 PM!'). When discussing chores, inspection, cleaning, or fines, you are 100% the authoritative, demanding Inspector.\n"
+    "2. THE CHATTING & SUPPORTIVE COMPANION: You are also their close, knowledgeable friend and mentor! You can chat about ANYTHING: college life, study advice, exam stress, coding, science, movies, music, personal dilemmas, food, or late-night dorm banter. You know each roommate's habits, quirks, and past conversations.\n"
+    "3. BLENDING BOTH SIDES: When chatting, giving advice, or explaining general topics (calculus, Python, cooking, exams, life), DO NOT become a boring generic chatbot! Keep that sharp, confident, slightly bossy Inspector flair! (e.g. When giving study advice: 'Listen to me and listen carefully: close those 50 browser tabs right now. We do 25 minutes of deep focus. If you fail your exams, who am I going to boss around in this dorm? Now get to work!').\n\n"
+    "CORE RULES:\n"
+    "1. COMPLETE EXPLANATIONS — NEVER CUT OFF SENTENCES: When a roommate asks you to explain something (study concepts, code, math, dorm rules, recipes, or life questions), EXPLAIN IT THOROUGHLY AND COMPLETELY! Walk through the explanation step-by-step with clear, complete thoughts. Never leave a sentence half-finished or cut off in the middle. Always end with a complete sentence and proper punctuation.\n"
+    "2. DUTY CONTEXT VS GENERAL QUESTIONS: You have live dorm facts (who is cleaning, approver, fines, tokens) in the context below.\n"
+    "   - ONLY bring up cleaning duty, fines, and chores when the user actually asks about cleaning, schedule, rules, fines, or duty!\n"
+    "   - When the user asks general questions (e.g. about exams, coding, science, food, jokes, or casual chat), ANSWER THEIR QUESTION DIRECTLY. Do not nag them with 'you are on duty' or 'you are off duty' unless cleaning is what they asked about.\n"
+    "3. BEHAVIORAL MEMORY & RAPPORT: Pay close attention to each roommate's behavior, past messages, habits, and recurring topics in the conversation history. Treat them like someone you genuinely know: remember their exams, habits, study hours, and tease them with your bossy humor while helping them.\n"
+    "4. CONVERSATIONAL VARIETY: Never repeat canned formulas or robotic greetings. Vary your tone, humor, and style.\n"
+    "5. CLEAN & NATURAL STYLE: Write like a real person typing on Telegram. No robotic disclaimers ('As an AI...'), no bulleted corporate reports. Zero emojis or at most one natural emoji. Avoid multiple exclamation marks or question marks."
 )
 
 def extract_gemini_text(data: Any) -> str:
@@ -392,8 +394,10 @@ def fallback_inspector_reply(
             return f"Approver this week is {app_part}. Inspection review is Friday 8:00 PM."
         return "Approver is assigned on Monday. Inspection deadline is Friday 8:00 PM."
 
-    # 3. Question about who is cleaning / duty / schedule
+    # 3. Question about who is cleaning / duty / schedule / rules
     if any(k in p_lower for k in ("clean", "duty", "schedule", "turn", "who is", "who's", "roster")) and "fine" not in p_lower:
+        if any(e in p_lower for e in ("explain", "how do", "how to", "what are", "rules", "system")):
+            return f"Here is the cleaning system, {user_name}: duty is announced every Monday at 8:00 AM. Cleaners have until Friday 8:00 PM to deep clean the room and submit photo proof. The designated approver inspects and rates 1-5 stars. Miss the deadline, and you get fined. Simple, disciplined, and spotless."
         if user_role == "CLEANER ON DUTY":
             p_text = f"with {partner} " if partner else ""
             return f"You are cleaning {p_text}this week. Submit proof before Friday 8:00 PM."
@@ -407,10 +411,14 @@ def fallback_inspector_reply(
 
     # 4. Question about fines
     if "fine" in p_lower or "penalty" in p_lower or "debt" in p_lower:
+        if any(e in p_lower for e in ("explain", "how do", "how to", "what is", "why", "rule")):
+            return f"Listen up {user_name}: the fine rule in this dorm is simple and non-negotiable. If you fail to submit photo proof before Friday 8:00 PM, you and your cleaning partner split a 100 ETB fine (50 ETB each). Keep your floors clean, or pay up."
         return f"Fine status: {unpaid_fines}."
 
     # 5. Question about tokens / Tsidat
     if any(k in p_lower for k in ("token", "tsidat", "coin", "score", "lead", "point")):
+        if any(e in p_lower for e in ("explain", "how do", "how to", "what is", "why", "rule", "work")):
+            return f"Listen up {user_name}: Tsidat tokens are our dorm currency for cleanliness and discipline! Cleaners earn up to +25 tokens when their photo proof gets a 5-star rating from the approver. The cleaner the dorm, the higher you climb on the leaderboard."
         return f"Tsidat leaderboard: {tokens}."
 
     # 6. Question about swapping
@@ -443,10 +451,10 @@ def fallback_inspector_reply(
                 return f"You are off duty this week. Enjoy your week while {c1} and {c2} handle cleaning."
 
         greetings = [
-            f"Hey {user_name}! Doing my dorm rounds, what's on your mind?",
-            f"Yo {user_name}! Inspector here, everything good with you?",
-            f"Hey there {user_name}! Always good to see you. What's up?",
-            f"Greetings {user_name}! Hope your week is going great. How can I help?"
+            f"Listen up {user_name}! Inspector on dorm rounds. Everything clean and in order? What's on your mind?",
+            f"Attention {user_name}! The Inspector is listening. What's the situation in the dorm?",
+            f"Well look who decided to check in with the Inspector! What do you need, {user_name}?",
+            f"Inspector here, {user_name}! Keeping this room civilized. How can I help you today?"
         ]
         idx = (sum(ord(c) for c in user_name) + len(user_prompt)) % len(greetings)
         return greetings[idx]
@@ -454,42 +462,50 @@ def fallback_inspector_reply(
     # 11. "How are you" / "What are you doing"
     if any(w in p_lower for w in ("how are you", "how are u", "what are you doing", "what r u doing", "how's it going", "how is it going")):
         check_ins = [
-            f"Doing great {user_name}! Keeping the dorm organized and catching up with the crew. How about you?",
-            f"All good on dorm rounds {user_name}! Ready to help with whatever you need. What's on your mind?"
+            f"Running a tight ship in this dorm as always, {user_name}! Making sure no one slacks off. How are your classes going?",
+            f"On high alert during dorm rounds, {user_name}! Keeping the room organized and making sure everyone does their part. What's up?"
         ]
         return check_ins[len(user_prompt) % len(check_ins)]
 
     # 12. Jokes & Humor
     if any(w in p_lower for w in ("joke", "funny", "laugh", "humor")):
         jokes = [
-            "Why did the dorm broom get promoted? Because it swept the competition.",
-            "Dorm life rule number one: If you can't find a clean plate, a frisbee is officially dinnerware.",
-            "There are two types of roommates: those who clean, and those who consider a clean cup a luxury."
+            f"Why did the dorm broom get promoted, {user_name}? Because it swept the competition and didn't leave dust under the rug like some roommates!",
+            f"Dorm life rule number one: If you can't find a clean plate, a frisbee is officially dinnerware. Don't let me catch you doing that!",
+            f"There are two types of roommates, {user_name}: those who clean, and those who treat a clean cup like a luxury. Don't be the second type!"
         ]
         return jokes[len(user_prompt) % len(jokes)]
 
     # 13. Food & Cooking
     if any(w in p_lower for w in ("food", "eat", "cook", "hungry", "dinner", "lunch", "breakfast", "recipe", "pasta")):
-        return "For a quick dorm meal, stir-fry noodles, eggs with toast, or pasta with garlic and butter never disappoints! What ingredients do you have in the dorm?"
+        return f"Listen up, {user_name}: you cannot live on instant noodles alone. Boil some water, toss in pasta with eggs and garlic or cook whatever ingredients you have in the dorm for a proper meal. And you better wash that pan right after—no leaving crusty pans in the sink under my watch!"
 
     # 14. Studying & Exams
     if any(w in p_lower for w in ("study", "exam", "test", "quiz", "homework", "class", "assignment")):
-        return "Pro tip for dorm studying: try 25-minute Pomodoro focus blocks and put your phone in another room. You'll crush it!"
+        return f"Here is your study protocol, {user_name}: put your phone in another room, set a 25-minute Pomodoro focus block, and grind for that exam. If you fail, who am I going to boss around in this dorm? Get to work and ace it!"
 
     # 15. Thanks & Appreciation
     if any(w in p_lower for w in ("thank", "thanks", "thx", "appreciate", "good job", "cool")):
-        return f"Anytime {user_name}! Always here for the dorm crew."
+        return f"You're welcome {user_name}! Just keep this dorm in top shape and we will have zero issues."
 
-    # 16. Multi-turn context awareness (if asking about previous turns)
+    # 16. Explanation requests
+    if any(w in p_lower for w in ("explain", "how do", "how does", "what is", "why is", "tell me about", "teach me", "can you explain")):
+        return (
+            f"Listen up, {user_name}: as your Inspector, I expect everyone in this dorm to be sharp, disciplined, and knowledgeable. "
+            f"To get full, in-depth AI explanations on complex topics like '{user_prompt[:40]}', make sure your dorm admin has configured an AI key with /set_ai_key. "
+            "In the meantime: stay focused, don't leave dirty dishes in the sink, and ask me any specific dorm questions you have!"
+        )
+
+    # 17. Multi-turn context awareness (if asking about previous turns)
     if history and any(w in p_lower for w in ("earlier", "before", "you said", "repeat", "what did")):
         last_asst = next((h["content"] for h in reversed(history) if h.get("role") == "assistant"), None)
         if last_asst:
             return f"Earlier we were talking about: {last_asst[:120]}"
 
-    # 17. General friendly conversation fallback
+    # 18. General friendly conversation fallback
     return (
-        f"I'm here for you {user_name}! Always ready to chat about campus life, study tips, or dorm questions. "
-        "What's on your mind?"
+        f"Listen, {user_name}: as your Inspector, I keep this dorm running and I keep you on track. "
+        "Ask me whatever you need—study tips, campus life, explanations, or dorm rules. What's on your mind?"
     )
 
 async def query_gemini(
@@ -621,7 +637,7 @@ async def query_gemini(
                 },
                 "contents": multi_turn_contents,
                 "generationConfig": {
-                    "maxOutputTokens": 350,
+                    "maxOutputTokens": 1200,
                 },
             }
             try:
@@ -636,7 +652,7 @@ async def query_gemini(
                     flat_payload = {
                         "contents": [{"parts": [{"text": prompt_text}]}],
                         "generationConfig": {
-                            "maxOutputTokens": 350,
+                            "maxOutputTokens": 1200,
                         },
                     }
                     resp_flat = await client.post(url, headers=headers, json=flat_payload)
@@ -696,7 +712,7 @@ async def query_openai(
     payload = {
         "model": "gpt-4o-mini",
         "messages": messages,
-        "max_tokens": 250,
+        "max_tokens": 1200,
         "temperature": 0.75
     }
     async with httpx.AsyncClient(timeout=15.0) as client:
