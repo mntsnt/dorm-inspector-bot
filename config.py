@@ -70,6 +70,19 @@ def get_current_date() -> datetime.date:
     """Return the current date in Africa/Addis_Ababa."""
     return get_current_time().date()
 
+def format_local_datetime(value: Optional[str]) -> str:
+    """Format a stored ISO timestamp in the dorm's configured timezone."""
+    if not value:
+        return ""
+    try:
+        parsed = datetime.datetime.fromisoformat(value)
+    except ValueError:
+        logger.warning("Cannot format invalid stored timestamp %r", value)
+        return value
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=TIMEZONE)
+    return parsed.astimezone(TIMEZONE).strftime("%a, %b %d at %I:%M %p")
+
 # ---------------------------------------------------------------------------
 # Dataclasses
 # ---------------------------------------------------------------------------
@@ -244,15 +257,8 @@ else:
 
 ANNOUNCE_DAY = os.getenv("ANNOUNCE_DAY", "mon").strip().lower()
 ANNOUNCE_TIME_STR = os.getenv("ANNOUNCE_TIME", "08:00").strip()
-REMINDER_DAY = os.getenv("REMINDER_DAY", "thu").strip().lower()
-REMINDER_TIME_STR = os.getenv("REMINDER_TIME", "18:00").strip()
 CHECK_DAY = os.getenv("CHECK_DAY", "fri").strip().lower()
 CHECK_TIME_STR = os.getenv("CHECK_TIME", "20:00").strip()
-
-try:
-    APPROVER_TIMEOUT_HOURS = int(os.getenv("APPROVER_TIMEOUT_HOURS", "12"))
-except ValueError:
-    APPROVER_TIMEOUT_HOURS = 12
 
 try:
     FINE_TOTAL = int(os.getenv("FINE_TOTAL", "100"))
@@ -300,7 +306,6 @@ def parse_time(time_str: str) -> datetime.time:
     return datetime.time(hour=hour, minute=minute, tzinfo=TIMEZONE)
 
 ANNOUNCE_TIME = parse_time(ANNOUNCE_TIME_STR)
-REMINDER_TIME = parse_time(REMINDER_TIME_STR)
 CHECK_TIME = parse_time(CHECK_TIME_STR)
 
 # ---------------------------------------------------------------------------

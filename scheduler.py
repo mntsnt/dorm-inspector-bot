@@ -277,13 +277,9 @@ async def post_group_announcement_safe(
 async def send_dorm_announcement(
     context: ContextTypes.DEFAULT_TYPE,
     dorm_id: int,
-    force: bool = False,
     now_date: Optional[date] = None,
 ) -> tuple[bool, str]:
-    """
-    Announce cleaning duty for a dorm.
-    If force=True, delivers announcement even if previously marked as announced.
-    """
+    """Announce a dorm's weekly duty once, with an atomic cross-job claim."""
     if now_date is None:
         now_date = config.get_current_date()
 
@@ -318,8 +314,10 @@ async def send_dorm_announcement(
         cleaner3_id=week_info.cleaner3_id,
     )
 
-    if not force and week_record.get("announced") == 1:
+    if week_record.get("announced") == 1:
         return False, f"Week {week_info.week_number} has already been announced."
+    if not await db.claim_week_announcement(week_info.week_start, dorm_id=dorm_id):
+        return False, f"Week {week_info.week_number} announcement is already in progress or complete."
 
     approver_id = week_record["approver_id"]
     approver_name = members_by_id.get(approver_id, f"ID {approver_id}")
@@ -341,6 +339,8 @@ async def send_dorm_announcement(
     success, detail = await post_group_announcement_safe(
         context, dorm_id, topic_id, group_text, announcement_meme
     )
+
+    await db.mark_announced(week_info.week_start, dorm_id=dorm_id)
 
     if not success:
         logger.warning("Group announcement delivery failed for dorm %s: %s. Continuing with direct DMs to cleaners...", dorm_id, detail)
@@ -398,7 +398,6 @@ async def send_dorm_announcement(
         topic_id=topic_id,
     )
 
-    await db.mark_announced(week_info.week_start, dorm_id=dorm_id)
     logger.info("Monday announcement completed for dorm %s, week %s (%s)", dorm_id, week_info.week_start, detail)
     if success:
         return True, f"✅ Week {week_info.week_number} announcement sent to group and cleaners ({detail})"
@@ -417,21 +416,30 @@ async def monday_announcement_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     for dorm in dorms:
         dorm_id = dorm["dorm_id"]
         try:
-            await send_dorm_announcement(context, dorm_id, force=False)
+            await send_dorm_announcement(context, dorm_id)
         except Exception as e:
             logger.error("Error running Monday announcement for dorm %s: %s", dorm_id, e)
 
 # ---------------------------------------------------------------------------
-# Thursday Reminder Helpers & Job (18:00 Africa/Addis_Ababa)
+# Six-Hour Cleaner Reminder
 # ---------------------------------------------------------------------------
-async def send_dorm_thursday_reminder(
+async def send_dorm_cleaner_reminder(
     context: ContextTypes.DEFAULT_TYPE,
     dorm_id: int,
     now_date: Optional[date] = None,
+    now_time: Optional[datetime] = None,
 ) -> bool:
-    """Send reminder to cleaners of a specific dorm if cleaning is not yet completed."""
+    """Send one cleaner reminder when the six-hour daytime cadence is due."""
+    current_time = now_time or config.get_current_time()
     if now_date is None:
-        now_date = config.get_current_date()
+        now_date = current_time.date()
+    if (
+        now_date.weekday() > 4
+        or current_time.hour < 8
+        or current_time.hour > 20
+        or (current_time.hour == 20 and current_time.minute > 0)
+    ):
+        return False
 
     dorm = await db.get_dorm(dorm_id)
     if not dorm or not dorm.get("is_active", 1):
@@ -452,11 +460,18 @@ async def send_dorm_thursday_reminder(
     if not week_record:
         return False
 
-    # Skip if already finished or reminder already sent
-    if week_record.get("final_status") == "completed" or week_record.get("photo_status") == "approved":
+    if (
+        week_record.get("final_status") != "pending"
+        or week_record.get("photo_status") in ("submitted", "approved")
+        or now_date > week_info.friday_date
+    ):
         return False
 
-    if week_record.get("reminder_sent") == 1:
+    deadline = datetime.combine(week_info.friday_date, config.CHECK_TIME)
+    if current_time >= deadline:
+        return False
+
+    if not await db.claim_week_reminder(week_info.week_start, dorm_id=dorm_id, interval_hours=6):
         return False
 
     cleaner_btn = InlineKeyboardMarkup([
@@ -479,29 +494,10 @@ async def send_dorm_thursday_reminder(
             reply_markup=cleaner_btn, photo_path=reminder_meme, dorm_id=dorm_id, topic_id=topic_id
         )
 
-    await db.mark_reminder_sent(week_info.week_start, dorm_id=dorm_id)
-    logger.info("Thursday reminder sent for dorm %s, week %s", dorm_id, week_info.week_start)
+    logger.info("Six-hour cleaner reminder sent for dorm %s, week %s", dorm_id, week_info.week_start)
     return True
-
-
-async def thursday_reminder_job(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send reminder to cleaners if cleaning is not yet completed for all active dorms."""
-    dorms = await db.get_all_active_dorms()
-    if not dorms and getattr(config, "GROUP_ID", 0):
-        await db.seed_default_dorm()
-        dorms = await db.get_all_active_dorms()
-
-    now_date = config.get_current_date()
-
-    for dorm in dorms:
-        dorm_id = dorm["dorm_id"]
-        try:
-            await send_dorm_thursday_reminder(context, dorm_id, now_date)
-        except Exception as e:
-            logger.error("Error in Thursday reminder for dorm %s: %s", dorm_id, e)
-
 # ---------------------------------------------------------------------------
-# Friday Check Helpers & Job (20:00 Africa/Addis_Ababa)
+# Friday Deadline Helpers & Job (20:00 Africa/Addis_Ababa)
 # ---------------------------------------------------------------------------
 async def send_dorm_friday_check(
     context: ContextTypes.DEFAULT_TYPE,
@@ -509,13 +505,7 @@ async def send_dorm_friday_check(
     now_date: Optional[date] = None,
     now_time: Optional[datetime] = None,
 ) -> bool:
-    """
-    Execute Friday check for a specific dorm:
-    - Ask cleaners "Did you clean the dorm?" (Yes/No buttons)
-    - If photo already approved: post in group that they cleaned.
-    - Ask approver to confirm final result (Confirm Cleaned / Confirm Not Cleaned).
-    - Start timeout countdown for approver response.
-    """
+    """Apply the deadline fine once if the week's photo is still unapproved."""
     if now_date is None:
         now_date = config.get_current_date()
     if now_time is None:
@@ -537,70 +527,53 @@ async def send_dorm_friday_check(
         return False
 
     week_record = await db.get_week(week_info.week_start, dorm_id=dorm_id)
-    if not week_record or week_record.get("check_sent") == 1:
+    if not week_record or week_record.get("final_status") != "pending":
         return False
 
-    cleaner_disp = week_info.cleaner_display
-    approver_name = members_by_id.get(week_record["approver_id"], f"ID {week_record['approver_id']}")
+    deadline = datetime.combine(week_info.friday_date, config.CHECK_TIME)
+    if now_time < deadline:
+        return False
 
-    # If photo already approved, mark completed and post in group
-    if week_record.get("photo_status") == "approved" or week_record.get("final_status") == "completed":
-        timeout_deadline = now_time + timedelta(hours=config.APPROVER_TIMEOUT_HOURS)
-        await db.set_check_sent(week_info.week_start, timeout_deadline.isoformat(), dorm_id=dorm_id)
-        approved_meme = config.get_meme_file("approved")
-        app_msg = f"Friday Check: **{cleaner_disp}** cleaned and photo was approved. All done!"
-        await post_group_announcement_safe(context, dorm_id, topic_id, app_msg, approved_meme)
-        return True
-
-    # Set timeout deadline for approver
-    timeout_deadline = now_time + timedelta(hours=config.APPROVER_TIMEOUT_HOURS)
-    await db.set_check_sent(week_info.week_start, timeout_deadline.isoformat(), dorm_id=dorm_id)
-
-    # Send Yes/No check to cleaners
-    check_keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("Yes", callback_data=f"fcheck_yes_{dorm_id}_{week_info.week_start}"),
-            InlineKeyboardButton("No", callback_data=f"fcheck_no_{dorm_id}_{week_info.week_start}"),
-        ]
-    ])
-    cleaner_check_msg = "Did you clean the dorm this week?"
-    for c_id, c_name in week_info.cleaners:
-        if not c_id:
-            continue
-        await send_dm_with_fallback(context, c_id, c_name, cleaner_check_msg, reply_markup=check_keyboard, dorm_id=dorm_id, topic_id=topic_id)
-
-    # Send final confirmation request to Approver
-    approver_confirm_keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("Confirm Cleaned", callback_data=f"fconfirm_clean_{dorm_id}_{week_info.week_start}"),
-            InlineKeyboardButton("Confirm Not Cleaned", callback_data=f"fconfirm_notclean_{dorm_id}_{week_info.week_start}"),
-        ]
-    ])
-    photo_status = week_record.get("photo_status", "none")
-    status_desc = "Photo sent" if photo_status == "submitted" else ("Photo rejected" if photo_status == "rejected" else "No photo sent")
-
-    approver_confirm_msg = (
-        f"Friday Check:\n"
-        f"Cleaners: **{c1_name}** & **{c2_name}**\n"
-        f"Status: {status_desc}\n\n"
-        f"Did they clean the dorm? Confirm within {config.APPROVER_TIMEOUT_HOURS} hours:"
-    )
-    await send_dm_with_fallback(
-        context,
-        week_record["approver_id"],
-        approver_name,
-        approver_confirm_msg,
-        reply_markup=approver_confirm_keyboard,
+    outcome = await db.finalize_week_fined(
+        week_info.week_start,
         dorm_id=dorm_id,
-        topic_id=topic_id
+        fine_total=dorm.get("fine_amount", config.FINE_TOTAL)
     )
+    if not outcome:
+        return False
 
-    logger.info("Friday check initiated for dorm %s, week %s", dorm_id, week_info.week_start)
+    cleaner_disp = " & ".join(outcome["cleaner_names"])
+    fine_meme = config.get_meme_file("fined")
+    group_msg = (
+        f"⏰ **Cleaning deadline passed**\n\n"
+        f"No approved photo was received for **{cleaner_disp}** by Friday 8:00 PM.\n"
+        f"Fine: {outcome['fine_each']} ETB each "
+        f"({outcome['fine_total']} ETB total). Next week's rotation continues as scheduled."
+    )
+    await post_group_announcement_safe(context, dorm_id, topic_id, group_msg, fine_meme)
+
+    dm_text = (
+        "The cleaning week closed without an approved photo by Friday 8:00 PM.\n"
+        f"A fine of **{outcome['fine_each']} ETB** was recorded for you. "
+        "The next week's rotation continues as scheduled."
+    )
+    for cleaner_id, cleaner_name in zip(outcome["cleaner_ids"], outcome["cleaner_names"]):
+        await send_dm_with_fallback(
+            context,
+            cleaner_id,
+            cleaner_name,
+            dm_text,
+            photo_path=fine_meme,
+            dorm_id=dorm_id,
+            topic_id=topic_id
+        )
+
+    logger.info("Unapproved cleaning fined for dorm %s, week %s", dorm_id, week_info.week_start)
     return True
 
 
 async def friday_check_job(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Execute Friday check at 8:00 PM for all active dorms."""
+    """Close each active dorm's unapproved week at the Friday deadline."""
     dorms = await db.get_all_active_dorms()
     if not dorms and getattr(config, "GROUP_ID", 0):
         await db.seed_default_dorm()
@@ -622,10 +595,9 @@ async def friday_check_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 async def monitor_and_fallback_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Heartbeat monitor across all active dorms:
-    1. Triggers Monday announcement if bot was offline at 08:00.
-    2. Triggers Thursday reminder if missed.
-    3. Triggers Friday check if missed.
-    4. Evaluates approver timeout fallback after APPROVER_TIMEOUT_HOURS if approver didn't respond.
+    1. Triggers a missed Monday announcement.
+    2. Sends daytime reminders every six hours until photo submission.
+    3. Closes unapproved cleaning at Friday 8:00 PM.
     """
     dorms = await db.get_all_active_dorms()
     if not dorms and getattr(config, "GROUP_ID", 0):
@@ -657,132 +629,26 @@ async def monitor_and_fallback_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             if now >= announce_target:
                 if not week_record or week_record.get("announced") != 1:
                     logger.info("Missed Monday announcement detected for dorm %s, week %s. Sending now...", dorm_id, week_info.week_start)
-                    await send_dorm_announcement(context, dorm_id, force=False)
+                    await send_dorm_announcement(context, dorm_id)
                     week_record = await db.get_week(week_info.week_start, dorm_id=dorm_id)
 
             if not week_record:
                 continue
 
-            # 2. Catch missed Thursday reminder
-            reminder_naive_time = config.REMINDER_TIME.replace(tzinfo=None)
-            reminder_target = datetime.combine(week_info.monday_date + timedelta(days=3), reminder_naive_time).replace(tzinfo=config.TIMEZONE)
+            # 2. Send reminders every six hours during daytime until a photo is submitted.
+            if week_record and week_record.get("final_status") == "pending":
+                await send_dorm_cleaner_reminder(context, dorm_id, today, now)
+                week_record = await db.get_week(week_info.week_start, dorm_id=dorm_id)
 
-            if now >= reminder_target and week_record.get("reminder_sent") == 0:
-                if week_record.get("final_status") != "completed" and week_record.get("photo_status") != "approved":
-                    logger.info("Missed Thursday reminder detected for dorm %s, week %s. Sending now...", dorm_id, week_info.week_start)
-                    await send_dorm_thursday_reminder(context, dorm_id, today)
-                    week_record = await db.get_week(week_info.week_start, dorm_id=dorm_id)
-
-            # 3. Catch missed Friday check
+            # 3. Close unapproved cleaning at the Friday deadline
             check_naive_time = config.CHECK_TIME.replace(tzinfo=None)
             check_target = datetime.combine(week_info.friday_date, check_naive_time).replace(tzinfo=config.TIMEZONE)
 
-            if now >= check_target and week_record.get("check_sent") == 0:
-                if week_record.get("final_status") == "pending":
-                    logger.info("Missed Friday check detected for dorm %s, week %s. Sending now...", dorm_id, week_info.week_start)
-                    await send_dorm_friday_check(context, dorm_id, today, now)
-                    week_record = await db.get_week(week_info.week_start, dorm_id=dorm_id)
-
-            # 4. Approver Timeout Fallback Check
-            if (
-                week_record.get("check_sent") == 1
-                and week_record.get("timeout_processed") == 0
-                and week_record.get("final_status") == "pending"
-                and week_record.get("approver_final_decision") is None
-            ):
-                deadline_str = week_record.get("timeout_deadline")
-                if deadline_str:
-                    try:
-                        deadline = datetime.fromisoformat(deadline_str)
-                        if deadline.tzinfo is None:
-                            deadline = deadline.replace(tzinfo=config.TIMEZONE)
-                        if now >= deadline:
-                            logger.info("Approver timeout reached for dorm %s, week %s. Applying fallback...", dorm_id, week_info.week_start)
-                            await _process_approver_timeout(context, dorm, week_record, members_by_id)
-                    except Exception as e:
-                        logger.error("Error parsing timeout deadline %s: %s", deadline_str, e)
+            if now >= check_target and week_record.get("final_status") == "pending":
+                logger.info("Friday deadline reached for dorm %s, week %s. Closing unapproved duty...", dorm_id, week_info.week_start)
+                await send_dorm_friday_check(context, dorm_id, today, now)
         except Exception as e:
             logger.error("Error in monitor_and_fallback_job for dorm %s: %s", dorm_id, e)
-
-async def _process_approver_timeout(
-    context: ContextTypes.DEFAULT_TYPE,
-    dorm: Dict[str, Any],
-    week_record: Dict[str, Any],
-    members_by_id: Dict[int, str]
-) -> None:
-    """Fallback logic when approver fails to confirm within APPROVER_TIMEOUT_HOURS."""
-    dorm_id = dorm["dorm_id"]
-    topic_id = dorm.get("topic_id")
-
-    week_start = week_record["week_start"]
-    c1_id = week_record["cleaner1_id"]
-    c2_id = week_record.get("cleaner2_id", 0)
-    c3_id = week_record.get("cleaner3_id", 0)
-
-    cleaner_items = []
-    if c1_id:
-        cleaner_items.append((c1_id, members_by_id.get(c1_id, f"ID {c1_id}")))
-    if c2_id:
-        cleaner_items.append((c2_id, members_by_id.get(c2_id, f"ID {c2_id}")))
-    if c3_id:
-        cleaner_items.append((c3_id, members_by_id.get(c3_id, f"ID {c3_id}")))
-
-    fine_total = dorm.get("fine_amount", 100)
-    num_cleaners = max(1, len(cleaner_items))
-    fine_each = fine_total // num_cleaners
-
-    approver_id = week_record["approver_id"]
-    approver_name = members_by_id.get(approver_id, f"ID {approver_id}")
-
-    c1_ans = week_record.get("cleaner1_response")
-    c2_ans = week_record.get("cleaner2_response")
-    c3_ans = week_record.get("cleaner3_response")
-    photo_status = week_record.get("photo_status", "none")
-
-    cleaners_claim_yes = (c1_ans == "yes" or c2_ans == "yes" or c3_ans == "yes")
-    has_photo = photo_status in ("submitted", "approved")
-
-    cleaners_disp = " & ".join(c[1] for c in cleaner_items)
-
-    if cleaners_claim_yes and has_photo:
-        await db.mark_timeout_processed(week_start, decision="timeout", final_status="completed", dorm_id=dorm_id)
-        approved_meme = config.get_meme_file("approved")
-        group_msg = (
-            f"Approver **{approver_name}** didn't reply in time.\n"
-            f"Photo was sent, so marked as cleaned. No fines."
-        )
-        await post_group_announcement_safe(context, dorm_id, topic_id, group_msg, approved_meme)
-    else:
-        await db.mark_timeout_processed(week_start, decision="timeout", final_status="fined", dorm_id=dorm_id)
-        c1_name = cleaner_items[0][1] if len(cleaner_items) > 0 else ""
-        c2_name = cleaner_items[1][1] if len(cleaner_items) > 1 else ""
-        c3_name = cleaner_items[2][1] if len(cleaner_items) > 2 else ""
-
-        await db.create_fines_for_week(
-            week_start=week_start,
-            cleaner1_id=c1_id,
-            cleaner1_name=c1_name,
-            cleaner2_id=c2_id,
-            cleaner2_name=c2_name,
-            fine_each=fine_each,
-            dorm_id=dorm_id,
-            cleaner3_id=c3_id,
-            cleaner3_name=c3_name,
-        )
-        fined_meme = config.get_meme_file("fined")
-        group_msg = (
-            f"Approver **{approver_name}** didn't reply in time and no approved photo was sent.\n"
-            f"Marked as NOT cleaned.\n\n"
-            f"Fine: {fine_each} ETB each for **{cleaners_disp}** ({fine_total} ETB total)."
-        )
-        await post_group_announcement_safe(context, dorm_id, topic_id, group_msg, fined_meme)
-
-        dm_fine_msg = (
-            f"The approver didn't reply in time and no photo was approved. Duty marked as NOT cleaned.\n"
-            f"Fine: **{fine_each} ETB**."
-        )
-        for cid, cname in cleaner_items:
-            await send_dm_with_fallback(context, cid, cname, dm_fine_msg, photo_path=fined_meme, dorm_id=dorm_id, topic_id=topic_id)
 
 # ---------------------------------------------------------------------------
 # Scheduler Setup
@@ -803,25 +669,16 @@ def setup_scheduler(application: Application) -> None:
         name="monday_announcement"
     )
 
-    # 2. Thursday reminder
-    reminder_day_ptb = config.DAY_MAP_PTB.get(config.REMINDER_DAY, 4)
-    job_queue.run_daily(
-        callback=thursday_reminder_job,
-        time=config.REMINDER_TIME,
-        days=(reminder_day_ptb,),
-        name="thursday_reminder"
-    )
-
-    # 3. Friday check
+    # 2. Friday deadline
     check_day_ptb = config.DAY_MAP_PTB.get(config.CHECK_DAY, 5)
     job_queue.run_daily(
         callback=friday_check_job,
         time=config.CHECK_TIME,
         days=(check_day_ptb,),
-        name="friday_check"
+        name="friday_deadline"
     )
 
-    # 4. Background monitor and fallback (runs every 60 seconds)
+    # 3. Background monitor, six-hour reminders, and missed deadline fallback.
     job_queue.run_repeating(
         callback=monitor_and_fallback_job,
         interval=60,

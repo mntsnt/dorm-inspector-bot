@@ -14,6 +14,35 @@ import db
 
 logger = logging.getLogger(__name__)
 
+def _choose_fresh_reply(
+    replies: List[str],
+    history: Optional[List[Dict[str, Any]]] = None,
+    preferred_index: int = 0
+) -> str:
+    """Choose a canned reply that has not appeared in the recent assistant history."""
+    if not replies:
+        return ""
+
+    recent_replies = {
+        item.get("content")
+        for item in (history or [])[-8:]
+        if item.get("role") == "assistant"
+    }
+    last_reply = next(
+        (item.get("content") for item in reversed(history or []) if item.get("role") == "assistant"),
+        None
+    )
+    start = preferred_index % len(replies)
+    for offset in range(len(replies)):
+        candidate = replies[(start + offset) % len(replies)]
+        if candidate not in recent_replies:
+            return candidate
+    for offset in range(len(replies)):
+        candidate = replies[(start + offset) % len(replies)]
+        if candidate != last_reply:
+            return candidate
+    return replies[start]
+
 def resolve_provider_from_key(key: str) -> str:
     """Determine AI provider from key prefix or format."""
     clean = key.strip().strip('"').strip("'")
@@ -473,6 +502,8 @@ def fallback_inspector_reply(
     roommates = context_lines.get("All Roommates", "Roommates")
     user_role = context_lines.get("Role", "UNKNOWN")
     partner = context_lines.get("Partner", "")
+    fine_amount_match = re.search(r"Fine Amount:\s*(\d+)\s*ETB", dorm_context)
+    fine_amount = int(fine_amount_match.group(1)) if fine_amount_match else 100
     dorm_code = context_lines.get("Dorm Code", "DORM-101")
     dash_base = getattr(config, "DASHBOARD_URL", "https://inspector.app.aletcloud.com").rstrip("/")
     website = context_lines.get("Website", f"{dash_base}/?code={dorm_code}")
@@ -582,8 +613,8 @@ def fallback_inspector_reply(
                 f"*Dorm Fine Policy*\n\n"
                 f"Listen up {user_name}: the fine rule in this dorm is simple and non-negotiable:\n"
                 f"• *Deadline:* Friday 8:00 PM.\n"
-                f"• *Missed Cleaning:* 100 ETB total fine per missed week.\n"
-                f"• *Split:* Shared equally between both cleaners (50 ETB each).\n\n"
+                f"• *Missed Cleaning:* {fine_amount} ETB total fine per missed week.\n"
+                f"• *Split:* Shared equally between both cleaners ({fine_amount // 2} ETB each).\n\n"
                 f"Submit your photo proof on time, or pay up."
             )
         return f"Fine status: {unpaid_fines}."
@@ -622,9 +653,8 @@ def fallback_inspector_reply(
     # 9b. Question about AI status, why repeating, or if AI is working
     if any(k in p_lower for k in ("is the ai", "is ai", "ai work", "why do you repeat", "saying the same", "same thing", "are you real", "are you a bot", "are you broken", "ai status", "ai broken", "not working")):
         return (
-            f"Listen up, {user_name}! My live AI brain is currently in offline fallback mode because no Google Gemini key is active for this dorm. "
-            "That is why I can only give you built-in offline responses right now. "
-            "To connect me to Gemini and chat freely like ChatGPT, obtain a free key at https://aistudio.google.com and send /set_ai_key <your_key> here, or type /ai_status to check my connection!"
+            f"Listen up, {user_name}! Live AI is unavailable for this request, so I am using built-in responses. "
+            "Check /ai_status for the provider state, or ask your dorm admin to configure an AI key with /set_ai_key."
         )
 
     # 10. Greetings & Casual Banter (Friendly Roommate Chat)
@@ -653,7 +683,7 @@ def fallback_inspector_reply(
             f"Inspector here, {user_name}! Keeping this room civilized. How can I help you today?"
         ]
         idx = (sum(ord(c) for c in user_name) + len(user_prompt)) % len(greetings)
-        return greetings[idx]
+        return _choose_fresh_reply(greetings, history, idx)
 
     # 11. "How are you" / "What are you doing"
     if any(w in p_lower for w in ("how are you", "how are u", "what are you doing", "what r u doing", "how's it going", "how is it going")):
@@ -661,7 +691,7 @@ def fallback_inspector_reply(
             f"Running a tight ship in this dorm as always, {user_name}! Making sure no one slacks off. How are your classes going?",
             f"On high alert during dorm rounds, {user_name}! Keeping the room organized and making sure everyone does their part. What's up?"
         ]
-        return check_ins[len(user_prompt) % len(check_ins)]
+        return _choose_fresh_reply(check_ins, history, len(user_prompt) % len(check_ins))
 
     # 12. Jokes & Humor
     if any(w in p_lower for w in ("joke", "funny", "laugh", "humor")):
@@ -670,15 +700,25 @@ def fallback_inspector_reply(
             f"Dorm life rule number one: If you can't find a clean plate, a frisbee is officially dinnerware. Don't let me catch you doing that!",
             f"There are two types of roommates, {user_name}: those who clean, and those who treat a clean cup like a luxury. Don't be the second type!"
         ]
-        return jokes[len(user_prompt) % len(jokes)]
+        return _choose_fresh_reply(jokes, history, len(user_prompt) % len(jokes))
 
     # 13. Food & Cooking
     if any(w in p_lower for w in ("food", "eat", "cook", "hungry", "dinner", "lunch", "breakfast", "recipe", "pasta")):
-        return f"Listen up, {user_name}: you cannot live on instant noodles alone. Boil some water, toss in pasta with eggs and garlic or cook whatever ingredients you have in the dorm for a proper meal. And you better wash that pan right after—no leaving crusty pans in the sink under my watch!"
+        food_replies = [
+            f"Listen up, {user_name}: you cannot live on instant noodles alone. Boil some water, toss in pasta with eggs and garlic or cook whatever ingredients you have in the dorm for a proper meal. And you better wash that pan right after—no leaving crusty pans in the sink under my watch!",
+            f"{user_name}, make a proper meal with what you have—pasta, eggs, and garlic are an easy start. Wash the pan when you're done; the sink is not a storage unit.",
+            f"Inspector's kitchen order, {user_name}: add something nutritious to those noodles, clean your dishes straight away, and leave the counter ready for the next roommate."
+        ]
+        return _choose_fresh_reply(food_replies, history)
 
     # 14. Studying & Exams
     if any(w in p_lower for w in ("study", "exam", "test", "quiz", "homework", "class", "assignment")):
-        return f"Here is your study protocol, {user_name}: put your phone in another room, set a 25-minute Pomodoro focus block, and grind for that exam. If you fail, who am I going to boss around in this dorm? Get to work and ace it!"
+        study_replies = [
+            f"Here is your study protocol, {user_name}: put your phone in another room, set a 25-minute Pomodoro focus block, and grind for that exam. If you fail, who am I going to boss around in this dorm? Get to work and ace it!",
+            f"{user_name}, pick one topic, study it without your phone for 25 minutes, then take a short break and test what you remember. One focused block at a time.",
+            f"Start with the assignment due soonest, {user_name}. Clear your desk, set a timer, and work until it rings before checking messages. You can do this."
+        ]
+        return _choose_fresh_reply(study_replies, history)
 
     # 15. Thanks & Appreciation
     if any(w in p_lower for w in ("thank", "thanks", "thx", "appreciate", "good job", "cool")):
@@ -707,7 +747,7 @@ def fallback_inspector_reply(
             f"Here is my take {user_name}: do not take shortcuts and handle your business. In this dorm we do things right. What else do you need?",
             f"Good question {user_name}. Stay focused on the prize, do not get distracted, and keep grinding. What is next?"
         ]
-        return q_replies[(len(user_prompt) + len(user_name)) % len(q_replies)]
+        return _choose_fresh_reply(q_replies, history, (len(user_prompt) + len(user_name)) % len(q_replies))
 
     chat_replies = [
         f"I hear you, {user_name}. Keep your corner clean and stay disciplined, and we will get along great. What is new with you?",
@@ -715,7 +755,11 @@ def fallback_inspector_reply(
         f"Fair point, {user_name}. Just make sure you stay on track and maintain high standards around here. What is next?",
         f"Listen, {user_name}: as your Inspector, I keep this dorm running and I keep you on track. Tell me what you need."
     ]
-    return chat_replies[(len(user_prompt) + sum(ord(c) for c in user_name)) % len(chat_replies)]
+    return _choose_fresh_reply(
+        chat_replies,
+        history,
+        (len(user_prompt) + sum(ord(c) for c in user_name)) % len(chat_replies)
+    )
 
 async def query_gemini(
     api_key: str,

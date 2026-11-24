@@ -410,19 +410,29 @@ async def get_status_content(user_id: Optional[int] = None, dorm_id: Optional[in
         rating = week_record.get("rating")
         review_text = week_record.get("review_text")
         rating_suffix = f" (⭐⭐⭐⭐⭐ 5/5 Stars)" if rating == 5 else (f" ({rating}★ Stars)" if rating else "")
+        bonus = week_record.get("early_bonus", 0)
+        cleaned_at = config.format_local_datetime(
+            week_record.get("done_reported_at") or week_record.get("photo_submitted_at")
+        )
 
         if final_status == "completed":
-            duty_state = f"Cleaned and approved{rating_suffix}. Done for the week! No fines."
+            when = f" at {cleaned_at}" if cleaned_at else ""
+            bonus_text = f" +{bonus} early-cleaning bonus tokens." if bonus else ""
+            duty_state = f"Cleaned{when} and approved{rating_suffix}.{bonus_text} Done for the week! No fines."
         elif final_status == "fined":
             duty_state = f"Not cleaned. Fined {fine_amount} ETB total."
         elif photo_status == "approved":
-            duty_state = "Photo approved."
+            when = f" at {cleaned_at}" if cleaned_at else ""
+            duty_state = f"Cleaned{when}; photo approved."
         elif photo_status == "submitted":
-            duty_state = f"Photo sent. Waiting for {approver_name} to check."
+            when = f" at {cleaned_at}" if cleaned_at else ""
+            duty_state = f"Cleaned{when}; photo sent. Waiting for {approver_name} to approve."
         elif photo_status == "rejected":
-            duty_state = "Photo rejected. Cleaners need to clean again and send a new photo."
+            when = f" at {cleaned_at}" if cleaned_at else ""
+            duty_state = f"Photo rejected. Clean again{when} and send a new photo."
         elif week_record.get("done_reported"):
-            duty_state = "Cleaners reported done. Waiting for photo."
+            when = f" at {cleaned_at}" if cleaned_at else ""
+            duty_state = f"Cleaners reported the room cleaned{when}. Waiting for photo."
         elif check_sent:
             duty_state = f"Friday check in progress. Waiting for {approver_name}."
         else:

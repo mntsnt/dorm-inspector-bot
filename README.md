@@ -16,7 +16,9 @@ Any student can add the bot to their dorm's Telegram group or topic, run `/setup
 - 🔄 **Deterministic Weekly Rotation:** Cycles pairs weekly Monday through Friday. Weekends are always off-duty.
 - 🎲 **Fair Approver Rotation:** Approver is randomly picked each Monday from non-cleaning roommates.
 - 📸 **Photo Verification & Inspection:** Cleaners submit photos via DM. Approver inspects and approves or rejects with inline buttons.
-- ⏰ **Friday Verification & Timeout Fallback:** At Friday 8:00 PM, cleaners answer a verification prompt, and the approver confirms the final result. If the approver doesn't reply within `APPROVER_TIMEOUT_HOURS`, the bot automatically falls back to the cleaners' submission.
+- ⏰ **Daytime Reminders & Friday Deadline:** Cleaners get at most one reminder every six hours between 8:00 AM and 8:00 PM (Addis Ababa time), stopping once they submit a photo. At Friday 8:00 PM, unapproved cleaning is closed and the configured fine is recorded per cleaner.
+- 🎁 **Early-Cleaning Bonus:** On approval, each cleaner earns the approver's rating tokens plus a bonus based on the recorded cleaning day: +5 Monday, +4 Tuesday, +3 Wednesday, +2 Thursday, or +1 Friday.
+- 🕒 **Recorded Completion Time:** The cleaner's “We cleaned” time (or photo-submission time if no button was used) is shown in bot status and the dashboard.
 - 🔁 **Resilient & Idempotent:** Built-in catch-up monitors trigger missed announcements, reminders, or checks if the bot was temporarily offline.
 
 ---
@@ -99,24 +101,17 @@ When all roommates have joined, the admin taps **"🚀 Launch Cleaning Schedule"
                                   │
                                   ▼
    ┌─────────────────────────────────────────────────────────────┐
-   │ THURSDAY 06:00 PM (Gentle Reminder)                         │
-   │ • Reminder sent to cleaners if photo not yet approved       │
+   │ DAYTIME REMINDERS (8 AM, 2 PM, 8 PM; Addis Ababa time)      │
+   │ • At most one reminder every six hours, while awaiting photo│
+   │ • Reminders stop once a photo is submitted                  │
    └──────────────────────────────┬──────────────────────────────┘
                                   │
                                   ▼
    ┌─────────────────────────────────────────────────────────────┐
-   │ FRIDAY 08:00 PM (Check Time)                                │
-   │ • Cleaners asked: "Did you clean?" ([Yes] / [No])           │
-   │ • Approver asked: [Confirm Cleaned] / [Confirm Not Cleaned] │
-   └──────────────────────────────┬──────────────────────────────┘
-                                  │
-                                  ▼
-   ┌─────────────────────────────────────────────────────────────┐
-   │ APPROVER DECISION OR TIMEOUT (12 Hours)                     │
-   │ • Confirm Cleaned: Week completed, no fines                 │
-   │ • Confirm Not Cleaned: Fine recorded per cleaner            │
-   │ • Timeout Fallback: If approver silent, fallback to cleaner │
-   │   answer and photo submission status                        │
+   │ FRIDAY 08:00 PM DEADLINE                                    │
+   │ • Approved photo: duty is already completed for the week    │
+   │ • No approved photo: week is closed and fine recorded       │
+   │ • Next week's rotation continues normally                   │
    └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -132,7 +127,6 @@ When all roommates have joined, the admin taps **"🚀 Launch Cleaning Schedule"
 | `ADMIN_ID` | Optional | Default single-dorm admin ID. |
 | `PORT` | Optional | Port for the built-in HTTP health check server (default `3000`). |
 | `START_DATE` | Optional | Default fallback start date (`YYYY-MM-DD`, e.g. `2026-11-23`). |
-| `APPROVER_TIMEOUT_HOURS` | Optional | Hours before approver timeout fallback triggers (default `12`). |
 
 ### Docker Deployment
 ```dockerfile

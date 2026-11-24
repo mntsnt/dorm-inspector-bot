@@ -1,7 +1,7 @@
 """
 Approver Actions Handler (Multi-Tenant Platform)
-Handles photo approval/rejection and Friday final confirmation decisions.
-The approver has the final authority; fines are only created upon their decision or timeout fallback.
+Handles photo approval and rejection. The approver reviews submitted photos;
+unapproved weeks are closed automatically at the Friday deadline.
 Properly scoped per dorm with group topic and DM notifications.
 """
 
@@ -162,6 +162,9 @@ async def approve_photo_callback(update: Update, context: ContextTypes.DEFAULT_T
     if week_record.get("final_status") == "completed":
         await query.answer("Cleaning is already completed.", show_alert=True)
         return
+    if week_record.get("final_status") != "pending" or week_record.get("photo_status") != "submitted":
+        await query.answer("There is no pending cleaning photo to review.", show_alert=True)
+        return
 
     try:
         await query.answer()
@@ -262,8 +265,8 @@ async def rate_photo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return
 
-    if week_record.get("final_status") == "completed":
-        await query.answer("Cleaning is already completed.", show_alert=True)
+    if week_record.get("final_status") != "pending" or week_record.get("photo_status") != "submitted":
+        await query.answer("This photo is no longer awaiting approval.", show_alert=True)
         return
 
     try:
@@ -274,24 +277,24 @@ async def rate_photo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     stars_clamped = max(1, min(5, stars))
     review_comment = RATING_COMMENTS.get(stars_clamped, "Passed inspection.")
     stars_display = RATING_STARS_DISPLAY.get(stars_clamped, f"{stars_clamped} Stars")
-    tokens_earned = stars_clamped * 5
-
-    # 1. Update database: mark approved, completed, rating, review_text
-    await db.update_photo_status(
+    reward = await db.approve_week_and_award_tokens(
         week_start,
-        status="approved",
-        final_status="completed",
         dorm_id=dorm_id,
         rating=stars_clamped,
         review_text=review_comment
     )
+    if reward is None:
+        await _safe_edit_message(query, "This photo was already reviewed or the cleaning week is closed.")
+        return
 
-    # 2. Award Tsidat tokens: cleaners get stars*5, approver gets +5
+    base_tokens = stars_clamped * 5
+    early_bonus = reward["early_bonus"]
+    tokens_earned = reward["tokens_each"]
+    cleaned_at = config.format_local_datetime(
+        week_record.get("done_reported_at") or week_record.get("photo_submitted_at")
+    )
     c1_id = week_record["cleaner1_id"]
     c2_id = week_record["cleaner2_id"]
-    await db.add_tsidat_tokens(dorm_id, c1_id, tokens_earned)
-    await db.add_tsidat_tokens(dorm_id, c2_id, tokens_earned)
-    await db.add_tsidat_tokens(dorm_id, approver_id, 5)
 
     c1 = await db.get_dorm_member(dorm_id, c1_id)
     c2 = await db.get_dorm_member(dorm_id, c2_id)
@@ -307,7 +310,9 @@ async def rate_photo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     confirmation_text = (
         f"✅ **Inspection Approved**\n\n"
         f"Rating: {stars_display}\n"
-        f"Cleaners received **+{tokens_earned} Tsidat tokens** (+5 for you)."
+        f"Cleaners received **+{base_tokens} rating tokens**"
+        f"{f' and +{early_bonus} early-cleaning bonus' if early_bonus else ''} "
+        f"(+{tokens_earned} each; +5 for you)."
     )
     await _safe_edit_message(query, confirmation_text)
 
@@ -316,8 +321,11 @@ async def rate_photo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"🎉 **Well Done! Cleaning Approved**\n\n"
         f"⭐ **Approver:** {approver_name}\n"
         f"⭐ **Rating:** {stars_display} — _{review_comment}_\n"
+        f"🕒 **Cleaned at:** {cleaned_at or 'time not recorded'}\n"
         f"👏 **Cleaners:** {c_disp} — duty completed for the week!\n"
-        f"🪙 **Reward:** +{tokens_earned} Tsidat tokens awarded to each cleaner."
+        f"🪙 **Reward:** +{base_tokens} rating tokens"
+        f"{f' + {early_bonus} early-cleaning bonus' if early_bonus else ''} "
+        f"(+{tokens_earned} each)."
     )
     photo_file_id = week_record.get("photo_file_id")
     approved_meme = config.get_meme_file("approved")
@@ -354,7 +362,9 @@ async def rate_photo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"🎉 **Well Done! Inspection Approved**\n\n"
         f"Approver: **{approver_name}**\n"
         f"Rating: {stars_display} — _{review_comment}_\n"
-        f"Earned: **+{tokens_earned} Tsidat tokens**.\n\n"
+        f"Cleaned at: **{cleaned_at or 'time not recorded'}**\n"
+        f"Earned: **+{tokens_earned} Tsidat tokens**"
+        f"{f' (includes +{early_bonus} early-cleaning bonus)' if early_bonus else ''}.\n\n"
         f"✅ You have completed your cleaning duty and are done for the week!"
     )
     for cid, cname in [(c1_id, c1_name), (c2_id, c2_name), (c3_id, c3_name)]:
@@ -385,6 +395,9 @@ async def reject_photo_callback(update: Update, context: ContextTypes.DEFAULT_TY
     if not week_record:
         await query.answer("Week record not found.", show_alert=True)
         return
+    if week_record.get("final_status") != "pending" or week_record.get("photo_status") != "submitted":
+        await query.answer("This photo is no longer awaiting review.", show_alert=True)
+        return
 
     approver_id = week_record["approver_id"]
     approver = await db.get_dorm_member(dorm_id, approver_id)
@@ -398,18 +411,21 @@ async def reject_photo_callback(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return
 
-    try:
-        await query.answer()
-    except Exception:
-        pass
-
-    # Update database: mark rejected
-    await db.update_photo_status(week_start, status="rejected", dorm_id=dorm_id)
+    if not await db.reject_week_photo(week_start, dorm_id=dorm_id):
+        await query.answer("This photo was already reviewed or the week is closed.", show_alert=True)
+        return
+    await query.answer()
 
     c1 = await db.get_dorm_member(dorm_id, week_record["cleaner1_id"])
     c2 = await db.get_dorm_member(dorm_id, week_record["cleaner2_id"])
     c1_name = c1["name"] if c1 else f"ID {week_record['cleaner1_id']}"
     c2_name = c2["name"] if c2 else f"ID {week_record['cleaner2_id']}"
+    cleaner_names = [c1_name, c2_name]
+    c3_id = week_record.get("cleaner3_id", 0)
+    if c3_id:
+        c3 = await db.get_dorm_member(dorm_id, c3_id)
+        cleaner_names.append(c3["name"] if c3 else f"ID {c3_id}")
+    cleaner_display = " & ".join(cleaner_names)
 
     # Update approver's message
     await _safe_edit_message(query, "You rejected the cleaning photo. Cleaners have been notified.")
@@ -417,7 +433,7 @@ async def reject_photo_callback(update: Update, context: ContextTypes.DEFAULT_TY
     # Post in group chat (with rejected meme)
     group_msg = (
         f"**{approver_name}** rejected the cleaning photo.\n"
-        f"**{c1_name}** & **{c2_name}** need to clean again and send a new photo before Friday 8:00 PM."
+        f"**{cleaner_display}** need to clean again and send a new photo before Friday 8:00 PM."
     )
     rejected_meme = config.get_meme_file("rejected")
     try:
@@ -445,8 +461,15 @@ async def reject_photo_callback(update: Update, context: ContextTypes.DEFAULT_TY
         f"**{approver_name}** rejected your cleaning photo.\n"
         "Please clean again and send a new photo before Friday 8:00 PM."
     )
-    await _notify_cleaner(context, week_record["cleaner1_id"], c1_name, dm_text, photo_path=rejected_meme, dorm_id=dorm_id, topic_id=topic_id)
-    await _notify_cleaner(context, week_record["cleaner2_id"], c2_name, dm_text, photo_path=rejected_meme, dorm_id=dorm_id, topic_id=topic_id)
+    for cleaner_id, cleaner_name in zip(
+        [week_record["cleaner1_id"], week_record.get("cleaner2_id", 0), c3_id],
+        cleaner_names
+    ):
+        if cleaner_id:
+            await _notify_cleaner(
+                context, cleaner_id, cleaner_name, dm_text,
+                photo_path=rejected_meme, dorm_id=dorm_id, topic_id=topic_id
+            )
 
 # ---------------------------------------------------------------------------
 # Friday Final Confirmation Callbacks: Confirm Cleaned / Confirm Not Cleaned
@@ -736,6 +759,9 @@ async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         approver_name = members_by_id.get(approver_id, f"ID {approver_id}")
         await msg.reply_text(f"⛔ Only the assigned approver ({approver_name}) or Dorm Admin can approve cleaning.")
         return
+    if week_record.get("final_status") != "pending" or week_record.get("photo_status") != "submitted":
+        await msg.reply_text("There is no pending cleaning photo to approve. Cleaners must submit a photo first.")
+        return
 
     # Parse optional stars: /approve 5, /approve 4
     stars = 5
@@ -748,28 +774,24 @@ async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     review_comment = RATING_COMMENTS.get(stars, "Sparkling clean! 5-star hotel standard.")
     stars_display = RATING_STARS_DISPLAY.get(stars, f"{stars} Stars")
-    tokens_earned = stars * 5
-
-    # 1. Update database: mark approved, completed, rating, review_text
-    await db.update_photo_status(
+    reward = await db.approve_week_and_award_tokens(
         week_start,
-        status="approved",
-        final_status="completed",
         dorm_id=dorm_id,
         rating=stars,
         review_text=review_comment
     )
-
-    # 2. Award Tsidat tokens: cleaners get stars*5, approver gets +5
+    if reward is None:
+        await msg.reply_text("This photo was already reviewed or the cleaning week is closed.")
+        return
+    base_tokens = stars * 5
+    early_bonus = reward["early_bonus"]
+    tokens_earned = reward["tokens_each"]
+    cleaned_at = config.format_local_datetime(
+        week_record.get("done_reported_at") or week_record.get("photo_submitted_at")
+    )
     c1_id = week_record["cleaner1_id"]
     c2_id = week_record.get("cleaner2_id", 0)
     c3_id = week_record.get("cleaner3_id", 0)
-    await db.add_tsidat_tokens(dorm_id, c1_id, tokens_earned)
-    if c2_id:
-        await db.add_tsidat_tokens(dorm_id, c2_id, tokens_earned)
-    if c3_id:
-        await db.add_tsidat_tokens(dorm_id, c3_id, tokens_earned)
-    await db.add_tsidat_tokens(dorm_id, approver_id, 5)
 
     c1_name = members_by_id.get(c1_id, f"ID {c1_id}")
     c2_name = members_by_id.get(c2_id, f"ID {c2_id}") if c2_id else ""
@@ -783,8 +805,11 @@ async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         f"🎉 **Well Done! Cleaning Approved**\n\n"
         f"⭐ **Approved by:** {actor_name} ({'Approver' if is_approver else 'Admin'})\n"
         f"⭐ **Rating:** {stars_display} — _{review_comment}_\n"
+        f"🕒 **Cleaned at:** {cleaned_at or 'time not recorded'}\n"
         f"👏 **Cleaners:** {c_disp} — duty completed for the week!\n"
-        f"🪙 **Reward:** +{tokens_earned} Tsidat tokens awarded to each cleaner."
+        f"🪙 **Reward:** +{base_tokens} rating tokens"
+        f"{f' + {early_bonus} early-cleaning bonus' if early_bonus else ''} "
+        f"(+{tokens_earned} each)."
     )
     photo_file_id = week_record.get("photo_file_id")
     approved_meme = config.get_meme_file("approved")
@@ -820,7 +845,9 @@ async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     done_dm_msg = (
         f"🎉 **Duty Completed & Approved!**\n\n"
         f"Your cleaning for Week {week_info.week_number} was approved with **{stars_display}**!\n"
-        f"Earned: **+{tokens_earned} Tsidat tokens**.\n\n"
+        f"Cleaned at: **{cleaned_at or 'time not recorded'}**\n"
+        f"Earned: **+{tokens_earned} Tsidat tokens**"
+        f"{f' (includes +{early_bonus} early-cleaning bonus)' if early_bonus else ''}.\n\n"
         f"You are completely done for the week. Enjoy your weekend! 🌟"
     )
     await _notify_cleaner(context, c1_id, c1_name, done_dm_msg, dorm_id=dorm_id, topic_id=topic_id)
@@ -843,5 +870,3 @@ def register_approval_handlers(application: Application) -> None:
     application.add_handler(CallbackQueryHandler(approve_photo_callback, pattern=r"^approve_"))
     application.add_handler(CallbackQueryHandler(rate_photo_callback, pattern=r"^rate_\d+_"))
     application.add_handler(CallbackQueryHandler(reject_photo_callback, pattern=r"^reject_"))
-    application.add_handler(CallbackQueryHandler(confirm_cleaned_callback, pattern=r"^fconfirm_clean_"))
-    application.add_handler(CallbackQueryHandler(confirm_not_cleaned_callback, pattern=r"^fconfirm_notclean_"))

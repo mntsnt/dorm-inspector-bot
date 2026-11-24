@@ -250,6 +250,141 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(week_approved["photo_status"], "approved")
         self.assertEqual(week_approved["final_status"], "completed")
 
+    async def test_approval_awards_tiered_early_bonus_once(self):
+        """Approved cleaners receive their rating plus the weekday bonus exactly once."""
+        await db.init_db()
+        dorm_id = -1005555111
+        await db.create_or_update_dorm(dorm_id=dorm_id, admin_id=104, dorm_name="Bonus Test Dorm")
+        for user_id, name in ((102, "Cleaner A"), (103, "Cleaner B"), (104, "Approver")):
+            await db.add_dorm_member(dorm_id, user_id, name)
+
+        week_start = "2026-11-23"
+        await db.get_or_create_week(
+            week_start, 1, 102, 103, [104], dorm_id=dorm_id
+        )
+        first_cleaned_at = datetime(2026, 11, 24, 14, 0, tzinfo=config.TIMEZONE)
+        with patch("config.get_current_time", return_value=first_cleaned_at):
+            self.assertTrue(await db.mark_done_reported(week_start, dorm_id, user_id=102))
+        with patch("config.get_current_time", return_value=datetime(2026, 11, 24, 15, 0, tzinfo=config.TIMEZONE)):
+            self.assertTrue(await db.mark_done_reported(week_start, dorm_id, user_id=103))
+        with patch("config.get_current_time", return_value=datetime(2026, 11, 24, 16, 0, tzinfo=config.TIMEZONE)):
+            self.assertTrue(await db.submit_photo(week_start, "bonus-photo", 102, dorm_id))
+        first_submission = await db.get_week(week_start, dorm_id=dorm_id)
+        self.assertEqual(first_submission["done_reported_at"], first_cleaned_at.isoformat())
+        self.assertTrue(await db.reject_week_photo(week_start, dorm_id))
+        resubmission_cleaned_at = datetime(2026, 11, 24, 17, 0, tzinfo=config.TIMEZONE)
+        with patch("config.get_current_time", return_value=resubmission_cleaned_at):
+            self.assertTrue(await db.mark_done_reported(week_start, dorm_id, user_id=102))
+        with patch("config.get_current_time", return_value=datetime(2026, 11, 24, 18, 0, tzinfo=config.TIMEZONE)):
+            self.assertTrue(await db.submit_photo(week_start, "bonus-photo-resubmitted", 102, dorm_id))
+        week_after_submission = await db.get_week(week_start, dorm_id=dorm_id)
+        self.assertEqual(week_after_submission["done_reported_at"], resubmission_cleaned_at.isoformat())
+        self.assertEqual(
+            db.config.format_local_datetime(week_after_submission["done_reported_at"]),
+            "Tue, Nov 24 at 05:00 PM"
+        )
+
+        reward = await db.approve_week_and_award_tokens(
+            week_start, dorm_id=dorm_id, rating=4, review_text="Great job"
+        )
+        self.assertEqual(reward, {"tokens_each": 24, "early_bonus": 4, "approver_bonus": 5})
+        self.assertEqual(await db.get_tsidat_balance(dorm_id, 102), 24)
+        self.assertEqual(await db.get_tsidat_balance(dorm_id, 103), 24)
+        self.assertEqual(await db.get_tsidat_balance(dorm_id, 104), 5)
+        self.assertIsNone(await db.approve_week_and_award_tokens(
+            week_start, dorm_id=dorm_id, rating=4, review_text="Duplicate"
+        ))
+        self.assertEqual(await db.get_tsidat_balance(dorm_id, 102), 24)
+
+        for offset, expected_bonus in enumerate((5, 4, 3, 2, 1, 0, 0)):
+            day = date(2026, 11, 23) + timedelta(days=offset)
+            timestamp = datetime.combine(day, datetime.min.time()).replace(
+                tzinfo=config.TIMEZONE
+            ).isoformat()
+            self.assertEqual(db._early_cleaning_bonus(week_start, timestamp), expected_bonus)
+
+    async def test_reminder_claim_enforces_six_hour_interval_and_stops_after_photo(self):
+        """Reminder claims are atomic, spaced six hours apart, and stop after submission."""
+        await db.init_db()
+        dorm_id = -1005555222
+        await db.create_or_update_dorm(dorm_id=dorm_id, admin_id=104, dorm_name="Reminder Test Dorm")
+        for user_id, name in ((102, "Cleaner A"), (103, "Cleaner B"), (104, "Approver")):
+            await db.add_dorm_member(dorm_id, user_id, name)
+
+        week_start = "2026-11-23"
+        await db.get_or_create_week(week_start, 1, 102, 103, [104], dorm_id=dorm_id)
+        with patch("config.get_current_time", return_value=datetime(2026, 11, 23, 8, tzinfo=config.TIMEZONE)):
+            await db.mark_announced(week_start, dorm_id=dorm_id)
+
+        with patch("config.get_current_time", return_value=datetime(2026, 11, 23, 14, tzinfo=config.TIMEZONE)):
+            self.assertTrue(await db.claim_week_reminder(week_start, dorm_id=dorm_id))
+        with patch("config.get_current_time", return_value=datetime(2026, 11, 23, 19, 59, tzinfo=config.TIMEZONE)):
+            self.assertFalse(await db.claim_week_reminder(week_start, dorm_id=dorm_id))
+        with patch("config.get_current_time", return_value=datetime(2026, 11, 23, 20, tzinfo=config.TIMEZONE)):
+            self.assertTrue(await db.claim_week_reminder(week_start, dorm_id=dorm_id))
+            self.assertTrue(await db.submit_photo(week_start, "reminder-photo", 102, dorm_id))
+            self.assertFalse(await db.claim_week_reminder(week_start, dorm_id=dorm_id))
+
+    async def test_cleaner_reminder_allows_eight_pm_but_not_after(self):
+        """The daytime reminder window includes 8 PM, but excludes later sends."""
+        from scheduler import send_dorm_cleaner_reminder
+
+        dorm_id = -1005555223
+        week_info = MagicMock(
+            week_number=1,
+            week_start="2026-11-23",
+            friday_date=date(2026, 11, 27),
+            cleaners=[(102, "Cleaner A"), (103, "Cleaner B")],
+        )
+        context = MagicMock()
+        with (
+            patch("scheduler.db.get_dorm", new_callable=AsyncMock, return_value={"is_active": 1}),
+            patch("scheduler.db.get_dorm_members", new_callable=AsyncMock, return_value=[
+                {"user_id": 102, "name": "Cleaner A"},
+                {"user_id": 103, "name": "Cleaner B"},
+            ]),
+            patch("scheduler.db.get_dorm_pairs", new_callable=AsyncMock, return_value=[{}]),
+            patch("scheduler.get_dorm_week_info", return_value=week_info),
+            patch("scheduler.db.get_week", new_callable=AsyncMock, return_value={
+                "final_status": "pending",
+                "photo_status": "none",
+                "cleaner1_id": 102,
+                "cleaner2_id": 103,
+            }),
+            patch("scheduler.db.claim_week_reminder", new_callable=AsyncMock, return_value=True) as claim,
+            patch("scheduler.send_dm_with_fallback", new_callable=AsyncMock),
+            patch("scheduler.config.get_meme_file", return_value=None),
+        ):
+            sent_at_eight = datetime(2026, 11, 23, 20, 0, tzinfo=config.TIMEZONE)
+            self.assertTrue(await send_dorm_cleaner_reminder(
+                context, dorm_id, now_date=sent_at_eight.date(), now_time=sent_at_eight
+            ))
+            claim.assert_awaited_once()
+
+            claim.reset_mock()
+            sent_after_eight = datetime(2026, 11, 23, 20, 1, tzinfo=config.TIMEZONE)
+            self.assertFalse(await send_dorm_cleaner_reminder(
+                context, dorm_id, now_date=sent_after_eight.date(), now_time=sent_after_eight
+            ))
+            claim.assert_not_awaited()
+
+    async def test_friday_deadline_fines_unapproved_week_once(self):
+        """Friday closure records fines once and makes the week final."""
+        await db.init_db()
+        dorm_id = -1005555333
+        await db.create_or_update_dorm(dorm_id=dorm_id, admin_id=104, dorm_name="Deadline Test Dorm")
+        for user_id, name in ((102, "Cleaner A"), (103, "Cleaner B"), (104, "Approver")):
+            await db.add_dorm_member(dorm_id, user_id, name)
+
+        week_start = "2026-11-23"
+        await db.get_or_create_week(week_start, 1, 102, 103, [104], dorm_id=dorm_id)
+        outcome = await db.finalize_week_fined(week_start, dorm_id=dorm_id, fine_total=100)
+        self.assertEqual(outcome["fine_each"], 50)
+        self.assertEqual((await db.get_week(week_start, dorm_id=dorm_id))["final_status"], "fined")
+        self.assertIsNone(await db.finalize_week_fined(week_start, dorm_id=dorm_id, fine_total=100))
+        self.assertEqual(await db.get_user_unpaid_total(102, dorm_id=dorm_id), 50)
+        self.assertEqual(await db.get_user_unpaid_total(103, dorm_id=dorm_id), 50)
+
     async def test_cleaner_friday_check_responses(self):
         """Test recording Friday check responses from cleaners."""
         await db.init_db()
@@ -1106,6 +1241,166 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         reply3 = fallback_inspector_reply("any fines?", context)
         self.assertIn("No unpaid fines", reply3)
 
+    def test_fallback_reply_varies_for_repeated_prompt(self):
+        """Repeated casual prompts should not return the same canned reply."""
+        from services.ai_service import fallback_inspector_reply
+
+        prompt = "hey what's up?"
+        first_reply = fallback_inspector_reply(prompt, "Dorm: Test Dorm", user_name="Nahom")
+        next_reply = fallback_inspector_reply(
+            prompt,
+            "Dorm: Test Dorm",
+            user_name="Nahom",
+            history=[{"role": "assistant", "content": first_reply}]
+        )
+
+        self.assertNotEqual(first_reply, next_reply)
+
+    def test_fallback_fine_policy_uses_dorm_amount(self):
+        """Offline fine explanations should respect a dorm's configured fine."""
+        from services.ai_service import fallback_inspector_reply
+
+        reply = fallback_inspector_reply(
+            "explain the fine rules",
+            "Dorm: Test Dorm\nFine Amount: 300 ETB per missed week (split between cleaners)"
+        )
+
+        self.assertIn("300 ETB total fine", reply)
+        self.assertIn("150 ETB each", reply)
+
+    async def test_week_announcement_claim_is_atomic(self):
+        """Only one overlapping scheduler invocation may claim a week's announcement."""
+        await db.init_db()
+        week = config.get_week_info(config.START_BASE_MONDAY)
+        eligible = [
+            member.user_id for member in config.MEMBERS
+            if member.user_id not in (week.cleaner1.user_id, week.cleaner2.user_id)
+        ]
+        await db.get_or_create_week(
+            week.week_start,
+            week.week_number,
+            week.cleaner1.user_id,
+            week.cleaner2.user_id,
+            eligible,
+            dorm_id=config.DEFAULT_GROUP_ID
+        )
+        secondary_dorm_id = -1009999999888
+        await db.get_or_create_week(
+            week.week_start,
+            week.week_number,
+            week.cleaner1.user_id,
+            week.cleaner2.user_id,
+            eligible,
+            dorm_id=secondary_dorm_id
+        )
+        self.assertTrue(await db.claim_week_announcement(week.week_start, dorm_id=secondary_dorm_id))
+        await db.mark_announced(week.week_start, dorm_id=secondary_dorm_id)
+
+        claims = await asyncio.gather(
+            db.claim_week_announcement(week.week_start, dorm_id=config.DEFAULT_GROUP_ID),
+            db.claim_week_announcement(week.week_start, dorm_id=config.DEFAULT_GROUP_ID)
+        )
+
+        self.assertEqual(claims.count(True), 1)
+        self.assertEqual(claims.count(False), 1)
+        await db.mark_announced(week.week_start, dorm_id=config.DEFAULT_GROUP_ID)
+        self.assertFalse(await db.claim_week_announcement(week.week_start, dorm_id=config.DEFAULT_GROUP_ID))
+
+    async def test_announcement_is_persisted_before_cleaner_dm_failure(self):
+        """A cleaner DM failure must not make the catch-up job repost group announcements."""
+        await db.init_db()
+        await db.seed_default_dorm()
+        from scheduler import DormWeekInfo, send_dorm_announcement
+
+        dorm_id = config.DEFAULT_GROUP_ID
+        week_info = config.get_week_info(config.START_BASE_MONDAY)
+        dorm = await db.get_dorm(dorm_id)
+        members = await db.get_dorm_members(dorm_id)
+        pairs = await db.get_dorm_pairs(dorm_id)
+        members_by_id = {member["user_id"]: member["name"] for member in members}
+        approver_id = next(
+            member["user_id"] for member in members
+            if member["user_id"] not in (week_info.cleaner1.user_id, week_info.cleaner2.user_id)
+        )
+        await db.get_or_create_week(
+            week_info.week_start,
+            week_info.week_number,
+            week_info.cleaner1.user_id,
+            week_info.cleaner2.user_id,
+            [approver_id],
+            dorm_id=dorm_id
+        )
+
+        event_order = []
+        original_mark_announced = db.mark_announced
+
+        async def record_mark_announced(*args, **kwargs):
+            await original_mark_announced(*args, **kwargs)
+            event_order.append("marked")
+
+        async def post_group(*args, **kwargs):
+            event_order.append("group")
+            return True, "posted"
+
+        async def fail_dm(*args, **kwargs):
+            event_order.append("dm")
+            raise RuntimeError("Simulated cleaner DM failure")
+
+        context = MagicMock()
+        with (
+            patch("scheduler.db.get_dorm", new_callable=AsyncMock, return_value=dorm),
+            patch("scheduler.db.get_dorm_members", new_callable=AsyncMock, return_value=members),
+            patch("scheduler.db.get_dorm_pairs", new_callable=AsyncMock, return_value=pairs),
+            patch("scheduler.get_dorm_week_info", return_value=DormWeekInfo(
+                week_start=week_info.week_start,
+                week_number=week_info.week_number,
+                cleaner1_id=week_info.cleaner1.user_id,
+                cleaner2_id=week_info.cleaner2.user_id,
+                cleaner1_name=week_info.cleaner1.name,
+                cleaner2_name=week_info.cleaner2.name,
+                monday_date=week_info.monday_date,
+                friday_date=week_info.friday_date,
+            )),
+            patch("scheduler.config.get_meme_file", return_value=None),
+            patch("scheduler.post_group_announcement_safe", side_effect=post_group),
+            patch("scheduler.db.mark_announced", side_effect=record_mark_announced),
+            patch("scheduler.send_dm_with_fallback", side_effect=fail_dm),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "Simulated cleaner DM failure"):
+                await send_dorm_announcement(context, dorm_id, now_date=config.START_BASE_MONDAY)
+
+            self.assertEqual(event_order, ["group", "marked", "dm"])
+            saved_week = await db.get_week(week_info.week_start, dorm_id=dorm_id)
+            self.assertEqual(saved_week["announced"], 1)
+
+            group_post = patch("scheduler.post_group_announcement_safe", side_effect=post_group)
+            with group_post as mock_post:
+                result = await send_dorm_announcement(
+                    context, dorm_id, now_date=config.START_BASE_MONDAY
+                )
+                self.assertFalse(result[0])
+                mock_post.assert_not_awaited()
+
+    async def test_monday_announcement_job_uses_guarded_announcement_route(self):
+        """The scheduled announcement uses the once-per-week route without a removed force flag."""
+        from scheduler import monday_announcement_job
+
+        calls = []
+
+        async def send_announcement(context, dorm_id, now_date=None):
+            calls.append(dorm_id)
+            return True, "sent"
+
+        context = MagicMock()
+        with (
+            patch("scheduler.db.get_all_active_dorms", new_callable=AsyncMock, return_value=[
+                {"dorm_id": -1005555444}
+            ]),
+            patch("scheduler.send_dorm_announcement", side_effect=send_announcement),
+        ):
+            await monday_announcement_job(context)
+        self.assertEqual(calls, [-1005555444])
+
     async def test_ai_mention_natural_name(self):
         """Verify that typing '@inspector who is cleaning' triggers AI, while bare mention does not."""
         await db.init_db()
@@ -1767,7 +2062,7 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         ]
         for q in queries:
             reply = ai_service.fallback_inspector_reply(q, context, user_name="Mintesnot")
-            self.assertIn("offline fallback mode", reply.lower())
+            self.assertIn("live ai is unavailable", reply.lower())
             self.assertIn("/set_ai_key", reply)
 
     async def test_dashboard_url_clean_slash_formatting(self):

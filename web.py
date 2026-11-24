@@ -148,11 +148,19 @@ async def list_active_dorms(request: Request) -> Any:
                 f_status = week_record.get("final_status", "pending")
                 p_status = week_record.get("photo_status", "none")
                 if f_status == "completed":
+                    cleaned_at = config.format_local_datetime(
+                        week_record.get("done_reported_at") or week_record.get("photo_submitted_at")
+                    )
                     duty_status = "Cleaned & Approved"
+                    if cleaned_at:
+                        duty_status += f" • Cleaned at {cleaned_at}"
                 elif f_status == "fined":
                     duty_status = "Fined"
                 elif p_status == "submitted":
-                    duty_status = "Photo Review Pending"
+                    cleaned_at = config.format_local_datetime(
+                        week_record.get("done_reported_at") or week_record.get("photo_submitted_at")
+                    )
+                    duty_status = f"Cleaned at {cleaned_at} • Photo Review Pending" if cleaned_at else "Photo Review Pending"
                 elif p_status == "approved":
                     duty_status = "Photo Approved"
 
@@ -240,21 +248,36 @@ async def get_dorm_detail(dorm_identifier: str) -> Dict[str, Any]:
                 approver_name = members_by_id.get(week_record["approver_id"], f"ID {week_record['approver_id']}")
             f_status = week_record.get("final_status", "pending")
             p_status = week_record.get("photo_status", "none")
+            cleaned_at = config.format_local_datetime(
+                week_record.get("done_reported_at") or week_record.get("photo_submitted_at")
+            )
             if f_status == "completed":
                 rating = week_record.get("rating", 5)
-                duty_state = f"Cleaned & Approved ({rating}★ Stars)"
+                when = f" • Cleaned at {cleaned_at}" if cleaned_at else ""
+                bonus = week_record.get("early_bonus", 0)
+                bonus_text = f" • +{bonus} early bonus tokens" if bonus else ""
+                duty_state = f"Cleaned & Approved ({rating}★ Stars){when}{bonus_text}"
                 status_code = "completed"
             elif f_status == "fined":
                 duty_state = f"Missed Deadline (Fined {dorm.get('fine_amount', 100)} ETB)"
                 status_code = "fined"
             elif p_status == "submitted":
-                duty_state = "Photo Submitted (Review Pending)"
+                duty_state = (
+                    f"Cleaned at {cleaned_at} • Photo Submitted (Review Pending)"
+                    if cleaned_at else "Photo Submitted (Review Pending)"
+                )
                 status_code = "submitted"
             elif p_status == "rejected":
-                duty_state = "Photo Rejected (Needs Recleaning)"
+                duty_state = (
+                    f"Photo Rejected (Needs Recleaning; last cleaned at {cleaned_at})"
+                    if cleaned_at else "Photo Rejected (Needs Recleaning)"
+                )
                 status_code = "rejected"
             elif week_record.get("done_reported"):
-                duty_state = "Cleaners Reported Done (Photo Awaited)"
+                duty_state = (
+                    f"Cleaners Reported Cleaned at {cleaned_at} (Photo Awaited)"
+                    if cleaned_at else "Cleaners Reported Done (Photo Awaited)"
+                )
                 status_code = "done_reported"
 
     # Next 4 weeks schedule preview
@@ -325,6 +348,13 @@ async def get_dorm_detail(dorm_identifier: str) -> Dict[str, Any]:
             "photo_status": week_record.get("photo_status", "none") if week_record else "none",
             "final_status": week_record.get("final_status", "pending") if week_record else "pending",
             "done_reported": bool(week_record.get("done_reported", 0)) if week_record else False,
+            "done_reported_at": week_record.get("done_reported_at") if week_record else None,
+            "photo_submitted_at": week_record.get("photo_submitted_at") if week_record else None,
+            "cleaned_at_display": config.format_local_datetime(
+                (week_record.get("done_reported_at") or week_record.get("photo_submitted_at"))
+                if week_record else None
+            ),
+            "early_bonus": week_record.get("early_bonus", 0) if week_record else 0,
             "rating": week_record.get("rating") if week_record else None,
             "review_text": week_record.get("review_text") if week_record else None
         },
@@ -363,86 +393,6 @@ async def get_dorm_leaderboard(dorm_identifier: str) -> List[Dict[str, Any]]:
     """Convenience endpoint returning Tsidat token leaderboard for a dorm."""
     detail = await get_dorm_detail(dorm_identifier)
     return detail.get("leaderboard", [])
-
-@app.api_route("/api/dorms/{dorm_identifier}/approve", methods=["GET", "POST"], response_class=JSONResponse)
-async def api_approve_dorm_cleaning(dorm_identifier: str, stars: int = 5) -> Dict[str, Any]:
-    """Admin or Approver API to immediately mark current week's cleaning as approved and award Tsidat tokens."""
-    dorm = None
-    clean_id = dorm_identifier.strip()
-    if clean_id.lower() in ("default", "active", "main", "primary"):
-        default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
-        dorm = await db.get_dorm(default_gid)
-        if not dorm:
-            active_dorms = await db.get_all_active_dorms()
-            if active_dorms:
-                dorm = active_dorms[0]
-        if not dorm:
-            dorm = await db.get_dorm_by_code("DEFAULT")
-    else:
-        try:
-            dorm = await db.get_dorm(int(clean_id))
-        except ValueError:
-            pass
-        if not dorm:
-            dorm = await db.get_dorm_by_code(clean_id)
-
-    if not dorm:
-        raise HTTPException(status_code=404, detail=f"Dorm '{dorm_identifier}' not found")
-
-    dorm_id = dorm["dorm_id"]
-    pairs = await db.get_dorm_pairs(dorm_id)
-    members = await db.get_dorm_members(dorm_id)
-    members_by_id = {m["user_id"]: m["name"] for m in members}
-
-    current_date = config.get_current_date()
-    week_info = get_dorm_week_info(dorm, pairs, members_by_id, target_date=current_date)
-    if not week_info:
-        raise HTTPException(status_code=400, detail="No schedule found")
-
-    week_start = week_info.week_start
-    stars_clamped = max(1, min(5, stars))
-    review_comments = {
-        5: "Sparkling clean! 5-star hotel standard.",
-        4: "Great job! Room looks and smells fresh.",
-        3: "Good effort! Passed inspection cleanly.",
-        2: "Acceptable, but room needs a deeper scrub next time.",
-        1: "Barely passed. The broom was barely awake!"
-    }
-    comment = review_comments.get(stars_clamped, "Sparkling clean! 5-star hotel standard.")
-    tokens = stars_clamped * 5
-
-    await db.update_photo_status(
-        week_start,
-        status="approved",
-        final_status="completed",
-        dorm_id=dorm_id,
-        rating=stars_clamped,
-        review_text=comment
-    )
-
-    c1_id = week_info.cleaner1_id
-    c2_id = week_info.cleaner2_id
-    c3_id = getattr(week_info, "cleaner3_id", 0)
-
-    await db.add_tsidat_tokens(dorm_id, c1_id, tokens)
-    if c2_id:
-        await db.add_tsidat_tokens(dorm_id, c2_id, tokens)
-    if c3_id:
-        await db.add_tsidat_tokens(dorm_id, c3_id, tokens)
-
-    week_record = await db.get_week(week_start, dorm_id=dorm_id)
-    if week_record and week_record.get("approver_id"):
-        await db.add_tsidat_tokens(dorm_id, week_record["approver_id"], 5)
-
-    return {
-        "status": "success",
-        "message": f"Week {week_info.week_number} cleaning approved with {stars_clamped}★ stars! Cleaners received +{tokens} Tsidat tokens.",
-        "dorm_id": dorm_id,
-        "week_number": week_info.week_number,
-        "cleaners": week_info.cleaner_display,
-        "rating": stars_clamped,
-        "tokens_awarded": tokens
-    }
 
 @app.get("/fines", include_in_schema=False)
 async def redirect_fines():
@@ -799,12 +749,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <p id="cleaning-review-comment" class="text-white/70 italic text-[10px] mt-1">Inspection passed cleanly!</p>
         </div>
 
-        <!-- Quick Approve Button (Available when cleaning is pending or submitted) -->
-        <div id="quick-approve-container" class="mt-2">
-          <button id="quick-approve-btn" onclick="quickApproveDuty()" class="w-full py-1.5 px-3 rounded-lg border border-white/40 hover:border-white bg-white/10 hover:bg-white text-white hover:text-black font-mono font-bold text-[11px] transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-sm">
-            <span>✓</span> <span>Approve Week's Cleaning (+25 Tokens)</span>
-          </button>
-        </div>
       </div>
     </div>
 
@@ -1122,6 +1066,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       const isFined = curWeek.status_code === 'fined' || curWeek.final_status === 'fined';
       const isSubmitted = curWeek.status_code === 'submitted' || curWeek.photo_status === 'submitted';
       const isDoneReported = curWeek.status_code === 'done_reported' || curWeek.done_reported;
+      const cleanedAt = curWeek.cleaned_at_display || '';
+      const cleanedAtSuffix = cleanedAt ? ` • ${cleanedAt}` : '';
 
       // Week header & badge
       document.getElementById('selected-dorm-week-header').innerText = `Week ${curWeek.week_number || 1} Duty • ${curWeek.duty_state || 'In Progress'}`;
@@ -1130,16 +1076,16 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       if (badge) {
         if (isCompleted) {
           const stars = curWeek.rating ? ` (${curWeek.rating}★)` : '';
-          badge.innerText = `APPROVED${stars} ✓`;
+          badge.innerText = `APPROVED${stars}${cleanedAtSuffix} ✓`;
           badge.className = 'px-2.5 py-0.5 rounded border border-white bg-white text-black text-[10px] font-mono uppercase font-bold';
         } else if (isFined) {
           badge.innerText = 'MISSED DEADLINE (FINED) ⚠️';
           badge.className = 'px-2.5 py-0.5 rounded border border-red-500 bg-red-500/20 text-red-400 text-[10px] font-mono uppercase font-bold';
         } else if (isSubmitted) {
-          badge.innerText = 'REVIEW PENDING ⏳';
+          badge.innerText = `CLEANED${cleanedAtSuffix} • REVIEW PENDING ⏳`;
           badge.className = 'px-2.5 py-0.5 rounded border border-white/60 text-[10px] font-mono uppercase font-bold text-white';
         } else if (isDoneReported) {
-          badge.innerText = 'CLEANED (AWAITING PHOTO)';
+          badge.innerText = `CLEANED${cleanedAtSuffix} (AWAITING PHOTO)`;
           badge.className = 'px-2.5 py-0.5 rounded border border-white/40 text-[10px] font-mono uppercase font-bold text-white/80';
         } else {
           badge.innerText = (curWeek.duty_state || 'IN PROGRESS').toUpperCase();
@@ -1151,11 +1097,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       const cardStatus = document.getElementById('card-status-display');
       if (cardStatus) {
         if (isCompleted) {
-          cardStatus.innerText = 'CLEANED & APPROVED ✓';
+          cardStatus.innerText = `CLEANED${cleanedAtSuffix} & APPROVED ✓`;
         } else if (isFined) {
           cardStatus.innerText = 'FINED ⚠️ (UNPAID)';
         } else if (isSubmitted) {
-          cardStatus.innerText = 'REVIEW PENDING';
+          cardStatus.innerText = `CLEANED${cleanedAtSuffix} • REVIEW PENDING`;
         } else if (isDoneReported) {
           cardStatus.innerText = 'PHOTO AWAITED';
         } else {
@@ -1224,7 +1170,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             reviewBadge.className = 'px-1.5 py-0.5 rounded bg-white text-black font-bold text-[9px]';
           }
           if (reviewComment) {
-            reviewComment.innerText = curWeek.review_text ? `"${curWeek.review_text}"` : 'Inspection passed cleanly!';
+            const review = curWeek.review_text ? `"${curWeek.review_text}"` : 'Inspection passed cleanly!';
+            const bonus = curWeek.early_bonus ? ` +${curWeek.early_bonus} early-cleaning bonus tokens.` : '';
+            reviewComment.innerText = `${review} Cleaned at ${cleanedAt || 'time not recorded'}.${bonus}`;
           }
           reviewBanner.classList.remove('hidden');
         } else if (isFined) {
@@ -1244,7 +1192,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             reviewBadge.className = 'px-1.5 py-0.5 rounded border border-white/40 text-white font-mono text-[9px]';
           }
           if (reviewComment) {
-            reviewComment.innerText = `Cleaners submitted photo proof. Waiting for ${curWeek.approver || 'approver'} to review.`;
+            reviewComment.innerText = `Cleaned at ${cleanedAt || 'time not recorded'}. Photo submitted; waiting for ${curWeek.approver || 'approver'} to review.`;
           }
           reviewBanner.classList.remove('hidden');
         } else if (isDoneReported) {
@@ -1254,21 +1202,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             reviewBadge.className = 'px-1.5 py-0.5 rounded border border-white/40 text-white font-mono text-[9px]';
           }
           if (reviewComment) {
-            reviewComment.innerText = 'Cleaners marked cleaning done. Uploading proof photo.';
+            reviewComment.innerText = `Cleaners marked cleaning done at ${cleanedAt || 'time not recorded'}. Photo awaited.`;
           }
           reviewBanner.classList.remove('hidden');
         } else {
           reviewBanner.classList.add('hidden');
-        }
-      }
-
-      // Quick Approve button visibility
-      const quickApproveCont = document.getElementById('quick-approve-container');
-      if (quickApproveCont) {
-        if (isCompleted) {
-          quickApproveCont.classList.add('hidden');
-        } else {
-          quickApproveCont.classList.remove('hidden');
         }
       }
 
@@ -1277,41 +1215,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       renderLeaderboard(data.leaderboard);
       renderFines(data.fines);
       renderHistory(data.history);
-    }
-
-    async function quickApproveDuty() {
-      const btn = document.getElementById('quick-approve-btn');
-      if (!currentDormData || !currentDormData.dorm_code) return;
-      const cWeek = currentDormData.current_week || {};
-      const cNames = cWeek.cleaners_display || 'Cleaners';
-      if (!confirm(`Mark Week ${cWeek.week_number || 1} (${cNames}) cleaning as APPROVED with 5 Stars?\\n\\nCleaners will immediately receive +25 Tsidat tokens.`)) return;
-
-      if (btn) {
-        btn.disabled = true;
-        btn.innerText = 'Approving duty...';
-      }
-      try {
-        const resp = await fetch(`/api/dorms/${encodeURIComponent(currentDormData.dorm_code)}/approve?stars=5`, { method: 'POST' });
-        const resJson = await resp.json();
-        if (resJson && resJson.status === 'success') {
-          await fetchDashboardData();
-        } else {
-          alert(resJson.message || 'Approval could not be completed.');
-        }
-      } catch (err) {
-        console.error('Approval request failed:', err);
-        try {
-          await fetch(`/api/dorms/${encodeURIComponent(currentDormData.dorm_code)}/approve?stars=5`);
-          await fetchDashboardData();
-        } catch (e2) {
-          alert('Network connection error.');
-        }
-      } finally {
-        if (btn) {
-          btn.disabled = false;
-          btn.innerHTML = '<span>✓</span> <span>Approve Week\\'s Cleaning (+25 Tokens)</span>';
-        }
-      }
     }
 
     function renderSchedule(schedule, isCompleted, isFined) {

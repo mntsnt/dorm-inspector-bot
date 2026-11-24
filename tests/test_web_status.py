@@ -218,6 +218,8 @@ class TestWebStatusDashboard(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cur["rating"], 5)
         self.assertEqual(cur["review_text"], "Sparkling clean! 5-star hotel standard.")
         self.assertIn("Cleaned & Approved (5★ Stars)", cur["duty_state"])
+        self.assertTrue(cur["cleaned_at_display"])
+        self.assertIn(cur["cleaned_at_display"], cur["duty_state"])
 
         # Verify HTML contains review banner and dynamic cleaner status logic
         html_resp = await self.client.get("/")

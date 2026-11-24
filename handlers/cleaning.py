@@ -1,10 +1,11 @@
 """
 Cleaning Duty & Photo Submission Handler (Multi-Tenant Platform)
-Handles /done, 'We cleaned' button callbacks, photo submissions, and Friday check responses.
+Handles /done, 'We cleaned' button callbacks, and photo submissions.
 Scoper to specific dorms with automatic resolution for private chat interactions.
 """
 
 import logging
+from datetime import datetime
 from typing import Any, Dict, Optional, Tuple
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -23,6 +24,10 @@ import config
 import db
 
 logger = logging.getLogger(__name__)
+
+def _cleaning_deadline_passed(friday_date) -> bool:
+    deadline = datetime.combine(friday_date, config.CHECK_TIME)
+    return config.get_current_time() >= deadline
 
 async def _safe_edit_message(
     query,
@@ -217,7 +222,14 @@ async def handle_cleaner_done(
         )
         return
 
-    target_week_start = week_start or week_info.week_start
+    if week_start and week_start != week_info.week_start:
+        await msg.reply_text("That cleaning submission link has expired. Use this week's /status to open the current duty.")
+        return
+    if _cleaning_deadline_passed(week_info.friday_date):
+        await msg.reply_text("The Friday 8:00 PM deadline has passed. This week's cleaning submission is closed.")
+        return
+
+    target_week_start = week_info.week_start
     week_record = await db.get_week(target_week_start, dorm_id=dorm_id)
 
     if not week_record:
@@ -260,7 +272,9 @@ async def handle_cleaner_done(
         await msg.reply_text("✅ Cleaning for this week is already completed and approved! You are done for the week.")
         return
 
-    await db.mark_done_reported(target_week_start, dorm_id=dorm_id)
+    if not await db.mark_done_reported(target_week_start, dorm_id=dorm_id, user_id=user_id):
+        await msg.reply_text("This week's cleaning submission is already closed or awaiting review.")
+        return
 
     instruction = "Please send a photo of the cleaned dorm in this chat."
     dog_meme = config.get_meme_file("suspicious_dog")
@@ -359,7 +373,7 @@ async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
             cleaner3_id=week_info.cleaner3_id,
         )
 
-    if not is_cleaner and not is_group:
+    if not is_cleaner:
         disp = week_info.cleaner_display
         await update.message.reply_text(
             f"ℹ️ **You are not on cleaning duty this week!**\n\n"
@@ -368,17 +382,31 @@ async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return
 
-    if week_record.get("final_status") == "completed" or week_record.get("photo_status") == "approved":
+    if week_record.get("final_status") != "pending":
         if not is_group:
-            await update.message.reply_text("✅ Cleaning for this week is already completed and approved! You are done for the week.")
+            await update.message.reply_text("This week's cleaning is closed. Check /status for the final result.")
+        return
+    if _cleaning_deadline_passed(week_info.friday_date):
+        if not is_group:
+            await update.message.reply_text("The Friday 8:00 PM deadline has passed. This week's cleaning submission is closed.")
+        return
+    if week_record.get("photo_status") == "submitted":
+        if not is_group:
+            await update.message.reply_text("Your photo is already submitted and waiting for the approver.")
         return
 
     # Get the highest resolution photo
     photo_file_id = update.message.photo[-1].file_id
 
     # Record photo in database
-    await db.submit_photo(week_info.week_start, photo_file_id, user.id, dorm_id=dorm_id)
+    if not await db.submit_photo(week_info.week_start, photo_file_id, user.id, dorm_id=dorm_id):
+        if not is_group:
+            await update.message.reply_text(
+                "The photo could not be accepted because this week is closed or another photo is already awaiting review."
+            )
+        return
 
+    saved_week = await db.get_week(week_info.week_start, dorm_id=dorm_id)
     submitter_name = members_by_id.get(user.id, user.first_name)
     c1_name = members_by_id.get(c1_id, f"ID {c1_id}")
     c2_name = members_by_id.get(c2_id, f"ID {c2_id}") if c2_id else ""
@@ -386,6 +414,10 @@ async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
 
     approver_id = week_record.get("approver_id")
     approver_name = members_by_id.get(approver_id, "Approver")
+    cleaned_at = config.format_local_datetime(
+        (saved_week.get("done_reported_at") or saved_week.get("photo_submitted_at"))
+        if saved_week else None
+    )
 
     approver_keyboard = InlineKeyboardMarkup([
         [
@@ -397,7 +429,8 @@ async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
     if is_group:
         # If posted directly in the group, reply with approval buttons for Approver/Admin right in the group!
         group_caption = (
-            f"📸 **Cleaning Photo Submitted by {submitter_name}!**\n\n"
+            f"📸 **Cleaning Photo Submitted by {submitter_name}!**\n"
+            f"Cleaned at: **{cleaned_at}**\n\n"
             f"Cleaners: **{c_disp}**\n"
             f"Waiting for **{approver_name}** (or Admin) to review:"
         )
@@ -412,7 +445,7 @@ async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
     else:
         # Forward/send photo to the dorm group chat
         group_caption = (
-            f"Cleaned by **{c_disp}** (sent by {submitter_name}).\n"
+            f"Cleaned by **{c_disp}** (sent by {submitter_name}) at **{cleaned_at}**.\n"
             f"Waiting for **{approver_name}** to approve."
         )
         try:
@@ -431,6 +464,7 @@ async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
     if approver_id:
         approver_caption = (
             f"Photo sent by **{c_disp}** ({dorm['dorm_name']}).\n"
+            f"Cleaned at **{cleaned_at or 'time not recorded'}**.\n"
             "Please approve or reject:"
         )
         try:
@@ -589,6 +623,4 @@ def register_cleaning_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("submit", done_command))
     application.add_handler(CommandHandler("clean", done_command))
     application.add_handler(CallbackQueryHandler(cleaned_button_callback, pattern=r"^cleaned_"))
-    application.add_handler(CallbackQueryHandler(friday_check_yes_callback, pattern=r"^fcheck_yes_"))
-    application.add_handler(CallbackQueryHandler(friday_check_no_callback, pattern=r"^fcheck_no_"))
     application.add_handler(MessageHandler(filters.PHOTO, photo_message_handler))

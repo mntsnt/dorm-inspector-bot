@@ -349,7 +349,7 @@ async def announce_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
 
     from scheduler import send_dorm_announcement
-    success, msg = await send_dorm_announcement(context, target_dorm_id, force=True)
+    success, msg = await send_dorm_announcement(context, target_dorm_id)
     await update.effective_message.reply_text(msg)
 
 def register_admin_handlers(application: Application) -> None:

@@ -6,7 +6,7 @@ Provides 100% persistence across restarts, ACID transactions, and idempotency.
 """
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 from pathlib import Path
 import random
@@ -158,14 +158,18 @@ def _init_db_sync(db_path: Optional[Path] = None) -> None:
                 approver_id INTEGER NOT NULL,
                 announced INTEGER DEFAULT 0,
                 announced_at TIMESTAMP,
+                announcement_claimed_at TIMESTAMP,
                 reminder_sent INTEGER DEFAULT 0,
+                reminder_sent_at TIMESTAMP,
                 done_reported INTEGER DEFAULT 0,
+                done_reported_at TIMESTAMP,
                 photo_file_id TEXT,
                 photo_submitted_at TIMESTAMP,
                 photo_submitted_by INTEGER,
                 photo_status TEXT DEFAULT 'none',
                 rating INTEGER DEFAULT 5,
                 review_text TEXT,
+                early_bonus INTEGER DEFAULT 0,
                 check_sent INTEGER DEFAULT 0,
                 cleaner1_response TEXT,
                 cleaner2_response TEXT,
@@ -194,6 +198,14 @@ def _init_db_sync(db_path: Optional[Path] = None) -> None:
             cursor.execute("ALTER TABLE weeks ADD COLUMN cleaner3_id INTEGER DEFAULT 0;")
         if "cleaner3_response" not in week_cols:
             cursor.execute("ALTER TABLE weeks ADD COLUMN cleaner3_response TEXT;")
+        if "announcement_claimed_at" not in week_cols:
+            cursor.execute("ALTER TABLE weeks ADD COLUMN announcement_claimed_at TIMESTAMP;")
+        if "done_reported_at" not in week_cols:
+            cursor.execute("ALTER TABLE weeks ADD COLUMN done_reported_at TIMESTAMP;")
+        if "early_bonus" not in week_cols:
+            cursor.execute("ALTER TABLE weeks ADD COLUMN early_bonus INTEGER DEFAULT 0;")
+        if "reminder_sent_at" not in week_cols:
+            cursor.execute("ALTER TABLE weeks ADD COLUMN reminder_sent_at TIMESTAMP;")
 
         # Migration check: Ensure cleaner3_id exists on dorm_pairs table
         cursor.execute("PRAGMA table_info(dorm_pairs);")
@@ -992,7 +1004,11 @@ def _get_week_sync(week_start: str, dorm_id: int = 0) -> Optional[Dict[str, Any]
     target_id = dorm_id if dorm_id not in (0, None) else default_gid
     with _get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM weeks WHERE (dorm_id = ? OR dorm_id = ?) AND week_start = ?", (target_id, default_gid, week_start))
+        cursor.execute("""
+            SELECT * FROM weeks
+            WHERE week_start = ?
+              AND (dorm_id = ? OR (dorm_id = 0 AND ? = ?));
+        """, (week_start, target_id, target_id, default_gid))
         row = cursor.fetchone()
         return dict(row) if row else None
 
@@ -1007,63 +1023,154 @@ def _mark_announced_sync(week_start: str, dorm_id: int = 0) -> None:
     with _get_connection() as conn:
         conn.execute("""
             UPDATE weeks
-            SET announced = 1, announced_at = ?
-            WHERE (dorm_id = ? OR dorm_id = ?) AND week_start = ?;
-        """, (now_iso, target_id, default_gid, week_start))
+            SET announced = 1,
+                announced_at = ?,
+                announcement_claimed_at = NULL,
+                reminder_sent_at = ?
+            WHERE week_start = ?
+              AND (dorm_id = ? OR (dorm_id = 0 AND ? = ?));
+        """, (now_iso, now_iso, week_start, target_id, target_id, default_gid))
         conn.commit()
 
 async def mark_announced(week_start: str, dorm_id: Optional[int] = None) -> None:
     resolved_id = _resolve_dorm_id(dorm_id)
     await asyncio.to_thread(_mark_announced_sync, week_start, resolved_id)
 
+def _claim_week_announcement_sync(week_start: str, dorm_id: int = 0) -> bool:
+    now = config.get_current_time()
+    claim_expiry = (now - timedelta(minutes=10)).isoformat()
+    default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+    target_id = dorm_id if dorm_id not in (0, None) else default_gid
+    with _get_connection() as conn:
+        cursor = conn.execute("""
+            UPDATE weeks
+            SET announcement_claimed_at = ?
+            WHERE week_start = ?
+              AND (dorm_id = ? OR (dorm_id = 0 AND ? = ?))
+              AND announced = 0
+              AND (
+                  announcement_claimed_at IS NULL
+                  OR announcement_claimed_at < ?
+              );
+        """, (now.isoformat(), week_start, target_id, target_id, default_gid, claim_expiry))
+        conn.commit()
+        return cursor.rowcount == 1
+
+async def claim_week_announcement(week_start: str, dorm_id: Optional[int] = None) -> bool:
+    """Atomically claim an unannounced week; abandoned claims expire after ten minutes."""
+    resolved_id = _resolve_dorm_id(dorm_id)
+    return await asyncio.to_thread(_claim_week_announcement_sync, week_start, resolved_id)
+
 def _mark_reminder_sent_sync(week_start: str, dorm_id: int = 0) -> None:
-    default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
-    target_id = dorm_id if dorm_id not in (0, None) else default_gid
-    with _get_connection() as conn:
-        conn.execute("""
-            UPDATE weeks
-            SET reminder_sent = 1
-            WHERE (dorm_id = ? OR dorm_id = ?) AND week_start = ?;
-        """, (target_id, default_gid, week_start))
-        conn.commit()
-
-async def mark_reminder_sent(week_start: str, dorm_id: Optional[int] = None) -> None:
-    resolved_id = _resolve_dorm_id(dorm_id)
-    await asyncio.to_thread(_mark_reminder_sent_sync, week_start, resolved_id)
-
-def _mark_done_reported_sync(week_start: str, dorm_id: int = 0) -> None:
-    default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
-    target_id = dorm_id if dorm_id not in (0, None) else default_gid
-    with _get_connection() as conn:
-        conn.execute("""
-            UPDATE weeks
-            SET done_reported = 1
-            WHERE (dorm_id = ? OR dorm_id = ?) AND week_start = ?;
-        """, (target_id, default_gid, week_start))
-        conn.commit()
-
-async def mark_done_reported(week_start: str, dorm_id: Optional[int] = None) -> None:
-    resolved_id = _resolve_dorm_id(dorm_id)
-    await asyncio.to_thread(_mark_done_reported_sync, week_start, resolved_id)
-
-def _submit_photo_sync(week_start: str, file_id: str, user_id: int, dorm_id: int = 0) -> None:
     now_iso = config.get_current_time().isoformat()
     default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
     target_id = dorm_id if dorm_id not in (0, None) else default_gid
     with _get_connection() as conn:
         conn.execute("""
             UPDATE weeks
+            SET reminder_sent = 1, reminder_sent_at = ?
+            WHERE week_start = ?
+              AND (dorm_id = ? OR (dorm_id = 0 AND ? = ?));
+        """, (now_iso, week_start, target_id, target_id, default_gid))
+        conn.commit()
+
+async def mark_reminder_sent(week_start: str, dorm_id: Optional[int] = None) -> None:
+    resolved_id = _resolve_dorm_id(dorm_id)
+    await asyncio.to_thread(_mark_reminder_sent_sync, week_start, resolved_id)
+
+def _claim_week_reminder_sync(
+    week_start: str,
+    dorm_id: int = 0,
+    interval_hours: int = 6
+) -> bool:
+    now = config.get_current_time()
+    interval_start = (now - timedelta(hours=interval_hours)).isoformat()
+    default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+    target_id = dorm_id if dorm_id not in (0, None) else default_gid
+    with _get_connection() as conn:
+        cursor = conn.execute("""
+            UPDATE weeks
+            SET reminder_sent = 1, reminder_sent_at = ?
+            WHERE week_start = ?
+              AND (dorm_id = ? OR (dorm_id = 0 AND ? = ?))
+              AND announced = 1
+              AND final_status = 'pending'
+              AND photo_status IN ('none', 'rejected')
+              AND COALESCE(reminder_sent_at, announced_at) <= ?;
+        """, (
+            now.isoformat(), week_start, target_id, target_id, default_gid, interval_start
+        ))
+        conn.commit()
+        return cursor.rowcount == 1
+
+async def claim_week_reminder(
+    week_start: str,
+    dorm_id: Optional[int] = None,
+    interval_hours: int = 6
+) -> bool:
+    """Atomically claim a reminder only when the last one was at least interval_hours ago."""
+    resolved_id = _resolve_dorm_id(dorm_id)
+    return await asyncio.to_thread(
+        _claim_week_reminder_sync, week_start, resolved_id, interval_hours
+    )
+
+def _mark_done_reported_sync(week_start: str, dorm_id: int = 0, user_id: Optional[int] = None) -> bool:
+    now_iso = config.get_current_time().isoformat()
+    default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+    target_id = dorm_id if dorm_id not in (0, None) else default_gid
+    with _get_connection() as conn:
+        cursor = conn.execute("""
+            UPDATE weeks
+            SET done_reported = 1,
+                done_reported_at = CASE
+                    WHEN photo_status = 'rejected' THEN ?
+                    ELSE COALESCE(done_reported_at, ?)
+                END
+            WHERE week_start = ?
+              AND (dorm_id = ? OR (dorm_id = 0 AND ? = ?))
+              AND final_status = 'pending'
+              AND photo_status IN ('none', 'rejected')
+              AND (? IS NULL OR ? IN (cleaner1_id, cleaner2_id, cleaner3_id));
+        """, (now_iso, now_iso, week_start, target_id, target_id, default_gid, user_id, user_id))
+        conn.commit()
+        return cursor.rowcount == 1
+
+async def mark_done_reported(
+    week_start: str,
+    dorm_id: Optional[int] = None,
+    user_id: Optional[int] = None
+) -> bool:
+    resolved_id = _resolve_dorm_id(dorm_id)
+    return await asyncio.to_thread(_mark_done_reported_sync, week_start, resolved_id, user_id)
+
+def _submit_photo_sync(week_start: str, file_id: str, user_id: int, dorm_id: int = 0) -> bool:
+    now_iso = config.get_current_time().isoformat()
+    default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+    target_id = dorm_id if dorm_id not in (0, None) else default_gid
+    with _get_connection() as conn:
+        cursor = conn.execute("""
+            UPDATE weeks
             SET photo_file_id = ?,
                 photo_submitted_at = ?,
                 photo_submitted_by = ?,
-                photo_status = 'submitted'
-            WHERE (dorm_id = ? OR dorm_id = ?) AND week_start = ?;
-        """, (file_id, now_iso, user_id, target_id, default_gid, week_start))
+                photo_status = 'submitted',
+                done_reported = 1,
+                done_reported_at = COALESCE(done_reported_at, ?)
+            WHERE week_start = ?
+              AND (dorm_id = ? OR (dorm_id = 0 AND ? = ?))
+              AND final_status = 'pending'
+              AND photo_status IN ('none', 'rejected')
+              AND ? IN (cleaner1_id, cleaner2_id, cleaner3_id);
+        """, (
+            file_id, now_iso, user_id, now_iso, week_start,
+            target_id, target_id, default_gid, user_id
+        ))
         conn.commit()
+        return cursor.rowcount == 1
 
-async def submit_photo(week_start: str, file_id: str, user_id: int, dorm_id: Optional[int] = None) -> None:
+async def submit_photo(week_start: str, file_id: str, user_id: int, dorm_id: Optional[int] = None) -> bool:
     resolved_id = _resolve_dorm_id(dorm_id)
-    await asyncio.to_thread(_submit_photo_sync, week_start, file_id, user_id, resolved_id)
+    return await asyncio.to_thread(_submit_photo_sync, week_start, file_id, user_id, resolved_id)
 
 def _update_photo_status_sync(
     week_start: str,
@@ -1086,14 +1193,19 @@ def _update_photo_status_sync(
                     review_text = COALESCE(?, review_text),
                     approver_final_decision = CASE WHEN ? = 'approved' THEN 'cleaned' ELSE approver_final_decision END,
                     approver_decided_at = ?
-                WHERE (dorm_id = ? OR dorm_id = ?) AND week_start = ?;
-            """, (status, final_status, rating, review_text, status, now_iso, target_id, default_gid, week_start))
+                WHERE week_start = ?
+                  AND (dorm_id = ? OR (dorm_id = 0 AND ? = ?));
+            """, (
+                status, final_status, rating, review_text, status, now_iso,
+                week_start, target_id, target_id, default_gid
+            ))
         else:
             conn.execute("""
                 UPDATE weeks
                 SET photo_status = ?
-                WHERE (dorm_id = ? OR dorm_id = ?) AND week_start = ?;
-            """, (status, target_id, default_gid, week_start))
+                WHERE week_start = ?
+                  AND (dorm_id = ? OR (dorm_id = 0 AND ? = ?));
+            """, (status, week_start, target_id, target_id, default_gid))
         conn.commit()
 
 async def update_photo_status(
@@ -1106,6 +1218,135 @@ async def update_photo_status(
 ) -> None:
     resolved_id = _resolve_dorm_id(dorm_id)
     await asyncio.to_thread(_update_photo_status_sync, week_start, status, final_status, resolved_id, rating, review_text)
+
+def _early_cleaning_bonus(week_start: str, cleaned_at: Optional[str]) -> int:
+    if not cleaned_at:
+        return 0
+    try:
+        cleaned_time = datetime.fromisoformat(cleaned_at)
+        if cleaned_time.tzinfo is None:
+            cleaned_time = cleaned_time.replace(tzinfo=config.TIMEZONE)
+        cleaned_day = cleaned_time.astimezone(config.TIMEZONE).date()
+        day_offset = (cleaned_day - datetime.strptime(week_start, "%Y-%m-%d").date()).days
+    except (TypeError, ValueError):
+        logger.warning("Cannot calculate early-cleaning bonus for timestamp %r", cleaned_at)
+        return 0
+    return max(0, 5 - day_offset) if 0 <= day_offset <= 4 else 0
+
+def _approve_week_and_award_tokens_sync(
+    week_start: str,
+    dorm_id: int,
+    rating: int,
+    review_text: str
+) -> Optional[Dict[str, int]]:
+    default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+    target_id = dorm_id if dorm_id not in (0, None) else default_gid
+    now_iso = config.get_current_time().isoformat()
+    stars = max(1, min(5, rating))
+    with _get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM weeks
+            WHERE week_start = ?
+              AND (dorm_id = ? OR (dorm_id = 0 AND ? = ?));
+        """, (week_start, target_id, target_id, default_gid))
+        week = cursor.fetchone()
+        if not week or week["final_status"] != "pending" or week["photo_status"] != "submitted":
+            return None
+
+        early_bonus = _early_cleaning_bonus(
+            week_start,
+            week["done_reported_at"] or week["photo_submitted_at"]
+        )
+        tokens_each = stars * 5 + early_bonus
+        cursor.execute("""
+            UPDATE weeks
+            SET photo_status = 'approved',
+                final_status = 'completed',
+                rating = ?,
+                review_text = ?,
+                early_bonus = ?,
+                approver_final_decision = 'cleaned',
+                approver_decided_at = ?
+            WHERE week_start = ?
+              AND (dorm_id = ? OR (dorm_id = 0 AND ? = ?))
+              AND final_status = 'pending'
+              AND photo_status = 'submitted';
+        """, (
+            stars, review_text, early_bonus, now_iso, week_start,
+            target_id, target_id, default_gid
+        ))
+        if cursor.rowcount != 1:
+            return None
+
+        cleaner_ids = [
+            week["cleaner1_id"],
+            week["cleaner2_id"],
+            week["cleaner3_id"] if "cleaner3_id" in week.keys() else 0,
+        ]
+        for cleaner_id in cleaner_ids:
+            if not cleaner_id:
+                continue
+            cursor.execute("""
+                UPDATE dorm_members
+                SET tsidat_balance = COALESCE(tsidat_balance, 0) + ?
+                WHERE user_id = ?
+                  AND (dorm_id = ? OR (dorm_id = 0 AND ? = ?));
+            """, (tokens_each, cleaner_id, target_id, target_id, default_gid))
+            if cursor.rowcount != 1:
+                raise RuntimeError(
+                    f"Cannot award cleaning tokens: member {cleaner_id} is missing from dorm {target_id}"
+                )
+
+        approver_id = week["approver_id"]
+        if approver_id and approver_id not in cleaner_ids:
+            cursor.execute("""
+                UPDATE dorm_members
+                SET tsidat_balance = COALESCE(tsidat_balance, 0) + 5
+                WHERE user_id = ?
+                  AND (dorm_id = ? OR (dorm_id = 0 AND ? = ?));
+            """, (approver_id, target_id, target_id, default_gid))
+            if cursor.rowcount != 1:
+                raise RuntimeError(
+                    f"Cannot award approval tokens: member {approver_id} is missing from dorm {target_id}"
+                )
+
+        conn.commit()
+        return {"tokens_each": tokens_each, "early_bonus": early_bonus, "approver_bonus": 5}
+
+async def approve_week_and_award_tokens(
+    week_start: str,
+    dorm_id: int,
+    rating: int,
+    review_text: str
+) -> Optional[Dict[str, int]]:
+    """Approve a submitted photo and award rewards exactly once in one transaction."""
+    resolved_id = _resolve_dorm_id(dorm_id)
+    return await asyncio.to_thread(
+        _approve_week_and_award_tokens_sync, week_start, resolved_id, rating, review_text
+    )
+
+def _reject_week_photo_sync(week_start: str, dorm_id: int) -> bool:
+    default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+    target_id = dorm_id if dorm_id not in (0, None) else default_gid
+    with _get_connection() as conn:
+        cursor = conn.execute("""
+            UPDATE weeks
+            SET photo_status = 'rejected',
+                done_reported = 0,
+                done_reported_at = NULL
+            WHERE week_start = ?
+              AND (dorm_id = ? OR (dorm_id = 0 AND ? = ?))
+              AND final_status = 'pending'
+              AND photo_status = 'submitted';
+        """, (week_start, target_id, target_id, default_gid))
+        conn.commit()
+        return cursor.rowcount == 1
+
+async def reject_week_photo(week_start: str, dorm_id: int) -> bool:
+    """Reject a currently submitted photo once, only while the week remains open."""
+    resolved_id = _resolve_dorm_id(dorm_id)
+    return await asyncio.to_thread(_reject_week_photo_sync, week_start, resolved_id)
 
 def _set_check_sent_sync(week_start: str, timeout_deadline_iso: str, dorm_id: int = 0) -> None:
     with _get_connection() as conn:
@@ -1254,6 +1495,86 @@ def _create_fines_sync(
     logger.info("Fines recorded for dorm %s, week %s: %s (%d ETB each)", dorm_id, week_start, names_str, fine_each)
     return True
 
+def _finalize_week_fined_sync(
+    week_start: str,
+    dorm_id: int,
+    fine_total: int
+) -> Optional[Dict[str, Any]]:
+    default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+    target_id = dorm_id if dorm_id not in (0, None) else default_gid
+    with _get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM weeks
+            WHERE week_start = ?
+              AND (dorm_id = ? OR (dorm_id = 0 AND ? = ?));
+        """, (week_start, target_id, target_id, default_gid))
+        week = cursor.fetchone()
+        if not week or week["final_status"] != "pending" or week["photo_status"] == "approved":
+            return None
+
+        cleaner_ids = [
+            week["cleaner1_id"],
+            week["cleaner2_id"],
+            week["cleaner3_id"] if "cleaner3_id" in week.keys() else 0,
+        ]
+        cleaner_ids = [cleaner_id for cleaner_id in cleaner_ids if cleaner_id]
+        if not cleaner_ids:
+            logger.error("Cannot fine dorm %s week %s: no cleaners assigned", target_id, week_start)
+            return None
+
+        cursor.execute("""
+            UPDATE weeks
+            SET final_status = 'fined',
+                approver_final_decision = 'deadline',
+                approver_decided_at = ?,
+                timeout_processed = 1,
+                check_sent = 1
+            WHERE week_start = ?
+              AND (dorm_id = ? OR (dorm_id = 0 AND ? = ?))
+              AND final_status = 'pending'
+              AND photo_status != 'approved';
+        """, (
+            config.get_current_time().isoformat(),
+            week_start, target_id, target_id, default_gid
+        ))
+        if cursor.rowcount != 1:
+            return None
+
+        fine_each = max(0, fine_total) // len(cleaner_ids)
+        cleaner_names = []
+        for cleaner_id in cleaner_ids:
+            cursor.execute("""
+                SELECT name FROM dorm_members
+                WHERE user_id = ?
+                  AND (dorm_id = ? OR (dorm_id = 0 AND ? = ?));
+            """, (cleaner_id, target_id, target_id, default_gid))
+            member = cursor.fetchone()
+            cleaner_name = member["name"] if member else f"ID {cleaner_id}"
+            cleaner_names.append(cleaner_name)
+            cursor.execute("""
+                INSERT OR IGNORE INTO fines (dorm_id, week_start, user_id, user_name, amount, status)
+                VALUES (?, ?, ?, ?, ?, 'unpaid');
+            """, (target_id, week_start, cleaner_id, cleaner_name, fine_each))
+
+        conn.commit()
+        return {
+            "cleaner_ids": cleaner_ids,
+            "cleaner_names": cleaner_names,
+            "fine_each": fine_each,
+            "fine_total": max(0, fine_total),
+            "approver_id": week["approver_id"],
+        }
+
+async def finalize_week_fined(
+    week_start: str,
+    dorm_id: int,
+    fine_total: int
+) -> Optional[Dict[str, Any]]:
+    """Atomically close an unapproved week and record its fines once."""
+    resolved_id = _resolve_dorm_id(dorm_id)
+    return await asyncio.to_thread(_finalize_week_fined_sync, week_start, resolved_id, fine_total)
+
 async def create_fines_for_week(
     week_start: str,
     cleaner1_id: int,
@@ -1395,11 +1716,16 @@ def _add_tsidat_tokens_sync(dorm_id: int, user_id: int, amount: int) -> int:
         conn.execute("""
             UPDATE dorm_members
             SET tsidat_balance = COALESCE(tsidat_balance, 0) + ?
-            WHERE (dorm_id = ? OR dorm_id = ?) AND user_id = ?;
-        """, (amount, target_id, default_gid, user_id))
+            WHERE user_id = ?
+              AND (dorm_id = ? OR (dorm_id = 0 AND ? = ?));
+        """, (amount, user_id, target_id, target_id, default_gid))
         conn.commit()
         cursor = conn.cursor()
-        cursor.execute("SELECT tsidat_balance FROM dorm_members WHERE (dorm_id = ? OR dorm_id = ?) AND user_id = ?", (target_id, default_gid, user_id))
+        cursor.execute("""
+            SELECT tsidat_balance FROM dorm_members
+            WHERE user_id = ?
+              AND (dorm_id = ? OR (dorm_id = 0 AND ? = ?));
+        """, (user_id, target_id, target_id, default_gid))
         row = cursor.fetchone()
         return row["tsidat_balance"] if row and row["tsidat_balance"] is not None else amount
 
@@ -1413,7 +1739,11 @@ def _get_tsidat_balance_sync(dorm_id: int, user_id: int) -> int:
     target_id = dorm_id if dorm_id not in (0, None) else default_gid
     with _get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT tsidat_balance FROM dorm_members WHERE (dorm_id = ? OR dorm_id = ?) AND user_id = ?", (target_id, default_gid, user_id))
+        cursor.execute("""
+            SELECT tsidat_balance FROM dorm_members
+            WHERE user_id = ?
+              AND (dorm_id = ? OR (dorm_id = 0 AND ? = ?));
+        """, (user_id, target_id, target_id, default_gid))
         row = cursor.fetchone()
         return row["tsidat_balance"] if row and row["tsidat_balance"] is not None else 0
 
