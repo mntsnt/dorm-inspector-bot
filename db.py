@@ -910,10 +910,16 @@ def _auto_generate_dorm_pairs_sync(dorm_id: int) -> List[Tuple[int, ...]]:
         for u in members:
             teams.append((u, 0, 0))
     elif team_size == 2:
-        for i in range(0, len(members) - 1, 2):
-            teams.append((members[i], members[i + 1], 0))
         if len(members) % 2 != 0:
-            teams.append((members[-1], members[0], 0))
+            if len(members) == 3:
+                teams.append((members[0], members[1], members[2]))
+            else:
+                for i in range(0, len(members) - 3, 2):
+                    teams.append((members[i], members[i + 1], 0))
+                teams.append((members[-3], members[-2], members[-1]))
+        else:
+            for i in range(0, len(members), 2):
+                teams.append((members[i], members[i + 1], 0))
     elif team_size == 3:
         for i in range(0, len(members), 3):
             chunk = members[i:i+3]

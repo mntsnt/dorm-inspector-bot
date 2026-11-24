@@ -1947,5 +1947,51 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         db_member_updated = await db.get_dorm_member(test_dorm_id, test_member_id)
         self.assertEqual(db_member_updated["name"], "Nahom The Great")
 
+    async def test_odd_and_even_dorm_members_pairing_logic(self):
+        """Verify fair pairing logic for both odd (3, 5, 7) and even (4, 6, 8) dorms."""
+        await db.init_db()
+
+        # Case 1: Even Dorm (4 members, 2 per week) -> 2 pairs, 0 third cleaners
+        dorm_even_id = -100444555666
+        await db.create_or_update_dorm(dorm_even_id, admin_id=1, dorm_name="Even Dorm", cleaners_per_week=2)
+        for i in range(1, 5):
+            await db.add_dorm_member(dorm_even_id, user_id=100 + i, name=f"Even_{i}")
+        pairs_even = await db.auto_generate_dorm_pairs(dorm_even_id)
+        self.assertEqual(len(pairs_even), 2)
+        self.assertEqual(pairs_even[0], (101, 102, 0))
+        self.assertEqual(pairs_even[1], (103, 104, 0))
+
+        # Case 2: Odd Dorm (5 members, 2 per week) -> Week 1 pair (101, 102), Week 2 trio (103, 104, 105)
+        # Every roommate cleans exactly once per 2-week cycle!
+        dorm_odd5_id = -100555666777
+        await db.create_or_update_dorm(dorm_odd5_id, admin_id=1, dorm_name="Odd 5 Dorm", cleaners_per_week=2)
+        for i in range(1, 6):
+            await db.add_dorm_member(dorm_odd5_id, user_id=200 + i, name=f"Odd5_{i}")
+        pairs_odd5 = await db.auto_generate_dorm_pairs(dorm_odd5_id)
+        self.assertEqual(len(pairs_odd5), 2)
+        self.assertEqual(pairs_odd5[0], (201, 202, 0))
+        self.assertEqual(pairs_odd5[1], (203, 204, 205))
+
+        # Case 3: Odd Dorm (7 members, 2 per week) -> Week 1 (301, 302), Week 2 (303, 304), Week 3 trio (305, 306, 307)
+        # Every roommate cleans exactly once per 3-week cycle!
+        dorm_odd7_id = -100777888999
+        await db.create_or_update_dorm(dorm_odd7_id, admin_id=1, dorm_name="Odd 7 Dorm", cleaners_per_week=2)
+        for i in range(1, 8):
+            await db.add_dorm_member(dorm_odd7_id, user_id=300 + i, name=f"Odd7_{i}")
+        pairs_odd7 = await db.auto_generate_dorm_pairs(dorm_odd7_id)
+        self.assertEqual(len(pairs_odd7), 3)
+        self.assertEqual(pairs_odd7[0], (301, 302, 0))
+        self.assertEqual(pairs_odd7[1], (303, 304, 0))
+        self.assertEqual(pairs_odd7[2], (305, 306, 307))
+
+        # Case 4: 3 members with 2 cleaners/week -> 1 trio of all 3
+        dorm_odd3_id = -100333444555
+        await db.create_or_update_dorm(dorm_odd3_id, admin_id=1, dorm_name="Odd 3 Dorm", cleaners_per_week=2)
+        for i in range(1, 4):
+            await db.add_dorm_member(dorm_odd3_id, user_id=400 + i, name=f"Odd3_{i}")
+        pairs_odd3 = await db.auto_generate_dorm_pairs(dorm_odd3_id)
+        self.assertEqual(len(pairs_odd3), 1)
+        self.assertEqual(pairs_odd3[0], (401, 402, 403))
+
 if __name__ == "__main__":
     unittest.main()
