@@ -1032,6 +1032,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       document.getElementById('selected-dorm-approver').innerText = (curWeek && curWeek.approver) ? curWeek.approver : 'Not assigned';
 
       const isCompleted = curWeek.status_code === 'completed' || curWeek.final_status === 'completed';
+      const isFined = curWeek.status_code === 'fined' || curWeek.final_status === 'fined';
       const isSubmitted = curWeek.status_code === 'submitted' || curWeek.photo_status === 'submitted';
       const isDoneReported = curWeek.status_code === 'done_reported' || curWeek.done_reported;
 
@@ -1044,6 +1045,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           const stars = curWeek.rating ? ` (${curWeek.rating}★)` : '';
           badge.innerText = `APPROVED${stars} ✓`;
           badge.className = 'px-2.5 py-0.5 rounded border border-white bg-white text-black text-[10px] font-mono uppercase font-bold';
+        } else if (isFined) {
+          badge.innerText = 'MISSED DEADLINE (FINED) ⚠️';
+          badge.className = 'px-2.5 py-0.5 rounded border border-red-500 bg-red-500/20 text-red-400 text-[10px] font-mono uppercase font-bold';
         } else if (isSubmitted) {
           badge.innerText = 'REVIEW PENDING ⏳';
           badge.className = 'px-2.5 py-0.5 rounded border border-white/60 text-[10px] font-mono uppercase font-bold text-white';
@@ -1061,6 +1065,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       if (cardStatus) {
         if (isCompleted) {
           cardStatus.innerText = 'CLEANED & APPROVED ✓';
+        } else if (isFined) {
+          cardStatus.innerText = 'FINED ⚠️ (UNPAID)';
         } else if (isSubmitted) {
           cardStatus.innerText = 'REVIEW PENDING';
         } else if (isDoneReported) {
@@ -1090,6 +1096,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           if (isCompleted) {
             cleanerTag = 'CLEANED ✓';
             tagClass = 'text-white font-mono font-bold bg-white/10 px-1.5 py-0.5 rounded border border-white/40';
+          } else if (isFined) {
+            cleanerTag = `FINED (${fineEach} ETB) ⚠️`;
+            tagClass = 'text-red-400 font-mono font-bold bg-red-500/10 px-1.5 py-0.5 rounded border border-red-500/30';
           } else if (isSubmitted) {
             cleanerTag = 'PHOTO SENT ⏳';
             tagClass = 'text-white/70 font-mono font-medium';
@@ -1131,6 +1140,16 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             reviewComment.innerText = curWeek.review_text ? `"${curWeek.review_text}"` : 'Inspection passed cleanly!';
           }
           reviewBanner.classList.remove('hidden');
+        } else if (isFined) {
+          if (reviewStars) reviewStars.innerText = '⚠️ DEADLINE MISSED';
+          if (reviewBadge) {
+            reviewBadge.innerText = 'FINED ⚠️';
+            reviewBadge.className = 'px-1.5 py-0.5 rounded bg-red-500/20 text-red-400 border border-red-500/40 font-mono font-bold text-[9px]';
+          }
+          if (reviewComment) {
+            reviewComment.innerText = `Duty was not completed by Friday 8:00 PM. Fined ${fineTotal} ETB total (${fineEach} ETB each).`;
+          }
+          reviewBanner.classList.remove('hidden');
         } else if (isSubmitted) {
           if (reviewStars) reviewStars.innerText = '📸 PHOTO SUBMITTED';
           if (reviewBadge) {
@@ -1157,13 +1176,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       }
 
       // Render schedule, leaderboard, fines, history
-      renderSchedule(data.schedule, isCompleted);
+      renderSchedule(data.schedule, isCompleted, isFined);
       renderLeaderboard(data.leaderboard);
       renderFines(data.fines);
       renderHistory(data.history);
     }
 
-    function renderSchedule(schedule, isCompleted) {
+    function renderSchedule(schedule, isCompleted, isFined) {
       const el = document.getElementById('schedule-table');
       if (!schedule || schedule.length === 0) {
         el.innerHTML = `<p class="text-white/40 text-center py-4 text-[10px] font-mono">No upcoming rotation scheduled.</p>`;
@@ -1177,6 +1196,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         if (isCur) {
           if (isCompleted) {
             tag = '<span class="text-[9px] font-mono font-bold px-1.5 py-0.2 rounded bg-white text-black">CLEANED ✓</span>';
+          } else if (isFined) {
+            tag = '<span class="text-[9px] font-mono font-bold px-1.5 py-0.2 rounded bg-red-500/20 text-red-400 border border-red-500/40">FINED ⚠️</span>';
           } else {
             tag = '<span class="text-[9px] font-mono font-bold px-1.5 py-0.2 rounded bg-white text-black">CURRENT</span>';
           }
@@ -1244,12 +1265,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       el.innerHTML = hist.map(h => {
         const statusText = h.final_status === 'completed'
           ? `CLEANED ${h.rating ? '★' + h.rating : ''}`
-          : (h.final_status === 'fined' ? 'FINED' : 'PENDING');
+          : (h.final_status === 'fined' ? 'FINED ⚠️' : 'PENDING');
+        const statusClass = h.final_status === 'fined' ? 'text-red-400 font-bold' : 'text-white font-bold';
 
         return `
           <div class="p-1 rounded panel-subtle flex items-center justify-between text-[9px] font-mono">
             <span class="text-white/80">W${h.week_number}: ${h.cleaner1} & ${h.cleaner2}</span>
-            <span class="text-white font-bold">${statusText}</span>
+            <span class="${statusClass}">${statusText}</span>
           </div>
         `;
       }).join('');

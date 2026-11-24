@@ -1256,13 +1256,23 @@ async def create_fines_for_week(
 def _get_unpaid_fines_summary_sync(dorm_id: int = 0) -> List[Dict[str, Any]]:
     with _get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("""
-            SELECT user_id, user_name, SUM(amount) AS total_unpaid, COUNT(*) AS unpaid_count
-            FROM fines
-            WHERE dorm_id = ? AND status = 'unpaid'
-            GROUP BY user_id, user_name
-            ORDER BY total_unpaid DESC;
-        """, (dorm_id,))
+        default_gid = getattr(config, "GROUP_ID", 0)
+        if dorm_id in (0, default_gid):
+            cursor.execute("""
+                SELECT user_id, user_name, SUM(amount) AS total_unpaid, COUNT(*) AS unpaid_count
+                FROM fines
+                WHERE (dorm_id = ? OR dorm_id = 0) AND status = 'unpaid'
+                GROUP BY user_id, user_name
+                ORDER BY total_unpaid DESC;
+            """, (default_gid,))
+        else:
+            cursor.execute("""
+                SELECT user_id, user_name, SUM(amount) AS total_unpaid, COUNT(*) AS unpaid_count
+                FROM fines
+                WHERE dorm_id = ? AND status = 'unpaid'
+                GROUP BY user_id, user_name
+                ORDER BY total_unpaid DESC;
+            """, (dorm_id,))
         return [dict(r) for r in cursor.fetchall()]
 
 async def get_unpaid_fines_summary(dorm_id: Optional[int] = None) -> List[Dict[str, Any]]:
@@ -1273,13 +1283,23 @@ def _mark_fines_paid_sync(user_id: int, admin_id: int, dorm_id: int = 0) -> int:
     now_iso = config.get_current_time().isoformat()
     with _get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("""
-            UPDATE fines
-            SET status = 'paid',
-                paid_at = ?,
-                marked_paid_by = ?
-            WHERE dorm_id = ? AND user_id = ? AND status = 'unpaid';
-        """, (now_iso, admin_id, dorm_id, user_id))
+        default_gid = getattr(config, "GROUP_ID", 0)
+        if dorm_id in (0, default_gid):
+            cursor.execute("""
+                UPDATE fines
+                SET status = 'paid',
+                    paid_at = ?,
+                    marked_paid_by = ?
+                WHERE (dorm_id = ? OR dorm_id = 0) AND user_id = ? AND status = 'unpaid';
+            """, (now_iso, admin_id, default_gid, user_id))
+        else:
+            cursor.execute("""
+                UPDATE fines
+                SET status = 'paid',
+                    paid_at = ?,
+                    marked_paid_by = ?
+                WHERE dorm_id = ? AND user_id = ? AND status = 'unpaid';
+            """, (now_iso, admin_id, dorm_id, user_id))
         count = cursor.rowcount
         conn.commit()
         return count
@@ -1291,11 +1311,19 @@ async def mark_fines_paid(user_id: int, admin_id: int, dorm_id: Optional[int] = 
 def _get_user_unpaid_total_sync(user_id: int, dorm_id: int = 0) -> int:
     with _get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("""
-            SELECT COALESCE(SUM(amount), 0) AS total
-            FROM fines
-            WHERE dorm_id = ? AND user_id = ? AND status = 'unpaid';
-        """, (dorm_id, user_id))
+        default_gid = getattr(config, "GROUP_ID", 0)
+        if dorm_id in (0, default_gid):
+            cursor.execute("""
+                SELECT COALESCE(SUM(amount), 0) AS total
+                FROM fines
+                WHERE (dorm_id = ? OR dorm_id = 0) AND user_id = ? AND status = 'unpaid';
+            """, (default_gid, user_id))
+        else:
+            cursor.execute("""
+                SELECT COALESCE(SUM(amount), 0) AS total
+                FROM fines
+                WHERE dorm_id = ? AND user_id = ? AND status = 'unpaid';
+            """, (dorm_id, user_id))
         row = cursor.fetchone()
         return int(row["total"]) if row else 0
 
