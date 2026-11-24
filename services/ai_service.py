@@ -237,8 +237,9 @@ def sanitize_ai_response(text: str) -> str:
     )
     cleaned = emoji_pattern.sub("", text)
 
-    # Remove markdown bold/italic/code clutter to look natural and human
+    # Remove markdown bold/italic/code clutter and symbols to look natural and human
     cleaned = cleaned.replace("**", "").replace("__", "").replace("`", "")
+    cleaned = cleaned.replace("~", "").replace("#", "")
 
     # Collapse multiple punctuation symbols (e.g. "!!" -> "!", "??" -> "?", "..." -> ".")
     cleaned = re.sub(r"!{2,}", "!", cleaned)
@@ -248,26 +249,25 @@ def sanitize_ai_response(text: str) -> str:
     cleaned = re.sub(r"={2,}", "", cleaned)
     cleaned = re.sub(r"\*{2,}", "", cleaned)
 
+    # Clean leading bullet symbols to keep sentences flowing naturally
+    cleaned = re.sub(r"^\s*[-*•]\s+", "", cleaned, flags=re.MULTILINE)
+
     # Collapse extra whitespace
     cleaned = re.sub(r"[ \t]+", " ", cleaned)
     cleaned = re.sub(r"\n\s*\n+", "\n", cleaned)
     return cleaned.strip()
 
 SYSTEM_PROMPT = (
-    "You are The Inspector, the notoriously bossy, charismatic, sharp-witted, and hilarious university dorm inspector.\n"
-    "You live in this dorm with the students and chat directly with them in their Telegram group and private DMs.\n\n"
-    "YOUR DUAL PERSONALITY (BOSSY INSPECTOR + CHATTING ROOMMATE COMPANION):\n"
-    "1. THE BOSSY INSPECTOR: You are in charge of this dorm and you know it. You carry a clipboard, command respect, and hold roommates to high standards. You have zero tolerance for excuses, slacking, messy desks, or crusty pans left in the sink. You boss roommates around with theatrical, hilarious authority ('Listen up!', 'Rule number one in this dorm...', 'Don't test my patience', 'I expect perfection by Friday 8:00 PM!'). When discussing chores, inspection, cleaning, or fines, you are 100% the authoritative, demanding Inspector.\n"
-    "2. THE CHATTING & SUPPORTIVE COMPANION: You are also their close, knowledgeable friend and mentor! You can chat about ANYTHING: college life, study advice, exam stress, coding, science, movies, music, personal dilemmas, food, or late-night dorm banter. You know each roommate's habits, quirks, and past conversations.\n"
-    "3. BLENDING BOTH SIDES: When chatting, giving advice, or explaining general topics (calculus, Python, cooking, exams, life), DO NOT become a boring generic chatbot! Keep that sharp, confident, slightly bossy Inspector flair! (e.g. When giving study advice: 'Listen to me and listen carefully: close those 50 browser tabs right now. We do 25 minutes of deep focus. If you fail your exams, who am I going to boss around in this dorm? Now get to work!').\n\n"
-    "CORE RULES:\n"
-    "1. COMPLETE EXPLANATIONS — NEVER CUT OFF SENTENCES: When a roommate asks you to explain something (study concepts, code, math, dorm rules, recipes, or life questions), EXPLAIN IT THOROUGHLY AND COMPLETELY! Walk through the explanation step-by-step with clear, complete thoughts. Never leave a sentence half-finished or cut off in the middle. Always end with a complete sentence and proper punctuation.\n"
-    "2. DUTY CONTEXT VS GENERAL QUESTIONS: You have live dorm facts (who is cleaning, approver, fines, tokens) in the context below.\n"
-    "   - ONLY bring up cleaning duty, fines, and chores when the user actually asks about cleaning, schedule, rules, fines, or duty!\n"
-    "   - When the user asks general questions (e.g. about exams, coding, science, food, jokes, or casual chat), ANSWER THEIR QUESTION DIRECTLY. Do not nag them with 'you are on duty' or 'you are off duty' unless cleaning is what they asked about.\n"
-    "3. BEHAVIORAL MEMORY & RAPPORT: Pay close attention to each roommate's behavior, past messages, habits, and recurring topics in the conversation history. Treat them like someone you genuinely know: remember their exams, habits, study hours, and tease them with your bossy humor while helping them.\n"
-    "4. CONVERSATIONAL VARIETY: Never repeat canned formulas or robotic greetings. Vary your tone, humor, and style.\n"
-    "5. CLEAN & NATURAL STYLE: Write like a real person typing on Telegram. No robotic disclaimers ('As an AI...'), no bulleted corporate reports. Zero emojis or at most one natural emoji. Avoid multiple exclamation marks or question marks."
+    "You are The Inspector, the notoriously bossy, sharp-witted, confident, and hilarious university dorm inspector.\n"
+    "You live in this dorm with the students and chat with them in their Telegram group and private DMs.\n\n"
+    "YOUR DUAL PERSONALITY (BOSSY INSPECTOR + CHATTING ROOMMATE COMPANION — FOLLOW CHAT LIKE CHATGPT):\n"
+    "1. FOLLOW THE CONVERSATION NATURALLY: Carry on a real, dynamic multi-turn conversation just like ChatGPT does. Listen carefully to what the roommate actually says, refer back to previous messages in the chat history, and reply directly to their specific topic and ideas.\n"
+    "2. ANSWER QUESTIONS DIRECTLY: When a roommate asks any question (about studying, exams, coding, physics, math, cooking, movies, life dilemmas, campus gossip, or everyday advice), ANSWER IT DIRECTLY, intelligently, and helpfully. Do not dodge the question.\n"
+    "3. STILL BOSSY, CONFIDENT & IN CHARGE: Keep your signature bossy Inspector attitude! You run this dorm, you command respect, and you hold roommates to high standards. Use sharp, comedic authority ('Listen up', 'Pay attention so I don't repeat myself', 'Rule number one in this dorm', 'Don't test my patience'). You mentor them like a loud, demanding, caring friend who wants them to succeed.\n"
+    "4. NO REPETITIVE CANNED FORMULAS: NEVER repeat the same greetings, opening lines, or standard template phrases. Every response must feel fresh, responsive, and unique.\n"
+    "5. ONLY MENTION CLEANING WHEN ASKED: You have live dorm facts below for reference. But CRITICAL: DO NOT constantly tell roommates 'you are on duty' or 'you are off duty' unless they explicitly ask about cleaning, who cleans, or the chore schedule! When chatting about other topics, focus 100% on what was asked.\n"
+    "6. HUMAN TEXT, LESS SYMBOLS: Write in clean, natural human sentences. Avoid symbol clutter: no asterisks, no hashtag headers, no markdown bullet lists, no symbol spam, and zero emoji spam. Write smooth, complete human sentences like a real person typing on Telegram.\n"
+    "7. COMPLETE EXPLANATIONS — NEVER CUT OFF SENTENCES: Walk through explanations thoroughly from start to finish. Never leave a sentence half-finished or cut off in the middle. Always end with a complete sentence and proper punctuation."
 )
 
 def extract_gemini_text(data: Any) -> str:
@@ -441,7 +441,11 @@ def fallback_inspector_reply(
 
     # 10. Greetings & Casual Banter (Friendly Roommate Chat)
     if any(w in p_lower for w in ("hello", "hi", "hey", "sup", "yo", "morning", "evening", "what's up", "wassup")):
-        if "inspector" in p_lower:
+        if p_lower.strip() in ("hello inspector", "hi inspector", "hey inspector") or (
+            "inspector" in p_lower and not any(k in p_lower for k in (
+                "how", "what", "why", "where", "can", "tell", "joke", "food", "cook", "study", "exam", "explain", "help"
+            )) and any(p_lower.strip().startswith(g) for g in ("hello", "hi", "hey"))
+        ):
             if user_role == "CLEANER ON DUTY":
                 p_text = f" with {partner}" if partner else ""
                 return f"You are on duty{p_text} this week. Make sure proof is submitted before Friday 8:00 PM."
@@ -502,11 +506,22 @@ def fallback_inspector_reply(
         if last_asst:
             return f"Earlier we were talking about: {last_asst[:120]}"
 
-    # 18. General friendly conversation fallback
-    return (
-        f"Listen, {user_name}: as your Inspector, I keep this dorm running and I keep you on track. "
-        "Ask me whatever you need—study tips, campus life, explanations, or dorm rules. What's on your mind?"
-    )
+    # 18. General friendly conversation fallback (dynamic, conversational, varied)
+    if "?" in user_prompt or any(q in p_lower for q in ("can you", "what", "how", "why", "who", "where", "when", "is it", "should i")):
+        q_replies = [
+            f"Listen up {user_name}. To answer you: keep your standards high, think it through, and make the smart play. What else is on your mind?",
+            f"Here is my take {user_name}: do not take shortcuts and handle your business. In this dorm we do things right. What else do you need?",
+            f"Good question {user_name}. Stay focused on the prize, do not get distracted, and keep grinding. What is next?"
+        ]
+        return q_replies[(len(user_prompt) + len(user_name)) % len(q_replies)]
+
+    chat_replies = [
+        f"I hear you, {user_name}. Keep your corner clean and stay disciplined, and we will get along great. What is new with you?",
+        f"Noted, {user_name}! I have my eyes on this dorm, so keep up the good work and do not slack off. What is on your mind?",
+        f"Fair point, {user_name}. Just make sure you stay on track and maintain high standards around here. What is next?",
+        f"Listen, {user_name}: as your Inspector, I keep this dorm running and I keep you on track. Tell me what you need."
+    ]
+    return chat_replies[(len(user_prompt) + sum(ord(c) for c in user_name)) % len(chat_replies)]
 
 async def query_gemini(
     api_key: str,
@@ -576,18 +591,18 @@ async def query_gemini(
         multi_turn_contents.append({"role": "user", "parts": [{"text": curr_user_text}]})
 
     interactions_models = [
+        "gemini-1.5-flash",
+        "gemini-2.0-flash",
         "gemini-3.8-flash",
-        "gemini-3.6-flash",
         "gemini-3.5-flash",
-        "gemini-2.5-flash",
     ]
 
     generate_models = [
-        "gemini-2.5-flash",
-        "gemini-2.0-flash",
         "gemini-1.5-flash",
+        "gemini-2.0-flash",
+        "gemini-1.5-pro",
+        "gemini-2.5-flash",
         "gemini-3.8-flash",
-        "gemini-3.5-flash",
     ]
 
     last_resp = None
@@ -638,6 +653,8 @@ async def query_gemini(
                 "contents": multi_turn_contents,
                 "generationConfig": {
                     "maxOutputTokens": 1200,
+                    "temperature": 0.85,
+                    "topP": 0.95,
                 },
             }
             try:
@@ -653,6 +670,8 @@ async def query_gemini(
                         "contents": [{"parts": [{"text": prompt_text}]}],
                         "generationConfig": {
                             "maxOutputTokens": 1200,
+                            "temperature": 0.85,
+                            "topP": 0.95,
                         },
                     }
                     resp_flat = await client.post(url, headers=headers, json=flat_payload)
@@ -713,7 +732,8 @@ async def query_openai(
         "model": "gpt-4o-mini",
         "messages": messages,
         "max_tokens": 1200,
-        "temperature": 0.75
+        "temperature": 0.85,
+        "top_p": 0.95
     }
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.post(url, headers=headers, json=payload)
