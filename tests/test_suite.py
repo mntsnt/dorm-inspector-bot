@@ -1792,7 +1792,7 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         sys_prompt = ai_service.SYSTEM_PROMPT
         self.assertIn("FLEXIBLE RESPONSE LENGTH", sys_prompt)
         self.assertIn("SHORT & PUNCHY", sys_prompt)
-        self.assertIn("MENTION DORM MATES BY TELEGRAM USERNAME", sys_prompt)
+        self.assertIn("RESERVE @username ONLY FOR URGENT CHAT SUMMONS", sys_prompt)
         self.assertIn("@username", sys_prompt)
 
         # 2. Database user username sync
@@ -1807,13 +1807,20 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         d_member = next(m for m in members if m["user_id"] == test_user_id)
         self.assertEqual(d_member["username"], "dawit_t")
 
-        # 3. Context builder injects @username for roommates
+        # 3. Context builder lists clean real names in roster and separate username directory for urgent summons
         context = await ai_service.build_dorm_context(test_dorm_id, user_id=test_user_id)
-        self.assertIn("Dawit (@dawit_t)", context)
+        self.assertIn("All Roommates: Dawit", context)
+        self.assertIn("Dawit: @dawit_t", context)
+        self.assertIn("Telegram Username Directory", context)
 
-        # 4. Short greeting fallback produces punchy response
+        # 4. Short greeting fallback produces punchy response without spamming usernames
         short_reply = ai_service.fallback_inspector_reply("sup inspector", context, user_name="Dawit")
         self.assertTrue(len(short_reply.split()) <= 30)
+        self.assertNotIn("@dawit_t", short_reply)
+
+        # 5. Urgent summon ping uses @username to notify roommate to look at chat
+        summon_reply = ai_service.fallback_inspector_reply("tell dawit to look at the chat", context, user_name="Nahom")
+        self.assertIn("@dawit_t", summon_reply)
 
     async def test_long_text_explanation_formatting_and_zero_emojis(self):
         """Verify long explanations render structured markdown formatting with zero emojis."""

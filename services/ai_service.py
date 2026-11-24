@@ -76,19 +76,15 @@ async def build_dorm_context(dorm_id: int, user_id: Optional[int] = None) -> str
     record = None
     if week_info and week_info.week_number >= 1:
         week_str = f"Week {week_info.week_number} ({week_info.monday_date.strftime('%b %d')} – {week_info.friday_date.strftime('%b %d')})"
-        c1_uname = members_uname_by_id.get(week_info.cleaner1_id)
-        c2_uname = members_uname_by_id.get(week_info.cleaner2_id)
-        c1 = f"{week_info.cleaner1_name} (@{c1_uname})" if c1_uname else week_info.cleaner1_name
-        c2 = f"{week_info.cleaner2_name} (@{c2_uname})" if c2_uname else week_info.cleaner2_name
+        c1 = week_info.cleaner1_name
+        c2 = week_info.cleaner2_name
         record = await db.get_week(week_info.week_start, dorm_id=dorm_id)
         approver = "Not yet assigned"
         status = "In progress (deadline Friday 8:00 PM)"
         if record:
             app_id = record.get("approver_id")
             if app_id:
-                app_uname = members_uname_by_id.get(app_id)
-                app_name = members_by_id.get(app_id, f"ID {app_id}")
-                approver = f"{app_name} (@{app_uname})" if app_uname else app_name
+                approver = members_by_id.get(app_id, f"ID {app_id}")
             final_status = record.get("final_status", "pending")
             if final_status == "completed":
                 rating = record.get("rating", 5)
@@ -111,16 +107,12 @@ async def build_dorm_context(dorm_id: int, user_id: Optional[int] = None) -> str
     fine_entries = [f"{f['user_name']}: {f['total_unpaid']} ETB" for f in fines if f.get('total_unpaid', 0) > 0]
     fines_str = ", ".join(fine_entries) if fine_entries else "No unpaid fines! Everyone is clean."
 
-    # All Registered Roommates with optional Telegram usernames for direct mentions
-    roster_parts = []
-    for m in members:
-        name = m["name"]
-        uname = m.get("username")
-        if uname:
-            roster_parts.append(f"{name} (@{uname.lstrip('@')})")
-        else:
-            roster_parts.append(name)
-    all_roommates_str = ", ".join(roster_parts) if roster_parts else "None"
+    # All Registered Roommates (Use clean real names in normal conversation)
+    all_roommates_str = ", ".join(m["name"] for m in members) if members else "None"
+
+    # Telegram Username Directory (Provided strictly for urgent chat summons/pings)
+    uname_parts = [f"{m['name']}: @{m['username'].lstrip('@')}" for m in members if m.get("username")]
+    uname_dir_str = ", ".join(uname_parts) if uname_parts else "None"
 
     # Today's Date and Upcoming Schedule (Next 3 weeks)
     today = config.get_current_date()
@@ -142,7 +134,8 @@ async def build_dorm_context(dorm_id: int, user_id: Optional[int] = None) -> str
     if user_id:
         user_name = members_by_id.get(user_id, "Roommate")
         user_uname = members_uname_by_id.get(user_id)
-        user_display = f"{user_name} (@{user_uname})" if user_uname else user_name
+        user_display = user_name
+        uname_tag = f" (@{user_uname})" if user_uname else ""
         dorm_admin_id = dorm.get("admin_id") if dorm else getattr(config, "ADMIN_ID", 0)
         is_admin = (user_id == dorm_admin_id or user_id == getattr(config, "ADMIN_ID", 0))
 
@@ -224,6 +217,7 @@ async def build_dorm_context(dorm_id: int, user_id: Optional[int] = None) -> str
         f"Website: {dash_url}\n"
         f"Today's Date: {today_str}\n"
         f"All Roommates: {all_roommates_str}\n"
+        f"Telegram Username Directory (Use ONLY when urgently summoning someone to look at the chat): {uname_dir_str}\n"
         f"Current Week: {week_str}\n"
         f"Current Duty: {duty_str}\n"
         f"Upcoming Weeks: {upcoming_str}\n"
@@ -300,10 +294,14 @@ SYSTEM_PROMPT = (
     "   - SHORT & PUNCHY (1-2 sentences): When a roommate sends casual banter, short greetings, jokes, quick check-ins, or simple yes/no questions, keep your reply SHORT and punchy! Never write long lectures for short remarks. Example: 'I hear you, Nahom. Keep that kitchen clean and don't slack off.'\n"
     "   - MEDIUM (2-4 sentences): For normal questions, routine advice, sharing opinions, or chore status checks.\n"
     "   - DETAILED & STRUCTURED (Longer): ONLY when a roommate explicitly asks you to explain something in-depth, break down a topic, write a recipe, or teach a concept. Format it with clean bold headings, bullet points, and steps.\n"
-    "9. MENTION DORM MATES BY TELEGRAM USERNAME (@username) WHEN HELPFUL:\n"
-    "   - Live dorm facts include roommates' names and their Telegram usernames (@username) when known.\n"
-    "   - When assigning responsibility, calling someone out for duty, answering who cleans, nudging someone to swap, or joking with someone in the group, feel free to mention their @username naturally (e.g. '@nahom_t grab the mop', 'Ask @bilisuma about that', '@hassan_k is on inspection duty').\n"
-    "   - Use usernames naturally when relevant for accountability or humor—do not spam them on every sentence."
+    "9. USE REAL NAMES IN NORMAL CONVERSATION (RESERVE @username ONLY FOR URGENT CHAT SUMMONS):\n"
+    "   - DEFAULT TO REAL NAMES: In regular conversation, general questions, explanations, casual banter, routine duty checks, and normal updates, ALWAYS use roommates' real names (e.g. 'Bilisuma and Nahom are cleaning', 'Good morning Mintesnot', 'Hassan is the approver'). NEVER append or spam (@username) in normal talk, as this causes unwanted notification pings!\n"
+    "   - ONLY USE @username WHEN URGENTLY SUMMONING THEM TO LOOK AT THE CHAT: Tag a roommate with their @username ONLY when you genuinely need them to receive an urgent notification and look at the chat right now! Specific valid cases:\n"
+    "     * Urgently calling out a cleaner whose Friday 8:00 PM deadline is approaching or overdue to look at the chat (e.g. '@nahom_t check the chat and submit cleaning proof now!').\n"
+    "     * Alerting the approver that cleaning photos were submitted and they must inspect (e.g. '@hassan_k look at the chat and inspect the proof now').\n"
+    "     * Warning someone about impending fines or penalties.\n"
+    "     * When another roommate in the chat asks you to ping, summon, or alert someone to look at the chat.\n"
+    "   - In all normal chats and routine questions, strictly use their real name."
 )
 
 def extract_gemini_text(data: Any) -> str:
@@ -403,6 +401,24 @@ def fallback_inspector_reply(
                 c2 = c_names[1] if len(c_names) > 1 else ""
         except Exception:
             pass
+
+    # 0. Urgent summons / callouts / notifications to check chat
+    if any(k in p_lower for k in ("ping", "summon", "alert", "call out", "notify", "tell to look", "look at chat", "check chat", "look at the chat")):
+        uname_dir = context_lines.get("Telegram Username Directory (Use ONLY when urgently summoning someone to look at the chat)", "")
+        # Check if a specific roommate name was targeted
+        for entry in uname_dir.split(","):
+            if ":" in entry:
+                m_name, m_tag = [s.strip() for s in entry.split(":", 1)]
+                if m_name.lower() in p_lower:
+                    return f"{m_tag} Look at the chat! You are urgently needed here."
+        if any(c in p_lower for c in ("cleaner", "cleaners", "duty")):
+            c_tags = []
+            for c_name in [c1, c2]:
+                for entry in uname_dir.split(","):
+                    if ":" in entry and c_name.lower() in entry.lower():
+                        c_tags.append(entry.split(":", 1)[1].strip())
+            if c_tags:
+                return f"{' '.join(c_tags)} Look at the chat! Check your cleaning duty and deadline right now."
 
     # 1. Question about user's own cleaning duty ("am i cleaning", "is it my turn", "do i have duty", etc.)
     if any(q in p_lower for q in (
