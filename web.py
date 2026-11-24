@@ -4,16 +4,24 @@ FastAPI-based single-page application and REST API showing real-time bot status,
 active dorms, cleaning duties, inspection photo approvals, token leaderboards, and fines.
 """
 
+import base64
+import binascii
 from datetime import datetime, timezone
+import hashlib
+import hmac
+import json
 import logging
 import os
 import sys
 import time
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
 
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
+import httpx
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from pydantic import BaseModel, Field
 import uvicorn
 
 import config
@@ -32,13 +40,113 @@ app = FastAPI(
     redoc_url=None
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+AUTH_COOKIE_NAME = "dorm_dashboard_session"
+TELEGRAM_LOGIN_MAX_AGE_SECONDS = 300
+DASHBOARD_SESSION_SECONDS = 8 * 60 * 60
+
+class DashboardApprovalRequest(BaseModel):
+    week_start: str
+    rating: int = Field(default=5, ge=1, le=5)
+    review_text: Optional[str] = Field(default=None, max_length=500)
+
+def _session_signing_key() -> bytes:
+    if not config.BOT_TOKEN:
+        raise HTTPException(status_code=503, detail="Telegram authentication is not configured.")
+    return hashlib.sha256(config.BOT_TOKEN.encode("utf-8") + b":dashboard-session").digest()
+
+def _create_dashboard_session(user_id: int, expires_at: int) -> str:
+    payload = base64.urlsafe_b64encode(f"{user_id}:{expires_at}".encode("ascii")).decode("ascii").rstrip("=")
+    signature = hmac.new(_session_signing_key(), payload.encode("ascii"), hashlib.sha256).hexdigest()
+    return f"{payload}.{signature}"
+
+def _dashboard_session_user_id(request: Request) -> Optional[int]:
+    token = request.cookies.get(AUTH_COOKIE_NAME)
+    if not token or "." not in token:
+        return None
+    payload, signature = token.rsplit(".", 1)
+    expected = hmac.new(_session_signing_key(), payload.encode("ascii"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        return None
+    try:
+        padded = payload + "=" * (-len(payload) % 4)
+        user_text, expiry_text = base64.urlsafe_b64decode(padded).decode("ascii").split(":", 1)
+        user_id, expiry = int(user_text), int(expiry_text)
+    except (ValueError, UnicodeDecodeError, binascii.Error):
+        return None
+    if expiry <= int(time.time()):
+        return None
+    return user_id
+
+def _require_dashboard_user(request: Request) -> int:
+    user_id = _dashboard_session_user_id(request)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Sign in with Telegram to continue.")
+    return user_id
+
+def _is_https_request(request: Request) -> bool:
+    forwarded_proto = request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip().lower()
+    return request.url.scheme == "https" or forwarded_proto == "https"
+
+def _check_same_origin(request: Request) -> None:
+    origin = request.headers.get("origin")
+    if not origin:
+        raise HTTPException(status_code=403, detail="A same-origin browser request is required.")
+    origin_host = urlsplit(origin).netloc.casefold()
+    request_host = request.headers.get("host", "").casefold()
+    if not origin_host or origin_host != request_host:
+        raise HTTPException(status_code=403, detail="Cross-origin dashboard actions are not allowed.")
+
+def _verify_telegram_login(payload: Dict[str, Any]) -> Optional[int]:
+    if not config.BOT_TOKEN:
+        return None
+    supplied_hash = payload.get("hash")
+    try:
+        auth_date = int(payload.get("auth_date", 0))
+        user_id = int(payload.get("id", 0))
+    except (TypeError, ValueError):
+        return None
+    now = int(time.time())
+    if not supplied_hash or user_id <= 0 or auth_date > now + 30:
+        return None
+    if now - auth_date > TELEGRAM_LOGIN_MAX_AGE_SECONDS:
+        return None
+
+    check_lines = []
+    for key in sorted(payload):
+        if key == "hash":
+            continue
+        value = payload[key]
+        if not isinstance(value, (str, int, float)):
+            return None
+        check_lines.append(f"{key}={value}")
+    check_string = "\n".join(check_lines)
+    secret_key = hashlib.sha256(config.BOT_TOKEN.encode("utf-8")).digest()
+    expected_hash = hmac.new(secret_key, check_string.encode("utf-8"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(str(supplied_hash), expected_hash):
+        return None
+    return user_id
+
+async def _get_review_context(
+    dorm_code: str,
+    week_start: Optional[str],
+    user_id: int,
+) -> tuple[Dict[str, Any], Any, Dict[str, Any]]:
+    dorm = await db.get_dorm_by_code(dorm_code)
+    if not dorm:
+        raise HTTPException(status_code=404, detail="Dorm not found.")
+    pairs = await db.get_dorm_pairs(dorm["dorm_id"])
+    members = await db.get_dorm_members(dorm["dorm_id"])
+    members_by_id = {member["user_id"]: member["name"] for member in members}
+    week_info = get_dorm_week_info(dorm, pairs, members_by_id)
+    if not week_info or (week_start and week_info.week_start != week_start):
+        raise HTTPException(status_code=409, detail="This review is not for the current cleaning week.")
+    week_record = await db.get_week(week_info.week_start, dorm_id=dorm["dorm_id"])
+    if not week_record:
+        raise HTTPException(status_code=404, detail="Cleaning week not found.")
+    is_approver_or_admin = user_id in (week_record.get("approver_id"), dorm.get("admin_id"))
+    if not is_approver_or_admin and user_id != getattr(config, "ADMIN_ID", 0):
+        raise HTTPException(status_code=403, detail="Only the assigned approver or dorm admin can review this photo.")
+    return dorm, week_info, week_record
 
 @app.on_event("startup")
 async def on_startup() -> None:
@@ -376,6 +484,168 @@ async def get_dorm_by_code_endpoint(dorm_code: str) -> Dict[str, Any]:
         raise HTTPException(status_code=404, detail=f"Dorm with code '{dorm_code}' not found")
     return await get_dorm_detail(str(dorm["dorm_id"]))
 
+@app.get("/api/auth/config", response_class=JSONResponse)
+async def get_dashboard_auth_config() -> Dict[str, str]:
+    return {"bot_username": getattr(config, "BOT_USERNAME", "")}
+
+@app.post("/api/auth/telegram", response_class=JSONResponse)
+async def telegram_dashboard_login(request: Request) -> JSONResponse:
+    _check_same_origin(request)
+    try:
+        payload = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid Telegram login payload.") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Invalid Telegram login payload.")
+
+    user_id = _verify_telegram_login(payload)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Telegram authentication could not be verified.")
+
+    expires_at = int(time.time()) + DASHBOARD_SESSION_SECONDS
+    response = JSONResponse({"authenticated": True, "user_id": user_id})
+    response.set_cookie(
+        AUTH_COOKIE_NAME,
+        _create_dashboard_session(user_id, expires_at),
+        max_age=DASHBOARD_SESSION_SECONDS,
+        httponly=True,
+        secure=_is_https_request(request),
+        samesite="strict",
+        path="/"
+    )
+    return response
+
+@app.get("/api/auth/me", response_class=JSONResponse)
+async def dashboard_current_user(request: Request) -> Dict[str, Any]:
+    user_id = _dashboard_session_user_id(request)
+    return {"authenticated": user_id is not None, "user_id": user_id}
+
+@app.post("/api/auth/logout", response_class=JSONResponse)
+async def telegram_dashboard_logout(request: Request) -> JSONResponse:
+    _check_same_origin(request)
+    response = JSONResponse({"authenticated": False})
+    response.delete_cookie(
+        AUTH_COOKIE_NAME,
+        path="/",
+        secure=_is_https_request(request),
+        httponly=True,
+        samesite="strict"
+    )
+    return response
+
+@app.get("/api/dorms/code/{dorm_code}/review", response_class=JSONResponse)
+async def get_dashboard_review_state(dorm_code: str, request: Request) -> Dict[str, Any]:
+    user_id = _dashboard_session_user_id(request)
+    if user_id is None:
+        return {"authenticated": False, "can_approve": False}
+    try:
+        dorm, week_info, week_record = await _get_review_context(dorm_code, None, user_id)
+    except HTTPException as exc:
+        if exc.status_code == 403:
+            return {"authenticated": True, "can_approve": False}
+        raise
+
+    is_pending = (
+        week_record.get("final_status") == "pending"
+        and week_record.get("photo_status") == "submitted"
+        and bool(week_record.get("photo_file_id"))
+    )
+    return {
+        "authenticated": True,
+        "can_approve": is_pending,
+        "week_start": week_info.week_start,
+        "photo_url": (
+            f"/api/dorms/code/{dorm['dorm_code']}/photo?week_start={week_info.week_start}"
+            if is_pending else None
+        )
+    }
+
+@app.get("/api/dorms/code/{dorm_code}/photo")
+async def get_dashboard_review_photo(
+    dorm_code: str,
+    week_start: str,
+    request: Request
+) -> Response:
+    user_id = _require_dashboard_user(request)
+    _, _, week_record = await _get_review_context(dorm_code, week_start, user_id)
+    if (
+        week_record.get("final_status") != "pending"
+        or week_record.get("photo_status") != "submitted"
+        or not week_record.get("photo_file_id")
+    ):
+        raise HTTPException(status_code=404, detail="No pending review photo is available.")
+
+    telegram_bot = getattr(app.state, "telegram_bot", None)
+    if not telegram_bot:
+        raise HTTPException(status_code=503, detail="Photo review is unavailable until the bot is connected.")
+    try:
+        telegram_file = await telegram_bot.get_file(week_record["photo_file_id"])
+        if not telegram_file.file_path:
+            raise HTTPException(status_code=502, detail="Telegram did not return a photo path.")
+        async with httpx.AsyncClient(timeout=15) as client:
+            photo_response = await client.get(telegram_file.file_path)
+        if photo_response.status_code != 200:
+            raise HTTPException(status_code=502, detail="Telegram could not provide the review photo.")
+        media_type = photo_response.headers.get("content-type", "image/jpeg")
+        if not media_type.startswith("image/"):
+            raise HTTPException(status_code=502, detail="Telegram returned an invalid review image.")
+        return Response(
+            content=photo_response.content,
+            media_type=media_type,
+            headers={"Cache-Control": "no-store"}
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Could not retrieve review photo from Telegram: %s", exc)
+        raise HTTPException(status_code=502, detail="Could not retrieve the review photo.") from exc
+
+@app.post("/api/dorms/code/{dorm_code}/approve", response_class=JSONResponse)
+async def approve_duty_from_dashboard(
+    dorm_code: str,
+    request: Request,
+    approval: DashboardApprovalRequest
+) -> Dict[str, Any]:
+    _check_same_origin(request)
+    user_id = _require_dashboard_user(request)
+    dorm, _, week_record = await _get_review_context(dorm_code, approval.week_start, user_id)
+    if (
+        week_record.get("final_status") != "pending"
+        or week_record.get("photo_status") != "submitted"
+        or not week_record.get("photo_file_id")
+    ):
+        raise HTTPException(status_code=409, detail="There is no pending review photo for this week.")
+    telegram_bot = getattr(app.state, "telegram_bot", None)
+    if not telegram_bot:
+        raise HTTPException(status_code=503, detail="Approval is unavailable until the bot is connected.")
+
+    from handlers.approval import RATING_COMMENTS, publish_approved_cleaning
+    review_text = (approval.review_text or "").strip() or RATING_COMMENTS[approval.rating]
+    reward = await db.approve_week_and_award_tokens(
+        approval.week_start,
+        dorm_id=dorm["dorm_id"],
+        rating=approval.rating,
+        review_text=review_text
+    )
+    if reward is None:
+        raise HTTPException(status_code=409, detail="This photo was already reviewed or the week is closed.")
+    await publish_approved_cleaning(
+        SimpleNamespace(bot=telegram_bot),
+        dorm["dorm_id"],
+        week_record,
+        reward,
+        rating=approval.rating,
+        review_text=review_text,
+        approver_name=(await db.get_dorm_member(dorm["dorm_id"], user_id) or {}).get("name", "Reviewer")
+    )
+    return {
+        "approved": True,
+        "rating": approval.rating,
+        "tokens_each": reward["tokens_each"],
+        "early_bonus": reward["early_bonus"],
+        "approver_bonus": reward["approver_bonus"]
+    }
+
 @app.get("/api/dorms/{dorm_identifier}/schedule", response_class=JSONResponse)
 async def get_dorm_schedule(dorm_identifier: str) -> List[Dict[str, Any]]:
     """Convenience endpoint returning rotation schedule for a dorm."""
@@ -622,6 +892,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         </svg>
       </button>
     </div>
+    <div class="flex items-center gap-2 text-[10px] font-mono">
+      <span id="dashboard-auth-status" class="text-white/50">Not signed in</span>
+      <button id="dashboard-logout-button" class="hidden px-2 py-1 rounded border border-white/20 text-white/70 hover:text-white"
+        onclick="logoutDashboard()">Sign out</button>
+    </div>
   </header>
 
   <!-- Notification Banner -->
@@ -736,7 +1011,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           </div>
           <div class="text-right">
             <span class="text-white/50 block text-[9px] uppercase">FINE RATE</span>
-            <span id="selected-dorm-fine" class="font-bold text-white">100 ETB (50/50)</span>
+            <span id="selected-dorm-fine" class="font-bold text-white">100 ETB total</span>
           </div>
         </div>
 
@@ -747,6 +1022,29 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <span id="cleaning-review-badge" class="px-1.5 py-0.2 rounded bg-white text-black font-bold text-[9px]">APPROVED ✓</span>
           </div>
           <p id="cleaning-review-comment" class="text-white/70 italic text-[10px] mt-1">Inspection passed cleanly!</p>
+          <div id="web-review-controls" class="hidden mt-2 border-t border-white/10 pt-2">
+            <p id="web-review-status" class="text-white/60 mb-2">Sign in with Telegram to review this photo.</p>
+            <div id="telegram-login-container" class="mb-2"></div>
+            <div id="web-review-approval" class="hidden space-y-2">
+              <img id="web-review-photo" class="max-h-48 w-auto rounded border border-white/20" alt="Submitted cleaning proof">
+              <label class="block text-white/60">
+                Rating
+                <select id="web-review-rating" class="ml-1 bg-black border border-white/30 rounded px-2 py-1 text-white">
+                  <option value="5">5 stars</option>
+                  <option value="4">4 stars</option>
+                  <option value="3">3 stars</option>
+                  <option value="2">2 stars</option>
+                  <option value="1">1 star</option>
+                </select>
+              </label>
+              <textarea id="web-review-note" maxlength="500" rows="2" placeholder="Optional inspection note"
+                class="w-full bg-black border border-white/20 rounded p-2 text-white placeholder:text-white/30"></textarea>
+              <button id="web-review-approve-button" onclick="approveFromDashboard()"
+                class="px-3 py-1.5 rounded bg-white text-black font-bold hover:bg-neutral-200">
+                Approve cleaning
+              </button>
+            </div>
+          </div>
         </div>
 
       </div>
@@ -831,6 +1129,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <script>
     let activeDormId = null;
     let currentDormData = null;
+    let telegramLoginWidgetLoaded = false;
 
     // --- 3D MasterCard Tilt Physics ---
     function init3DCard() {
@@ -1058,8 +1357,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       const teamSize = data.cleaners_per_week || 2;
       const fineTotal = data.fine_amount || 100;
       const fineEach = Math.floor(fineTotal / teamSize);
+      const fineRemainder = fineTotal % teamSize;
 
-      document.getElementById('selected-dorm-fine').innerText = `${fineTotal} ETB (${fineEach} each)`;
+      document.getElementById('selected-dorm-fine').innerText = fineRemainder
+        ? `${fineTotal} ETB total (${fineEach}-${fineEach + 1} each)`
+        : `${fineTotal} ETB (${fineEach} each)`;
       document.getElementById('selected-dorm-approver').innerText = (curWeek && curWeek.approver) ? curWeek.approver : 'Not assigned';
 
       const isCompleted = curWeek.status_code === 'completed' || curWeek.final_status === 'completed';
@@ -1130,7 +1432,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             cleanerTag = 'CLEANED ✓';
             tagClass = 'text-white font-mono font-bold bg-white/10 px-1.5 py-0.5 rounded border border-white/40';
           } else if (isFined) {
-            cleanerTag = `FINED (${fineEach} ETB) ⚠️`;
+            cleanerTag = 'FINED ⚠️';
             tagClass = 'text-red-400 font-mono font-bold bg-red-500/10 px-1.5 py-0.5 rounded border border-red-500/30';
           } else if (isSubmitted) {
             cleanerTag = 'PHOTO SENT ⏳';
@@ -1182,7 +1484,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             reviewBadge.className = 'px-1.5 py-0.5 rounded bg-red-500/20 text-red-400 border border-red-500/40 font-mono font-bold text-[9px]';
           }
           if (reviewComment) {
-            reviewComment.innerText = `Duty was not completed by Friday 8:00 PM. Fined ${fineTotal} ETB total (${fineEach} ETB each).`;
+            reviewComment.innerText = `Duty was not completed by Friday 8:00 PM. ${fineTotal} ETB total was split among ${teamSize} cleaners.`;
           }
           reviewBanner.classList.remove('hidden');
         } else if (isSubmitted) {
@@ -1215,6 +1517,158 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       renderLeaderboard(data.leaderboard);
       renderFines(data.fines);
       renderHistory(data.history);
+      refreshWebReviewControls(data);
+    }
+
+    async function refreshDashboardAuthStatus() {
+      const status = document.getElementById('dashboard-auth-status');
+      const logout = document.getElementById('dashboard-logout-button');
+      if (!status || !logout) return;
+      try {
+        const response = await fetch('/api/auth/me', { credentials: 'same-origin' });
+        const data = await response.json();
+        if (data.authenticated) {
+          status.innerText = `Signed in · ${data.user_id}`;
+          logout.classList.remove('hidden');
+        } else {
+          status.innerText = 'Not signed in';
+          logout.classList.add('hidden');
+        }
+      } catch (error) {
+        status.innerText = 'Sign-in unavailable';
+      }
+    }
+
+    async function ensureTelegramLoginWidget() {
+      if (telegramLoginWidgetLoaded) return;
+      const container = document.getElementById('telegram-login-container');
+      const status = document.getElementById('web-review-status');
+      if (!container) return;
+      try {
+        const response = await fetch('/api/auth/config');
+        const data = await response.json();
+        const username = (data.bot_username || '').replace(/^@/, '');
+        if (!username) {
+          if (status) status.innerText = 'Telegram login is not configured for this bot.';
+          return;
+        }
+        const script = document.createElement('script');
+        script.async = true;
+        script.src = 'https://telegram.org/js/telegram-widget.js?22';
+        script.setAttribute('data-telegram-login', username);
+        script.setAttribute('data-size', 'medium');
+        script.setAttribute('data-userpic', 'false');
+        script.setAttribute('data-onauth', 'onTelegramAuth(user)');
+        container.appendChild(script);
+        telegramLoginWidgetLoaded = true;
+      } catch (error) {
+        if (status) status.innerText = 'Could not load Telegram sign-in.';
+      }
+    }
+
+    async function onTelegramAuth(user) {
+      const status = document.getElementById('web-review-status');
+      try {
+        const response = await fetch('/api/auth/telegram', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(user)
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.detail || 'Telegram sign-in failed.');
+        if (status) status.innerText = 'Signed in. Checking review permissions...';
+        await refreshDashboardAuthStatus();
+        if (currentDormData) await refreshWebReviewControls(currentDormData);
+      } catch (error) {
+        if (status) status.innerText = error.message || 'Telegram sign-in failed.';
+      }
+    }
+
+    async function logoutDashboard() {
+      try {
+        await fetch('/api/auth/logout', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}'
+        });
+      } finally {
+        await refreshDashboardAuthStatus();
+        if (currentDormData) await refreshWebReviewControls(currentDormData);
+      }
+    }
+
+    async function refreshWebReviewControls(data) {
+      const controls = document.getElementById('web-review-controls');
+      const login = document.getElementById('telegram-login-container');
+      const approval = document.getElementById('web-review-approval');
+      const status = document.getElementById('web-review-status');
+      const photo = document.getElementById('web-review-photo');
+      const currentWeek = data && data.current_week;
+      const isSubmitted = currentWeek && currentWeek.photo_status === 'submitted';
+      if (!controls) return;
+      if (!isSubmitted) {
+        controls.classList.add('hidden');
+        return;
+      }
+      controls.classList.remove('hidden');
+      try {
+        const response = await fetch(
+          `/api/dorms/code/${encodeURIComponent(data.dorm_code)}/review`,
+          { credentials: 'same-origin' }
+        );
+        const review = await response.json();
+        if (!review.authenticated) {
+          if (status) status.innerText = 'Sign in with Telegram to review this photo.';
+          if (login) login.classList.remove('hidden');
+          if (approval) approval.classList.add('hidden');
+          await ensureTelegramLoginWidget();
+        } else if (!review.can_approve) {
+          if (status) status.innerText = 'Only this week’s approver or dorm admin can review the photo.';
+          if (login) login.classList.add('hidden');
+          if (approval) approval.classList.add('hidden');
+        } else {
+          if (status) status.innerText = 'Review the submitted proof, choose a rating, and approve.';
+          if (login) login.classList.add('hidden');
+          if (approval) approval.classList.remove('hidden');
+          if (photo) photo.src = `${review.photo_url}&refresh=${Date.now()}`;
+        }
+      } catch (error) {
+        if (status) status.innerText = 'Could not load the review controls.';
+      }
+    }
+
+    async function approveFromDashboard() {
+      if (!currentDormData || !currentDormData.current_week) return;
+      const button = document.getElementById('web-review-approve-button');
+      const status = document.getElementById('web-review-status');
+      const rating = Number(document.getElementById('web-review-rating').value);
+      const reviewText = document.getElementById('web-review-note').value.trim();
+      button.disabled = true;
+      try {
+        const response = await fetch(
+          `/api/dorms/code/${encodeURIComponent(currentDormData.dorm_code)}/approve`,
+          {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              week_start: currentDormData.current_week.week_start,
+              rating,
+              review_text: reviewText || null
+            })
+          }
+        );
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.detail || 'Approval failed.');
+        if (status) status.innerText = `Approved at ${result.rating} stars. Cleaners received +${result.tokens_each} tokens each.`;
+        await fetchDashboardData();
+      } catch (error) {
+        if (status) status.innerText = error.message || 'Approval failed.';
+      } finally {
+        button.disabled = false;
+      }
     }
 
     function renderSchedule(schedule, isCompleted, isFined) {
@@ -1316,6 +1770,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     async function fetchDashboardData() {
       const refreshIcon = document.getElementById('refresh-icon');
       if (refreshIcon) refreshIcon.classList.add('animate-spin');
+      await refreshDashboardAuthStatus();
 
       if (window.location && window.location.host) {
         const hDom = document.getElementById('header-domain');

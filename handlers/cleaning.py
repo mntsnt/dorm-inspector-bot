@@ -408,9 +408,7 @@ async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
 
     saved_week = await db.get_week(week_info.week_start, dorm_id=dorm_id)
     submitter_name = members_by_id.get(user.id, user.first_name)
-    c1_name = members_by_id.get(c1_id, f"ID {c1_id}")
-    c2_name = members_by_id.get(c2_id, f"ID {c2_id}") if c2_id else ""
-    c_disp = f"{c1_name} & {c2_name}" if c2_name else c1_name
+    c_disp = week_info.cleaner_display
 
     approver_id = week_record.get("approver_id")
     approver_name = members_by_id.get(approver_id, "Approver")

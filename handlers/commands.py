@@ -253,18 +253,24 @@ async def get_dorm_main_menu_text(
         )
 
     if week_info.week_number < 1:
-        first_c1 = members_by_id.get(pairs[0]["cleaner1_id"], "TBD")
-        first_c2 = members_by_id.get(pairs[0]["cleaner2_id"], "TBD")
+        first_cleaner_ids = [
+            pairs[0].get("cleaner1_id"),
+            pairs[0].get("cleaner2_id"),
+            pairs[0].get("cleaner3_id"),
+        ]
+        first_cleaners = " & ".join(
+            members_by_id.get(cleaner_id, f"ID {cleaner_id}")
+            for cleaner_id in first_cleaner_ids if cleaner_id
+        ) or "TBD"
         start_date_str = dorm.get("start_date") or getattr(config, "START_DATE_STR", "2026-11-23")
         return (
             f"{dorm_prefix}Hi **{member_name}**!\n\n"
             f"Week 1 starts: Monday, {start_date_str}\n"
-            f"First cleaners: **{first_c1} & {first_c2}**{status_suffix}\n\n"
+            f"First cleaners: **{first_cleaners}**{status_suffix}\n\n"
             "Use the buttons below to check duty, fines, or rules."
         )
     else:
-        c1 = week_info.cleaner1_name
-        c2 = week_info.cleaner2_name
+        cleaner_display = week_info.cleaner_display
         week_record = await db.get_week(week_info.week_start, dorm_id=dorm_id)
         is_completed_duty = bool(week_record and (week_record.get("final_status") == "completed" or week_record.get("photo_status") == "approved"))
         if is_completed_duty:
@@ -275,7 +281,7 @@ async def get_dorm_main_menu_text(
             status_note = ""
         return (
             f"{dorm_prefix}Hi **{member_name}**!\n\n"
-            f"Week {week_info.week_number} cleaners: **{c1} & {c2}**{status_note}{status_suffix}\n\n"
+            f"Week {week_info.week_number} cleaners: **{cleaner_display}**{status_note}{status_suffix}\n\n"
             f"Use the buttons below to {action_text}."
         )
 
@@ -391,8 +397,7 @@ async def get_status_content(user_id: Optional[int] = None, dorm_id: Optional[in
 
     if not week_record:
         week_record = await db.get_week(week_info.week_start, dorm_id=resolved_id)
-    c1_name = week_info.cleaner1_name
-    c2_name = week_info.cleaner2_name
+    cleaner_display = week_info.cleaner_display
 
     if week_record and week_record.get("approver_id"):
         approver_name = members_by_id.get(week_record["approver_id"], f"ID {week_record['approver_id']}")
@@ -442,7 +447,7 @@ async def get_status_content(user_id: Optional[int] = None, dorm_id: Optional[in
         f"**{dorm['dorm_name']}** — Week #{week_info.week_number} "
         f"({week_info.monday_date.strftime('%b %d')} – {week_info.friday_date.strftime('%b %d')})\n"
         f"🔑 **Dorm Code:** `{dorm_code}`\n\n"
-        f"Cleaners: **{c1_name}** & **{c2_name}**\n"
+        f"Cleaners: **{cleaner_display}**\n"
         f"Approver: **{approver_name}**\n"
         f"Status: {duty_state}"
     )
@@ -507,7 +512,7 @@ async def get_schedule_content(dorm_id: Optional[int] = None, user_id: Optional[
             else:
                 tag = ""
             date_str = f"{w.monday_date.strftime('%b %d')} – {w.friday_date.strftime('%b %d')}"
-            lines.append(f"• Week {w.week_number} ({date_str}){tag}: {w.cleaner1_name} & {w.cleaner2_name}")
+            lines.append(f"• Week {w.week_number} ({date_str}){tag}: {w.cleaner_display}")
 
     return "\n".join(lines), keyboard
 
@@ -588,7 +593,11 @@ async def get_history_content(dorm_id: Optional[int] = None, user_id: Optional[i
     for r in records:
         w_start = r["week_start"]
         c1_name = members_by_id.get(r["cleaner1_id"], f"ID {r['cleaner1_id']}")
-        c2_name = members_by_id.get(r["cleaner2_id"], f"ID {r['cleaner2_id']}")
+        cleaner_names = [c1_name]
+        if r.get("cleaner2_id"):
+            cleaner_names.append(members_by_id.get(r["cleaner2_id"], f"ID {r['cleaner2_id']}"))
+        if r.get("cleaner3_id"):
+            cleaner_names.append(members_by_id.get(r["cleaner3_id"], f"ID {r['cleaner3_id']}"))
         f_status = r.get("final_status", "pending")
         rating = r.get("rating")
         stars_badge = f" ({rating}★)" if rating else ""
@@ -599,7 +608,7 @@ async def get_history_content(dorm_id: Optional[int] = None, user_id: Optional[i
         else:
             badge = "Pending"
 
-        lines.append(f"• Week {r['week_number']} ({w_start}): {c1_name} & {c2_name} — {badge}")
+        lines.append(f"• Week {r['week_number']} ({w_start}): {' & '.join(cleaner_names)} — {badge}")
 
     return "\n".join(lines), keyboard
 
@@ -717,7 +726,26 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                     dorm = None
 
             if dorm:
-                member_name = user.first_name or user.username or f"User {user.id}"
+                existing_member = await db.get_dorm_member(dorm["dorm_id"], user.id)
+                if (
+                    dorm.get("status") not in ("setup", "active")
+                    or (
+                        dorm.get("status") == "active"
+                        and dorm.get("expected_members")
+                        and not existing_member
+                    )
+                ):
+                    await update.effective_message.reply_text(
+                        f"Registration for {dorm['dorm_name']} is closed. "
+                        "Contact the dorm admin if you need help."
+                    )
+                    return
+
+                member_name = (
+                    existing_member.get("name")
+                    if existing_member
+                    else user.first_name or user.username or f"User {user.id}"
+                )
                 success, msg = await db.add_dorm_member(
                     dorm_id=dorm["dorm_id"],
                     user_id=user.id,
@@ -738,27 +766,43 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
                 logger.info("User %s (%s) joined dorm %s via deep-link", member_name, user.id, dorm["dorm_id"])
 
-                # Post greeting in the dorm group chat
-                try:
-                    await context.bot.send_message(
-                        chat_id=dorm["dorm_id"],
-                        message_thread_id=dorm.get("topic_id"),
-                        text=f"👤 **{member_name}** just joined the dorm!",
-                        parse_mode=ParseMode.MARKDOWN
-                    )
-                except Exception as e:
-                    logger.warning("Could not ping dorm group %s on member join: %s", dorm["dorm_id"], e)
+                if not existing_member:
+                    connected_count, member_count, _, _ = await db.get_connection_status(dorm["dorm_id"])
+                    expected_members = dorm.get("expected_members")
+                    if expected_members and dorm.get("status") == "setup":
+                        if connected_count == expected_members and member_count == expected_members:
+                            join_notice = None
+                        else:
+                            join_notice = (
+                                f"👤 **{member_name}** joined "
+                                f"({connected_count}/{expected_members} connected)."
+                            )
+                    elif member_count >= 2 and connected_count >= member_count:
+                        join_notice = None
+                    else:
+                        join_notice = f"👤 **{member_name}** just joined the dorm!"
+                    if join_notice:
+                        try:
+                            await context.bot.send_message(
+                                chat_id=dorm["dorm_id"],
+                                message_thread_id=dorm.get("topic_id"),
+                                text=join_notice,
+                                parse_mode=ParseMode.MARKDOWN
+                            )
+                        except Exception as e:
+                            logger.warning("Could not ping dorm group %s on member join: %s", dorm["dorm_id"], e)
 
                 default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
                 is_our_dorm = (
                     dorm["dorm_id"] in (default_gid, getattr(config, "GROUP_ID", 0), 0)
                     or config.is_member(user.id)
                 )
+                name_confirmed = await db.get_setting(f"name_confirmed_{user.id}")
 
-                if is_our_dorm:
+                if is_our_dorm or name_confirmed:
                     context.user_data.pop("awaiting_name", None)
                     welcome_dm = (
-                        f"🎉 **Welcome to {dorm['dorm_name']}!**\n\n"
+                        f"🎉 **{'Welcome back to' if existing_member else 'Welcome to'} {dorm['dorm_name']}!**\n\n"
                         "You are registered in the dorm cleaning schedule.\n"
                         "You will receive duty announcements, reminders, and verification prompts here in DM.\n\n"
                         "Tap below to see your dorm's status."
@@ -836,8 +880,18 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         conn_str = f"{connected_count}/{total_count}"
 
         # If all members are connected, celebrate in group
-        if total_count >= 2 and connected_count >= total_count:
-            announced_key = f"all_connected_{dorm_id}"
+        expected_members = target_dorm.get("expected_members") if target_dorm else None
+        if target_dorm and target_dorm.get("status") == "setup":
+            all_expected_connected = (
+                expected_members is not None
+                and total_count == expected_members
+                and connected_count == expected_members
+            )
+        else:
+            all_expected_connected = total_count >= 2 and connected_count >= total_count
+
+        if all_expected_connected:
+            announced_key = f"all_connected_{dorm_id}_{expected_members or total_count}"
             already_announced = await db.get_setting(announced_key)
             if not already_announced:
                 await db.set_setting(announced_key, "1")

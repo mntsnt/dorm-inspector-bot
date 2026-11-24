@@ -51,7 +51,7 @@ async def markpaid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     # Check argument
     if not context.args:
         await update.effective_message.reply_text(
-            "Usage: `/markpaid <name_or_id>` or `/paid <name_or_id>`\nExample: `/markpaid Bilisuma`",
+            "Usage: `/pay <name_or_id>` (also `/markpaid` or `/paid`)\nExample: `/pay Bilisuma`",
             parse_mode=ParseMode.MARKDOWN
         )
         return
@@ -321,7 +321,7 @@ async def set_ai_key_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await chat.send_message(success_text, parse_mode=ParseMode.MARKDOWN)
 
 async def announce_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Admin command to manually broadcast or re-trigger the weekly duty announcement in the group."""
+    """Explain that weekly announcements are automatic and cannot be manually reposted."""
     user = update.effective_user
     chat = update.effective_chat
     if not user or not chat:
@@ -345,17 +345,19 @@ async def announce_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     # Permission check
     if user.id != dorm_admin_id and user.id != getattr(config, "ADMIN_ID", 0):
-        await update.effective_message.reply_text("Only the dorm admin can trigger the announcement.")
+        await update.effective_message.reply_text("Only the dorm admin can use this command.")
         return
 
-    from scheduler import send_dorm_announcement
-    success, msg = await send_dorm_announcement(context, target_dorm_id)
-    await update.effective_message.reply_text(msg)
+    await update.effective_message.reply_text(
+        "Weekly duty announcements are posted automatically on Monday. "
+        "This command will not repost the announcement or its images."
+    )
 
 def register_admin_handlers(application: Application) -> None:
     """Attach admin command handlers."""
     application.add_handler(CommandHandler("markpaid", markpaid_command))
     application.add_handler(CommandHandler("paid", markpaid_command))
+    application.add_handler(CommandHandler("pay", markpaid_command))
     application.add_handler(CommandHandler("setid", setid_command))
     application.add_handler(CommandHandler("testgroup", testgroup_command))
     application.add_handler(CommandHandler("announce", announce_command))

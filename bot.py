@@ -105,11 +105,19 @@ async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYP
 # ---------------------------------------------------------------------------
 async def post_init(application: Application) -> None:
     """Run initial database setup and report platform status."""
+    try:
+        import web
+        web.app.state.telegram_bot = application.bot
+    except Exception as e:
+        logger.warning("Could not expose Telegram bot to the dashboard review API: %s", e)
+
     logger.info("Initializing multi-tenant database...")
     await db.init_db()
 
     try:
         bot_info = await application.bot.get_me()
+        if bot_info.username:
+            config.BOT_USERNAME = bot_info.username
         logger.info("Bot authenticated successfully: @%s (ID: %s)", bot_info.username, bot_info.id)
     except Exception as e:
         logger.warning("Could not fetch bot information in post_init: %s", e)
@@ -134,11 +142,13 @@ async def post_init(application: Application) -> None:
             BotCommand("approve", "Approve cleaning duty & award tokens (Approver/Admin)"),
             BotCommand("code", "Get your dorm access code and website link"),
             BotCommand("fines", "View unpaid fines summary"),
+            BotCommand("pay", "Record a fine payment (Admin)"),
             BotCommand("members", "View list of registered roommates"),
             BotCommand("spin", "Randomly pick a roommate for a chore"),
             BotCommand("swap", "Request a one-week chore swap"),
             BotCommand("inspector", "Ask The Inspector AI any question"),
             BotCommand("setup", "Setup or reconfigure this dorm (Admin)"),
+            BotCommand("setmembers", "Set total roommate count during setup"),
             BotCommand("help", "View commands and cleaning rules"),
         ]
         await application.bot.set_my_commands(group_commands, scope=BotCommandScopeAllGroupChats())

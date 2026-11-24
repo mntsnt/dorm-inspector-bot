@@ -12,6 +12,7 @@ from typing import Optional, Tuple
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.error import BadRequest, TelegramError
+from telegram.helpers import escape_markdown
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
 import config
@@ -119,6 +120,109 @@ async def _safe_edit_message(
     except Exception as e:
         logger.warning("Error editing message: %s", e)
 
+async def publish_approved_cleaning(
+    context: ContextTypes.DEFAULT_TYPE,
+    dorm_id: int,
+    week_record: dict,
+    reward: dict,
+    rating: int,
+    review_text: str,
+    approver_name: str,
+    automated: bool = False,
+) -> str:
+    """Send the shared group celebration and cleaner confirmations after approval."""
+    dorm = await db.get_dorm(dorm_id)
+    topic_id = dorm.get("topic_id") if dorm else None
+    member_ids = [
+        week_record.get("cleaner1_id"),
+        week_record.get("cleaner2_id"),
+        week_record.get("cleaner3_id"),
+    ]
+    cleaners = []
+    for cleaner_id in member_ids:
+        if not cleaner_id:
+            continue
+        member = await db.get_dorm_member(dorm_id, cleaner_id)
+        cleaners.append((
+            cleaner_id,
+            member["name"] if member else f"ID {cleaner_id}"
+        ))
+
+    cleaner_display = " & ".join(name for _, name in cleaners)
+    cleaned_at = config.format_local_datetime(
+        week_record.get("done_reported_at") or week_record.get("photo_submitted_at")
+    )
+    stars_display = RATING_STARS_DISPLAY.get(rating, f"{rating} Stars")
+    base_tokens = rating * 5
+    early_bonus = reward["early_bonus"]
+    tokens_each = reward["tokens_each"]
+    approver_bonus = reward.get("approver_bonus", 0)
+    actor_label = f"{approver_name} (automatic fallback)" if automated else approver_name
+    safe_actor_label = escape_markdown(actor_label)
+    safe_cleaner_display = escape_markdown(cleaner_display)
+    approver_reward_text = f" Approver earned +{approver_bonus} tokens." if approver_bonus else ""
+    safe_review_text = escape_markdown(review_text)
+    group_message = (
+        f"🎉 **Well Done! Cleaning Approved**\n\n"
+        f"⭐ **Approver:** {safe_actor_label}\n"
+        f"⭐ **Rating:** {stars_display} — _{safe_review_text}_\n"
+        f"🕒 **Cleaned at:** {cleaned_at or 'time not recorded'}\n"
+        f"👏 **Cleaners:** {safe_cleaner_display} — duty completed for the week!\n"
+        f"🪙 **Reward:** +{base_tokens} rating tokens"
+        f"{f' + {early_bonus} early-cleaning bonus' if early_bonus else ''} "
+        f"(+{tokens_each} each).{approver_reward_text}"
+    )
+    approved_meme = config.get_meme_file("approved")
+    try:
+        photo_file_id = week_record.get("photo_file_id")
+        if photo_file_id:
+            await context.bot.send_photo(
+                chat_id=dorm_id,
+                message_thread_id=topic_id,
+                photo=photo_file_id,
+                caption=group_message,
+                parse_mode=ParseMode.MARKDOWN
+            )
+        elif approved_meme:
+            with open(approved_meme, "rb") as photo:
+                await context.bot.send_photo(
+                    chat_id=dorm_id,
+                    message_thread_id=topic_id,
+                    photo=photo,
+                    caption=group_message,
+                    parse_mode=ParseMode.MARKDOWN
+                )
+        else:
+            await context.bot.send_message(
+                chat_id=dorm_id,
+                message_thread_id=topic_id,
+                text=group_message,
+                parse_mode=ParseMode.MARKDOWN
+            )
+    except Exception as e:
+        logger.error("Failed to send approved cleaning photo to group: %s", e)
+
+    cleaner_message = (
+        f"🎉 **Well Done! Inspection Approved**\n\n"
+        f"Approver: **{safe_actor_label}**\n"
+        f"Rating: {stars_display} — _{safe_review_text}_\n"
+        f"Cleaned at: **{cleaned_at or 'time not recorded'}**\n"
+        f"Earned: **+{tokens_each} Tsidat tokens**"
+        f"{f' (includes +{early_bonus} early-cleaning bonus)' if early_bonus else ''}.\n\n"
+        "✅ You have completed your cleaning duty and are done for the week!"
+    )
+    for cleaner_id, cleaner_name in cleaners:
+        await _notify_cleaner(
+            context,
+            cleaner_id,
+            cleaner_name,
+            cleaner_message,
+            photo_path=approved_meme,
+            dorm_id=dorm_id,
+            topic_id=topic_id
+        )
+    return cleaner_display
+
 # ---------------------------------------------------------------------------
 # Photo Review Callbacks: Approve / Reject
 # ---------------------------------------------------------------------------
@@ -171,10 +275,16 @@ async def approve_photo_callback(update: Update, context: ContextTypes.DEFAULT_T
     except Exception:
         pass
 
-    c1 = await db.get_dorm_member(dorm_id, week_record["cleaner1_id"])
-    c2 = await db.get_dorm_member(dorm_id, week_record["cleaner2_id"])
-    c1_name = c1["name"] if c1 else f"ID {week_record['cleaner1_id']}"
-    c2_name = c2["name"] if c2 else f"ID {week_record['cleaner2_id']}"
+    cleaner_names = []
+    for cleaner_id in (
+        week_record["cleaner1_id"],
+        week_record.get("cleaner2_id", 0),
+        week_record.get("cleaner3_id", 0)
+    ):
+        if cleaner_id:
+            cleaner = await db.get_dorm_member(dorm_id, cleaner_id)
+            cleaner_names.append(cleaner["name"] if cleaner else f"ID {cleaner_id}")
+    cleaner_display = " & ".join(cleaner_names)
 
     # Present 5-Star Inspection Review rating keyboard
     star_keyboard = InlineKeyboardMarkup([
@@ -190,7 +300,7 @@ async def approve_photo_callback(update: Update, context: ContextTypes.DEFAULT_T
     ])
 
     prompt_text = (
-        f"⭐ **Rate This Week's Cleaning ({c1_name} & {c2_name})**\n\n"
+        f"⭐ **Rate This Week's Cleaning ({cleaner_display})**\n\n"
         "Choose a 1 to 5 star rating for room inspection.\n"
         "Cleaners will receive **Tsidat tokens** based on your rating! 🪙"
     )
@@ -287,89 +397,27 @@ async def rate_photo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         await _safe_edit_message(query, "This photo was already reviewed or the cleaning week is closed.")
         return
 
-    base_tokens = stars_clamped * 5
-    early_bonus = reward["early_bonus"]
-    tokens_earned = reward["tokens_each"]
-    cleaned_at = config.format_local_datetime(
-        week_record.get("done_reported_at") or week_record.get("photo_submitted_at")
+    await publish_approved_cleaning(
+        context,
+        dorm_id,
+        week_record,
+        reward,
+        stars_clamped,
+        review_comment,
+        approver_name
     )
-    c1_id = week_record["cleaner1_id"]
-    c2_id = week_record["cleaner2_id"]
-
-    c1 = await db.get_dorm_member(dorm_id, c1_id)
-    c2 = await db.get_dorm_member(dorm_id, c2_id)
-    c3_id = week_record.get("cleaner3_id", 0)
-    c3 = await db.get_dorm_member(dorm_id, c3_id) if c3_id else None
-    c1_name = c1["name"] if c1 else f"ID {c1_id}"
-    c2_name = c2["name"] if c2 else (f"ID {c2_id}" if c2_id else "")
-    c3_name = c3["name"] if c3 else (f"ID {c3_id}" if c3_id else "")
-    cleaner_names = [n for n in (c1_name, c2_name, c3_name) if n]
-    c_disp = " & ".join(cleaner_names)
-
-    # 3. Update approver's message in DM
+    approver_bonus = reward.get("approver_bonus", 0)
+    approver_bonus_text = f" You earned +{approver_bonus} tokens." if approver_bonus else ""
+    early_bonus = reward["early_bonus"]
+    early_bonus_text = f" (includes +{early_bonus} early-cleaning bonus)" if early_bonus else ""
     confirmation_text = (
         f"✅ **Inspection Approved**\n\n"
         f"Rating: {stars_display}\n"
-        f"Cleaners received **+{base_tokens} rating tokens**"
-        f"{f' and +{early_bonus} early-cleaning bonus' if early_bonus else ''} "
-        f"(+{tokens_earned} each; +5 for you)."
+        f"Cleaners received **+{reward['tokens_each']} tokens each**"
+        f"{early_bonus_text}."
+        f"{approver_bonus_text}"
     )
     await _safe_edit_message(query, confirmation_text)
-
-    # 4. Post photo and well-done celebration in dorm group chat
-    group_msg = (
-        f"🎉 **Well Done! Cleaning Approved**\n\n"
-        f"⭐ **Approver:** {approver_name}\n"
-        f"⭐ **Rating:** {stars_display} — _{review_comment}_\n"
-        f"🕒 **Cleaned at:** {cleaned_at or 'time not recorded'}\n"
-        f"👏 **Cleaners:** {c_disp} — duty completed for the week!\n"
-        f"🪙 **Reward:** +{base_tokens} rating tokens"
-        f"{f' + {early_bonus} early-cleaning bonus' if early_bonus else ''} "
-        f"(+{tokens_earned} each)."
-    )
-    photo_file_id = week_record.get("photo_file_id")
-    approved_meme = config.get_meme_file("approved")
-    try:
-        if photo_file_id:
-            await context.bot.send_photo(
-                chat_id=dorm_id,
-                message_thread_id=topic_id,
-                photo=photo_file_id,
-                caption=group_msg,
-                parse_mode=ParseMode.MARKDOWN
-            )
-        elif approved_meme:
-            with open(approved_meme, "rb") as photo:
-                await context.bot.send_photo(
-                    chat_id=dorm_id,
-                    message_thread_id=topic_id,
-                    photo=photo,
-                    caption=group_msg,
-                    parse_mode=ParseMode.MARKDOWN
-                )
-        else:
-            await context.bot.send_message(
-                chat_id=dorm_id,
-                message_thread_id=topic_id,
-                text=group_msg,
-                parse_mode=ParseMode.MARKDOWN
-            )
-    except Exception as e:
-        logger.error("Failed to send approved cleaning photo to group: %s", e)
-
-    # 5. Notify cleaners in private DM (confirming they are done for the week)
-    dm_text = (
-        f"🎉 **Well Done! Inspection Approved**\n\n"
-        f"Approver: **{approver_name}**\n"
-        f"Rating: {stars_display} — _{review_comment}_\n"
-        f"Cleaned at: **{cleaned_at or 'time not recorded'}**\n"
-        f"Earned: **+{tokens_earned} Tsidat tokens**"
-        f"{f' (includes +{early_bonus} early-cleaning bonus)' if early_bonus else ''}.\n\n"
-        f"✅ You have completed your cleaning duty and are done for the week!"
-    )
-    for cid, cname in [(c1_id, c1_name), (c2_id, c2_name), (c3_id, c3_name)]:
-        if cid:
-            await _notify_cleaner(context, cid, cname, dm_text, photo_path=approved_meme, dorm_id=dorm_id, topic_id=topic_id)
 
 async def reject_photo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Approver rejects the cleaning photo."""
@@ -416,15 +464,15 @@ async def reject_photo_callback(update: Update, context: ContextTypes.DEFAULT_TY
         return
     await query.answer()
 
-    c1 = await db.get_dorm_member(dorm_id, week_record["cleaner1_id"])
-    c2 = await db.get_dorm_member(dorm_id, week_record["cleaner2_id"])
-    c1_name = c1["name"] if c1 else f"ID {week_record['cleaner1_id']}"
-    c2_name = c2["name"] if c2 else f"ID {week_record['cleaner2_id']}"
-    cleaner_names = [c1_name, c2_name]
-    c3_id = week_record.get("cleaner3_id", 0)
-    if c3_id:
-        c3 = await db.get_dorm_member(dorm_id, c3_id)
-        cleaner_names.append(c3["name"] if c3 else f"ID {c3_id}")
+    cleaner_names = []
+    for cleaner_id in (
+        week_record["cleaner1_id"],
+        week_record.get("cleaner2_id", 0),
+        week_record.get("cleaner3_id", 0)
+    ):
+        if cleaner_id:
+            cleaner = await db.get_dorm_member(dorm_id, cleaner_id)
+            cleaner_names.append(cleaner["name"] if cleaner else f"ID {cleaner_id}")
     cleaner_display = " & ".join(cleaner_names)
 
     # Update approver's message
@@ -461,10 +509,14 @@ async def reject_photo_callback(update: Update, context: ContextTypes.DEFAULT_TY
         f"**{approver_name}** rejected your cleaning photo.\n"
         "Please clean again and send a new photo before Friday 8:00 PM."
     )
-    for cleaner_id, cleaner_name in zip(
-        [week_record["cleaner1_id"], week_record.get("cleaner2_id", 0), c3_id],
-        cleaner_names
-    ):
+    cleaner_ids = [
+        cleaner_id for cleaner_id in (
+            week_record["cleaner1_id"],
+            week_record.get("cleaner2_id", 0),
+            week_record.get("cleaner3_id", 0)
+        ) if cleaner_id
+    ]
+    for cleaner_id, cleaner_name in zip(cleaner_ids, cleaner_names):
         if cleaner_id:
             await _notify_cleaner(
                 context, cleaner_id, cleaner_name, dm_text,
@@ -703,6 +755,12 @@ async def confirm_not_cleaned_callback(update: Update, context: ContextTypes.DEF
     await _notify_cleaner(context, week_record["cleaner1_id"], c1_name, dm_text, photo_path=fined_meme, dorm_id=dorm_id, topic_id=topic_id)
     await _notify_cleaner(context, week_record["cleaner2_id"], c2_name, dm_text, photo_path=fined_meme, dorm_id=dorm_id, topic_id=topic_id)
 
+async def expired_friday_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Tell users that legacy Friday confirmation buttons are no longer active."""
+    query = update.callback_query
+    if query:
+        await query.answer("This Friday check has expired. Use /status for the current result.", show_alert=True)
+
 async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Approver or Admin executes /approve [stars] to immediately approve cleaning duty and award Tsidat tokens."""
     user = update.effective_user
@@ -763,17 +821,23 @@ async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await msg.reply_text("There is no pending cleaning photo to approve. Cleaners must submit a photo first.")
         return
 
-    # Parse optional stars: /approve 5, /approve 4
+    # Parse optional rating and note: /approve 5 Floors and counters were spotless.
     stars = 5
     if context.args and len(context.args) > 0:
         try:
             stars = int(context.args[0])
-            stars = max(1, min(5, stars))
         except ValueError:
-            stars = 5
+            await msg.reply_text("Usage: `/approve [1-5] [note]`", parse_mode=ParseMode.MARKDOWN)
+            return
+        if not 1 <= stars <= 5:
+            await msg.reply_text("Rating must be between 1 and 5.", parse_mode=ParseMode.MARKDOWN)
+            return
 
-    review_comment = RATING_COMMENTS.get(stars, "Sparkling clean! 5-star hotel standard.")
-    stars_display = RATING_STARS_DISPLAY.get(stars, f"{stars} Stars")
+    review_comment = (
+        " ".join(context.args[1:]).strip()
+        if context.args and len(context.args) > 1
+        else RATING_COMMENTS.get(stars, "Sparkling clean! 5-star hotel standard.")
+    )
     reward = await db.approve_week_and_award_tokens(
         week_start,
         dorm_id=dorm_id,
@@ -783,85 +847,28 @@ async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if reward is None:
         await msg.reply_text("This photo was already reviewed or the cleaning week is closed.")
         return
-    base_tokens = stars * 5
-    early_bonus = reward["early_bonus"]
     tokens_earned = reward["tokens_each"]
-    cleaned_at = config.format_local_datetime(
-        week_record.get("done_reported_at") or week_record.get("photo_submitted_at")
-    )
-    c1_id = week_record["cleaner1_id"]
-    c2_id = week_record.get("cleaner2_id", 0)
-    c3_id = week_record.get("cleaner3_id", 0)
-
-    c1_name = members_by_id.get(c1_id, f"ID {c1_id}")
-    c2_name = members_by_id.get(c2_id, f"ID {c2_id}") if c2_id else ""
-    c3_name = members_by_id.get(c3_id, f"ID {c3_id}") if c3_id else ""
-    cleaner_names = [n for n in (c1_name, c2_name, c3_name) if n]
-    c_disp = " & ".join(cleaner_names)
     actor_name = members_by_id.get(user.id, user.first_name)
-
-    # 3. Post celebration in dorm group chat
-    group_msg = (
-        f"🎉 **Well Done! Cleaning Approved**\n\n"
-        f"⭐ **Approved by:** {actor_name} ({'Approver' if is_approver else 'Admin'})\n"
-        f"⭐ **Rating:** {stars_display} — _{review_comment}_\n"
-        f"🕒 **Cleaned at:** {cleaned_at or 'time not recorded'}\n"
-        f"👏 **Cleaners:** {c_disp} — duty completed for the week!\n"
-        f"🪙 **Reward:** +{base_tokens} rating tokens"
-        f"{f' + {early_bonus} early-cleaning bonus' if early_bonus else ''} "
-        f"(+{tokens_earned} each)."
+    cleaner_display = await publish_approved_cleaning(
+        context,
+        dorm_id,
+        week_record,
+        reward,
+        rating=stars,
+        review_text=review_comment,
+        approver_name=f"{actor_name} ({'Approver' if is_approver else 'Admin'})"
     )
-    photo_file_id = week_record.get("photo_file_id")
-    approved_meme = config.get_meme_file("approved")
-    try:
-        if photo_file_id:
-            await context.bot.send_photo(
-                chat_id=dorm_id,
-                message_thread_id=topic_id,
-                photo=photo_file_id,
-                caption=group_msg,
-                parse_mode=ParseMode.MARKDOWN
-            )
-        elif approved_meme and approved_meme.is_file():
-            with open(approved_meme, "rb") as pf:
-                await context.bot.send_photo(
-                    chat_id=dorm_id,
-                    message_thread_id=topic_id,
-                    photo=pf,
-                    caption=group_msg,
-                    parse_mode=ParseMode.MARKDOWN
-                )
-        else:
-            await context.bot.send_message(
-                chat_id=dorm_id,
-                message_thread_id=topic_id,
-                text=group_msg,
-                parse_mode=ParseMode.MARKDOWN
-            )
-    except Exception as ge:
-        logger.warning("Could not send group celebration message: %s", ge)
-
-    # 4. Notify cleaners in DM
-    done_dm_msg = (
-        f"🎉 **Duty Completed & Approved!**\n\n"
-        f"Your cleaning for Week {week_info.week_number} was approved with **{stars_display}**!\n"
-        f"Cleaned at: **{cleaned_at or 'time not recorded'}**\n"
-        f"Earned: **+{tokens_earned} Tsidat tokens**"
-        f"{f' (includes +{early_bonus} early-cleaning bonus)' if early_bonus else ''}.\n\n"
-        f"You are completely done for the week. Enjoy your weekend! 🌟"
-    )
-    await _notify_cleaner(context, c1_id, c1_name, done_dm_msg, dorm_id=dorm_id, topic_id=topic_id)
-    if c2_id:
-        await _notify_cleaner(context, c2_id, c2_name, done_dm_msg, dorm_id=dorm_id, topic_id=topic_id)
-    if c3_id:
-        await _notify_cleaner(context, c3_id, c3_name, done_dm_msg, dorm_id=dorm_id, topic_id=topic_id)
+    approver_bonus = reward.get("approver_bonus", 0)
+    bonus_text = f" You earned +{approver_bonus} Tsidat tokens." if approver_bonus else ""
 
     # Reply to sender
     target_chat = update.effective_chat
     if target_chat and target_chat.id != dorm_id:
-        await msg.reply_text(f"✅ Cleaning approved! Awarded +{tokens_earned} Tsidat tokens to {c_disp}.")
+        await msg.reply_text(
+            f"✅ Cleaning approved! Awarded +{tokens_earned} Tsidat tokens to {cleaner_display}.{bonus_text}"
+        )
     else:
-        await msg.reply_text(f"✅ Cleaning approved for {c_disp}!")
+        await msg.reply_text(f"✅ Cleaning approved for {cleaner_display}.{bonus_text}")
 
 def register_approval_handlers(application: Application) -> None:
     """Attach approver decision handlers."""
@@ -870,3 +877,6 @@ def register_approval_handlers(application: Application) -> None:
     application.add_handler(CallbackQueryHandler(approve_photo_callback, pattern=r"^approve_"))
     application.add_handler(CallbackQueryHandler(rate_photo_callback, pattern=r"^rate_\d+_"))
     application.add_handler(CallbackQueryHandler(reject_photo_callback, pattern=r"^reject_"))
+    application.add_handler(
+        CallbackQueryHandler(expired_friday_callback, pattern=r"^(?:fconfirm|fcheck)_")
+    )

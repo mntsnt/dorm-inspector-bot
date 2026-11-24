@@ -465,6 +465,7 @@ async def send_dorm_cleaner_reminder(
     if (
         week_record.get("final_status") != "pending"
         or week_record.get("photo_status") in ("submitted", "approved")
+        or week_record.get("done_reported")
         or now_date > week_info.friday_date
     ):
         return False
@@ -536,6 +537,37 @@ async def send_dorm_friday_check(
     if now_time < deadline:
         return False
 
+    if week_record.get("photo_status") == "submitted":
+        submitted_at = _parse_local_datetime(week_record.get("photo_submitted_at"))
+        timeout_at = submitted_at + timedelta(hours=24) if submitted_at else now_time + timedelta(hours=24)
+        if not await db.claim_week_friday_prompt(
+            week_info.week_start,
+            dorm_id=dorm_id,
+            timeout_deadline=timeout_at.isoformat()
+        ):
+            return False
+
+        approver_id = week_record.get("approver_id") or dorm.get("admin_id")
+        if not approver_id:
+            logger.error("Cannot prompt for Friday review in dorm %s: no approver or admin is configured", dorm_id)
+            return False
+        approver_name = members_by_id.get(approver_id, f"ID {approver_id}") if approver_id else "Approver"
+        review_keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("⭐ Review photo", callback_data=f"approve_{dorm_id}_{week_info.week_start}"),
+            InlineKeyboardButton("❌ Reject", callback_data=f"reject_{dorm_id}_{week_info.week_start}"),
+        ]])
+        await send_dm_with_fallback(
+            context,
+            approver_id,
+            approver_name,
+            f"Friday review: proof was submitted by **{week_info.cleaner_display}**, but no decision is recorded yet. "
+            "Please review it now. If it remains pending 24 hours after submission, the bot will auto-approve it at 3 stars.",
+            reply_markup=review_keyboard,
+            dorm_id=dorm_id,
+            topic_id=topic_id
+        )
+        return True
+
     outcome = await db.finalize_week_fined(
         week_info.week_start,
         dorm_id=dorm_id,
@@ -549,17 +581,19 @@ async def send_dorm_friday_check(
     group_msg = (
         f"⏰ **Cleaning deadline passed**\n\n"
         f"No approved photo was received for **{cleaner_disp}** by Friday 8:00 PM.\n"
-        f"Fine: {outcome['fine_each']} ETB each "
+        f"Fines: {', '.join(f'{name} — {amount} ETB' for name, amount in zip(outcome['cleaner_names'], outcome['fine_amounts']))} "
         f"({outcome['fine_total']} ETB total). Next week's rotation continues as scheduled."
     )
     await post_group_announcement_safe(context, dorm_id, topic_id, group_msg, fine_meme)
 
-    dm_text = (
-        "The cleaning week closed without an approved photo by Friday 8:00 PM.\n"
-        f"A fine of **{outcome['fine_each']} ETB** was recorded for you. "
-        "The next week's rotation continues as scheduled."
-    )
-    for cleaner_id, cleaner_name in zip(outcome["cleaner_ids"], outcome["cleaner_names"]):
+    for cleaner_id, cleaner_name, fine_amount in zip(
+        outcome["cleaner_ids"], outcome["cleaner_names"], outcome["fine_amounts"]
+    ):
+        dm_text = (
+            "The cleaning week closed without an approved photo by Friday 8:00 PM.\n"
+            f"A fine of **{fine_amount} ETB** was recorded for you. "
+            "The next week's rotation continues as scheduled."
+        )
         await send_dm_with_fallback(
             context,
             cleaner_id,
@@ -571,6 +605,69 @@ async def send_dorm_friday_check(
         )
 
     logger.info("Unapproved cleaning fined for dorm %s, week %s", dorm_id, week_info.week_start)
+    return True
+
+def _parse_local_datetime(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        logger.warning("Cannot parse approval timeout timestamp %r", value)
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=config.TIMEZONE)
+    return parsed.astimezone(config.TIMEZONE)
+
+async def auto_approve_stale_submission(
+    context: ContextTypes.DEFAULT_TYPE,
+    dorm_id: int,
+    week_record: Dict[str, Any],
+    now: Optional[datetime] = None
+) -> bool:
+    """Auto-approve submitted proof after its 24-hour review window expires."""
+    if (
+        week_record.get("final_status") != "pending"
+        or week_record.get("photo_status") != "submitted"
+    ):
+        return False
+
+    timeout_at = _parse_local_datetime(week_record.get("timeout_deadline"))
+    if not timeout_at:
+        submitted_at = _parse_local_datetime(week_record.get("photo_submitted_at"))
+        if not submitted_at:
+            return False
+        timeout_at = submitted_at + timedelta(hours=24)
+    if (now or config.get_current_time()) < timeout_at:
+        return False
+
+    review_text = "Auto-approved at 3 stars after 24 hours without an approver decision."
+    reward = await db.approve_week_and_award_tokens(
+        week_record["week_start"],
+        dorm_id=dorm_id,
+        rating=3,
+        review_text=review_text,
+        award_approver_bonus=False
+    )
+    if reward is None:
+        return False
+
+    from handlers.approval import publish_approved_cleaning
+    await publish_approved_cleaning(
+        context,
+        dorm_id,
+        week_record,
+        reward,
+        rating=3,
+        review_text=review_text,
+        approver_name="Inspector",
+        automated=True
+    )
+    logger.info(
+        "Auto-approved stale proof for dorm %s, week %s after 24 hours",
+        dorm_id,
+        week_record["week_start"]
+    )
     return True
 
 
@@ -643,7 +740,14 @@ async def monitor_and_fallback_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                 await send_dorm_cleaner_reminder(context, dorm_id, today, now)
                 week_record = await db.get_week(week_info.week_start, dorm_id=dorm_id)
 
-            # 3. Close unapproved cleaning at the Friday deadline
+            # 3. Auto-approve proof after its 24-hour review window.
+            if week_record.get("final_status") == "pending" and week_record.get("photo_status") == "submitted":
+                await auto_approve_stale_submission(context, dorm_id, week_record, now)
+                week_record = await db.get_week(week_info.week_start, dorm_id=dorm_id)
+                if not week_record:
+                    continue
+
+            # 4. Close missed cleaning at Friday 8 PM; submitted proof gets a review prompt.
             check_naive_time = config.CHECK_TIME.replace(tzinfo=None)
             check_target = datetime.combine(week_info.friday_date, check_naive_time).replace(tzinfo=config.TIMEZONE)
 

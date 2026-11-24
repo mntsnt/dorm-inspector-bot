@@ -11,13 +11,15 @@ Any student can add the bot to their dorm's Telegram group or topic, run `/setup
 - 🏢 **Universal Multi-Tenant Platform:** Multiple dorms across any Ethiopian university can use the same bot instance completely isolated from one another. Schedules, photos, members, and fines never leak.
 - 🔗 **1-Tap Roommate Onboarding:** Admin runs `/setup` in the group to get an instant deep link (`https://t.me/<bot>?start=join_<group_id>`). Roommates click it once in DM to link their account.
 - 👥 **Flexible Dorm Sizing:** Works with 4, 6, 8, 10, or 12 roommates (or any custom even/odd count). Automatically pairs members in rotation.
-- 💸 **Customizable Fines:** Each dorm configures its own fine amount (50, 100, 200 ETB, or 0 ETB). Admins settle fines via `/markpaid` or `/paid`.
+- 💸 **Customizable Fines:** Each dorm configures its total missed-week fine. It is split across that week's cleaners without losing any amount. Admins settle fines via `/pay`, `/markpaid`, or `/paid`.
 - 🎭 **Ethiopian Student Meme Integration:** Features 8 integrated meme moments (`welcome.jpg`, `announcement.jpg`, `suspicious_dog.jpg`, `reminder.jpg`, `approved.jpg`, `rejected.jpg`, `fined.jpg`, `paid.jpg`).
 - 🔄 **Deterministic Weekly Rotation:** Cycles pairs weekly Monday through Friday. Weekends are always off-duty.
 - 🎲 **Fair Approver Rotation:** Approver is randomly picked each Monday from non-cleaning roommates.
-- 📸 **Photo Verification & Inspection:** Cleaners submit photos via DM. Approver inspects and approves or rejects with inline buttons.
-- ⏰ **Daytime Reminders & Friday Deadline:** Cleaners get at most one reminder every six hours between 8:00 AM and 8:00 PM (Addis Ababa time), stopping once they submit a photo. At Friday 8:00 PM, unapproved cleaning is closed and the configured fine is recorded per cleaner.
-- 🎁 **Early-Cleaning Bonus:** On approval, each cleaner earns the approver's rating tokens plus a bonus based on the recorded cleaning day: +5 Monday, +4 Tuesday, +3 Wednesday, +2 Thursday, or +1 Friday.
+- 📸 **Photo Verification & Inspection:** Cleaners submit photos in the dorm group/topic or by DM. The assigned approver reviews and approves or rejects with a 1–5-star rating and optional note.
+- ⏰ **Daytime Reminders & Friday Deadline:** Cleaners get at most one reminder every six hours between 8:00 AM and 8:00 PM (Addis Ababa time), stopping once they report cleaning. At Friday 8:00 PM, weeks without photo proof are closed and fined; pending proof is sent to the approver instead.
+- 🎁 **Tsidat Rewards:** Cleaners earn up to 25 tokens from the approver's 1–5-star rating, plus an early-cleaning bonus: +5 Monday, +4 Tuesday, +3 Wednesday, +2 Thursday, or +1 Friday. The approver earns +5 for a manual review.
+- 🛡️ **Review Timeout:** If submitted proof is not reviewed within 24 hours, the bot auto-approves it at 3 stars. The approver bonus is only awarded for a manual review.
+- 🔐 **Authenticated Dashboard Review:** Approvers and dorm admins can inspect and rate a pending photo from the dashboard after signing in with Telegram.
 - 🕒 **Recorded Completion Time:** The cleaner's “We cleaned” time (or photo-submission time if no button was used) is shown in bot status and the dashboard.
 - 🔁 **Resilient & Idempotent:** Built-in catch-up monitors trigger missed announcements, reminders, or checks if the bot was temporarily offline.
 
@@ -30,28 +32,27 @@ Any student can add the bot to their dorm's Telegram group or topic, run `/setup
 2. Add `@YourDormBot` to the group and promote it to **Admin** (with permission to send messages).
 3. If your group has Topics (Forum enabled), open the designated cleaning topic (e.g., `#Dorm-Cleaning`).
 
-### 2. Run `/setup`
-Send `/setup` in the group topic. The bot will reply with the interactive Setup Card:
+### 2. Start Setup in the Group
+Send `/setup` in the dorm group or cleaning topic. The first person becomes the dorm admin and is added to the roster. The bot replies with the setup card and a private join link:
 ```
 🧹 Dorm Inspector Setup
 
 Dorm: Block 4, Room 204
 Admin: @YourUsername
-Members joined: 1
+Connected roommates: not set
 Fine per missed week: 100 ETB
 
 👉 Share this invite link with your roommates:
 https://t.me/YourDormBot?start=join_1002378440774
 ```
 
-### 3. Roommates Click to Join
-Roommates tap the link once. Their Telegram DM opens with `/start`, connecting their account for private duty notices and verification prompts.
+### 3. Set the Roster and Invite Everyone
+The admin selects the expected total from the setup card, or sends `/setmembers 8` in the group. Include the admin in this count. Each roommate, including the admin, taps the private join link and presses **Start** so the bot can send duty messages and reminders.
 
-### 4. Launch Cleaning Schedule!
-When all roommates have joined, the admin taps **"🚀 Launch Cleaning Schedule"**.
-- The bot automatically generates cleaning pairs.
-- Announces Week 1 duty with the `welcome.jpg` meme.
-- Weekly automated inspections begin!
+The setup card and **Members** button show connection progress. The bot will not launch until the registered and connected roommate counts both match the expected total.
+
+### 4. Launch the Schedule
+Once everyone is connected, the admin taps **"🚀 Launch when roster is ready"**. The bot validates the roster, creates a rotation without duplicating roommates, and activates the schedule for the current or next Monday. Repeated taps cannot relaunch or repost the launch announcement.
 
 ---
 
@@ -64,7 +65,9 @@ When all roommates have joined, the admin taps **"🚀 Launch Cleaning Schedule"
 | `/status` | Private / Group | Shows current week cleaners, approver, and duty state. |
 | `/schedule` | Private / Group | Displays the upcoming 4-week cleaning schedule. |
 | `/done` | Private DM | Cleaners submit their cleaning report and prompt for photos. |
+| `/approve <1-5> [note]` | Private DM | The assigned approver reviews a submitted photo and records a rating and optional note. |
 | `/fines` | Private / Group | Displays the unpaid fines ledger. |
+| `/tsidat` | Private / Group | Shows the dorm's Tsidat token leaderboard. |
 | `/history` | Private / Group | Lists results of past cleaning weeks. |
 | `/members` | Private / Group | Shows who in the dorm has connected to the bot. |
 | `/help` | Private / Group | Shows the user guide and weekly timeline. |
@@ -73,9 +76,11 @@ When all roommates have joined, the admin taps **"🚀 Launch Cleaning Schedule"
 | Command | Location | Description |
 | :--- | :--- | :--- |
 | `/setup` | Group Chat | Starts interactive dorm initialization and member onboarding. |
+| `/setmembers <total>` | Group Chat | Sets the expected roommate count during setup (include the admin). |
 | `/resetdorm`| Group Chat | Pauses or reconfigures dorm settings and pairs. |
 | `/markpaid <name>` | Private / Group | Clears unpaid fines for a member in the ledger. |
 | `/paid <name>` | Private / Group | Alias for `/markpaid`. |
+| `/pay <name>` | Private / Group | Alias for `/markpaid`. |
 | `/setid <name> <id>` | Private / Group | Updates or links a member's numeric Telegram user ID. |
 
 ---
@@ -93,24 +98,26 @@ When all roommates have joined, the admin taps **"🚀 Launch Cleaning Schedule"
                                   ▼
    ┌─────────────────────────────────────────────────────────────┐
    │ MONDAY – FRIDAY (Cleaning & Submission)                     │
-   │ • Cleaners clean, tap "We cleaned" or send /done            │
-   │ • Cleaners send photo in DM (suspicious dog meme prompt)    │
-   │ • Photo forwarded to group & approver DM with buttons       │
-   │ • Approver approves or rejects photo                        │
+   │ • Cleaners clean any day and tap "We cleaned" or send /done │
+   │ • Cleaner sends proof photo in the group/topic or in DM    │
+   │ • Approver reviews the photo and gives a 1–5-star rating   │
+   │ • Approval congratulates cleaners, awards tokens, and ends │
+   │   reminders and further weekly duty announcements          │
    └──────────────────────────────┬──────────────────────────────┘
                                   │
                                   ▼
    ┌─────────────────────────────────────────────────────────────┐
    │ DAYTIME REMINDERS (8 AM, 2 PM, 8 PM; Addis Ababa time)      │
-   │ • At most one reminder every six hours, while awaiting photo│
-   │ • Reminders stop once a photo is submitted                  │
+   │ • At most one reminder every six hours, while duty is open │
+   │ • Reminders stop when cleaning is reported or submitted     │
    └──────────────────────────────┬──────────────────────────────┘
                                   │
                                   ▼
    ┌─────────────────────────────────────────────────────────────┐
    │ FRIDAY 08:00 PM DEADLINE                                    │
-   │ • Approved photo: duty is already completed for the week    │
-   │ • No approved photo: week is closed and fine recorded       │
+   │ • No submitted photo: duty is closed and the fine is logged │
+   │ • Pending photo: approver is prompted; no fine is logged    │
+   │ • Pending proof auto-approves at 3 stars after 24 hours     │
    │ • Next week's rotation continues normally                   │
    └─────────────────────────────────────────────────────────────┘
 ```
@@ -127,6 +134,8 @@ When all roommates have joined, the admin taps **"🚀 Launch Cleaning Schedule"
 | `ADMIN_ID` | Optional | Default single-dorm admin ID. |
 | `PORT` | Optional | Port for the built-in HTTP health check server (default `3000`). |
 | `START_DATE` | Optional | Default fallback start date (`YYYY-MM-DD`, e.g. `2026-11-23`). |
+
+For dashboard photo review and approval, configure the dashboard's domain with BotFather (`/setdomain`) for this bot. Review actions require a valid Telegram Login session and are limited to the assigned approver, dorm admin, or global admin.
 
 ### Docker Deployment
 ```dockerfile

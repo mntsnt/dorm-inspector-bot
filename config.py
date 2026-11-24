@@ -198,6 +198,7 @@ BOT_TOKEN = (
     or os.getenv("TOKEN")
     or ""
 ).strip().strip('"').strip("'")
+BOT_USERNAME = os.getenv("BOT_USERNAME", "").strip().lstrip("@")
 
 # Default settings for the saved Main Dorm
 DEFAULT_GROUP_ID = -1002378440774

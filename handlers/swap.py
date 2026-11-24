@@ -66,20 +66,37 @@ async def swap_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             week_number=week_info.week_number,
             cleaner1_id=week_info.cleaner1_id,
             cleaner2_id=week_info.cleaner2_id,
-            eligible_approver_ids=[m["user_id"] for m in members if m["user_id"] not in (week_info.cleaner1_id, week_info.cleaner2_id)],
-            dorm_id=target_dorm_id
+            eligible_approver_ids=[m["user_id"] for m in members if m["user_id"] not in week_info.cleaner_ids],
+            dorm_id=target_dorm_id,
+            cleaner3_id=week_info.cleaner3_id
         )
 
     cleaner1_id = week_record["cleaner1_id"]
     cleaner2_id = week_record["cleaner2_id"]
+    cleaner3_id = week_record.get("cleaner3_id", 0)
+    if (
+        week_record.get("final_status") != "pending"
+        or week_record.get("photo_status") != "none"
+        or week_record.get("done_reported")
+    ):
+        await message.reply_text("A swap is only available before anyone reports or submits this week's cleaning.")
+        return
+    if week_record.get("approver_id") == user.id:
+        await message.reply_text("The assigned approver cannot swap into this week's cleaning duty.")
+        return
 
     # Verify that the person requesting the swap is actually one of the cleaners on duty
-    if user.id not in (cleaner1_id, cleaner2_id):
+    cleaner_ids = [cleaner_id for cleaner_id in (
+        cleaner1_id, cleaner2_id, cleaner3_id
+    ) if cleaner_id]
+    if user.id not in cleaner_ids:
         c1_name = members_by_id.get(cleaner1_id, f"ID {cleaner1_id}")
-        c2_name = members_by_id.get(cleaner2_id, f"ID {cleaner2_id}")
+        c2_name = members_by_id.get(cleaner2_id, f"ID {cleaner2_id}") if cleaner2_id else ""
+        c3_name = members_by_id.get(cleaner3_id, "") if cleaner3_id else ""
+        cleaner_display = " & ".join(name for name in (c1_name, c2_name, c3_name) if name)
         await message.reply_text(
             f"You are not assigned to clean this week!\n"
-            f"Current cleaners: **{c1_name}** & **{c2_name}**.\n"
+            f"Current cleaners: **{cleaner_display}**.\n"
             "Only cleaners scheduled for this week can request a duty swap.",
             parse_mode=ParseMode.MARKDOWN
         )
@@ -123,8 +140,11 @@ async def swap_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await message.reply_text("You cannot swap duty with yourself!")
         return
 
-    if target_id in (cleaner1_id, cleaner2_id):
+    if target_id in cleaner_ids:
         await message.reply_text(f"**{target_name}** is already your cleaning partner this week!")
+        return
+    if target_id == week_record.get("approver_id"):
+        await message.reply_text("The assigned approver cannot be swapped into this week's cleaning duty.")
         return
 
     # Create swap request in DB
@@ -209,13 +229,17 @@ async def swap_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
         c1 = await db.get_dorm_member(dorm_id, w_record["cleaner1_id"])
         c2 = await db.get_dorm_member(dorm_id, w_record["cleaner2_id"])
         c1_name = c1["name"] if c1 else f"ID {w_record['cleaner1_id']}"
-        c2_name = c2["name"] if c2 else f"ID {w_record['cleaner2_id']}"
+        c2_name = c2["name"] if c2 else (f"ID {w_record['cleaner2_id']}" if w_record["cleaner2_id"] else "")
+        c3_id = w_record.get("cleaner3_id", 0)
+        c3 = await db.get_dorm_member(dorm_id, c3_id) if c3_id else None
+        c3_name = c3["name"] if c3 else (f"ID {c3_id}" if c3_id else "")
+        cleaner_display = " & ".join(name for name in (c1_name, c2_name, c3_name) if name)
 
         result_text = (
             f"🎉 **Duty Swap Confirmed for This Week Only!**\n\n"
             f"**{t_name}** accepted the swap from **{r_name}**.\n\n"
             f"👥 **Updated Cleaners for This Week:**\n"
-            f"• **{c1_name}** & **{c2_name}**\n\n"
+            f"• **{cleaner_display}**\n\n"
             f"_(Normal rotation pairings will resume as usual next cycle)._"
         )
         if query.message:

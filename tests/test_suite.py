@@ -4,11 +4,14 @@ Verifies pairing validation, rotation math, database persistence, and fine rules
 """
 
 import asyncio
+import hashlib
+import hmac
 from datetime import date, datetime, timedelta
 import json
 from pathlib import Path
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -303,8 +306,8 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
             ).isoformat()
             self.assertEqual(db._early_cleaning_bonus(week_start, timestamp), expected_bonus)
 
-    async def test_reminder_claim_enforces_six_hour_interval_and_stops_after_photo(self):
-        """Reminder claims are atomic, spaced six hours apart, and stop after submission."""
+    async def test_reminder_claim_enforces_six_hour_interval_and_stops_after_report(self):
+        """Reminder claims are atomic, spaced six hours apart, and stop after a cleaning report."""
         await db.init_db()
         dorm_id = -1005555222
         await db.create_or_update_dorm(dorm_id=dorm_id, admin_id=104, dorm_name="Reminder Test Dorm")
@@ -322,6 +325,8 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(await db.claim_week_reminder(week_start, dorm_id=dorm_id))
         with patch("config.get_current_time", return_value=datetime(2026, 11, 23, 20, tzinfo=config.TIMEZONE)):
             self.assertTrue(await db.claim_week_reminder(week_start, dorm_id=dorm_id))
+            self.assertTrue(await db.mark_done_reported(week_start, dorm_id, user_id=102))
+            self.assertFalse(await db.claim_week_reminder(week_start, dorm_id=dorm_id))
             self.assertTrue(await db.submit_photo(week_start, "reminder-photo", 102, dorm_id))
             self.assertFalse(await db.claim_week_reminder(week_start, dorm_id=dorm_id))
 
@@ -384,6 +389,125 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await db.finalize_week_fined(week_start, dorm_id=dorm_id, fine_total=100))
         self.assertEqual(await db.get_user_unpaid_total(102, dorm_id=dorm_id), 50)
         self.assertEqual(await db.get_user_unpaid_total(103, dorm_id=dorm_id), 50)
+
+    async def test_friday_fine_shares_cover_three_cleaners_without_losing_total(self):
+        """A three-cleaner fine is split fairly and the ledger still sums to the configured total."""
+        await db.init_db()
+        dorm_id = -1005555334
+        await db.create_or_update_dorm(dorm_id=dorm_id, admin_id=104, dorm_name="Three Cleaner Fine Dorm")
+        for user_id, name in ((102, "Cleaner A"), (103, "Cleaner B"), (104, "Cleaner C"), (105, "Approver")):
+            await db.add_dorm_member(dorm_id, user_id, name)
+        await db.get_or_create_week(
+            "2026-11-23", 1, 102, 103, [105], dorm_id=dorm_id, cleaner3_id=104
+        )
+
+        outcome = await db.finalize_week_fined("2026-11-23", dorm_id=dorm_id, fine_total=100)
+
+        self.assertEqual(outcome["fine_amounts"], [34, 33, 33])
+        self.assertEqual(sum(outcome["fine_amounts"]), 100)
+        self.assertEqual(
+            [await db.get_user_unpaid_total(user_id, dorm_id=dorm_id) for user_id in (102, 103, 104)],
+            [34, 33, 33]
+        )
+
+    async def test_submitted_photo_is_not_fined_before_review_timeout(self):
+        """A valid submitted photo remains eligible for approver review after the Friday deadline."""
+        await db.init_db()
+        dorm_id = -1005555338
+        await db.create_or_update_dorm(dorm_id=dorm_id, admin_id=104, dorm_name="Pending Review Dorm")
+        for user_id, name in ((102, "Cleaner A"), (103, "Cleaner B"), (104, "Approver")):
+            await db.add_dorm_member(dorm_id, user_id, name)
+        await db.get_or_create_week("2026-11-23", 1, 102, 103, [104], dorm_id=dorm_id)
+        await db.submit_photo("2026-11-23", "pending-review-photo", 102, dorm_id=dorm_id)
+
+        outcome = await db.finalize_week_fined("2026-11-23", dorm_id=dorm_id, fine_total=100)
+
+        self.assertIsNone(outcome)
+        week = await db.get_week("2026-11-23", dorm_id=dorm_id)
+        self.assertEqual(week["photo_status"], "submitted")
+        self.assertEqual(week["final_status"], "pending")
+
+    async def test_auto_approval_after_timeout_uses_three_stars_without_approver_reward(self):
+        """Stale submitted proof is auto-approved once, with a neutral rating and no approver bonus."""
+        from scheduler import auto_approve_stale_submission
+
+        await db.init_db()
+        dorm_id = -1005555339
+        await db.create_or_update_dorm(dorm_id=dorm_id, admin_id=104, dorm_name="Auto Review Dorm")
+        for user_id, name in ((102, "Cleaner A"), (103, "Cleaner B"), (104, "Approver")):
+            await db.add_dorm_member(dorm_id, user_id, name)
+        await db.get_or_create_week("2026-11-23", 1, 102, 103, [104], dorm_id=dorm_id)
+        submitted_at = datetime(2026, 11, 23, 10, 0, tzinfo=config.TIMEZONE)
+        with patch("config.get_current_time", return_value=submitted_at):
+            await db.submit_photo("2026-11-23", "auto-review-photo", 102, dorm_id=dorm_id)
+        week = await db.get_week("2026-11-23", dorm_id=dorm_id)
+        context = MagicMock()
+
+        with patch("handlers.approval.publish_approved_cleaning", new_callable=AsyncMock) as publish:
+            approved = await auto_approve_stale_submission(
+                context,
+                dorm_id,
+                week,
+                now=submitted_at + timedelta(hours=24)
+            )
+
+        self.assertTrue(approved)
+        publish.assert_awaited_once()
+        self.assertEqual((await db.get_week("2026-11-23", dorm_id=dorm_id))["rating"], 3)
+        self.assertEqual(await db.get_tsidat_balance(dorm_id, 102), 20)
+        self.assertEqual(await db.get_tsidat_balance(dorm_id, 103), 20)
+        self.assertEqual(await db.get_tsidat_balance(dorm_id, 104), 0)
+
+    async def test_three_cleaner_swap_and_response_are_supported(self):
+        """Third-cleaner records support one-week swaps and Friday responses."""
+        await db.init_db()
+        dorm_id = -1005555335
+        await db.create_or_update_dorm(dorm_id=dorm_id, admin_id=105, dorm_name="Three Cleaner Swap Dorm")
+        for user_id, name in (
+            (102, "Cleaner A"),
+            (103, "Cleaner B"),
+            (104, "Cleaner C"),
+            (105, "Roommate D"),
+            (106, "Approver")
+        ):
+            await db.add_dorm_member(dorm_id, user_id, name)
+        await db.get_or_create_week(
+            "2026-11-23", 1, 102, 103, [106], dorm_id=dorm_id, cleaner3_id=104
+        )
+
+        await db.record_cleaner_response("2026-11-23", 104, "yes", dorm_id=dorm_id)
+        self.assertEqual((await db.get_week("2026-11-23", dorm_id=dorm_id))["cleaner3_response"], "yes")
+
+        swap_id = await db.create_swap_request(dorm_id, "2026-11-23", 104, 105)
+        success, _ = await db.execute_swap(swap_id)
+        self.assertTrue(success)
+        week = await db.get_week("2026-11-23", dorm_id=dorm_id)
+        self.assertEqual(week["cleaner3_id"], 105)
+
+    async def test_history_and_leaderboard_are_tenant_isolated(self):
+        """A dorm history and token leaderboard never include another dorm's records."""
+        await db.init_db()
+        dorm_a_id = -1005555336
+        dorm_b_id = -1005555337
+        for dorm_id, admin_id, name in (
+            (dorm_a_id, 201, "History Dorm A"),
+            (dorm_b_id, 301, "History Dorm B")
+        ):
+            await db.create_or_update_dorm(dorm_id=dorm_id, admin_id=admin_id, dorm_name=name)
+            await db.add_dorm_member(dorm_id, admin_id, f"Member {admin_id}")
+            await db.get_or_create_week(
+                "2026-11-23", 1, admin_id, admin_id + 1, [admin_id + 2], dorm_id=dorm_id
+            )
+        await db.add_dorm_member(dorm_a_id, 202, "Only Dorm A")
+        await db.add_tsidat_tokens(dorm_a_id, 202, 50)
+        await db.add_dorm_member(dorm_b_id, 302, "Only Dorm B")
+        await db.add_tsidat_tokens(dorm_b_id, 302, 10)
+
+        history_b = await db.get_history(dorm_id=dorm_b_id)
+        leaderboard_b = await db.get_tsidat_leaderboard(dorm_b_id)
+
+        self.assertEqual([row["dorm_id"] for row in history_b], [dorm_b_id])
+        self.assertEqual({row["user_id"] for row in leaderboard_b}, {301, 302})
 
     async def test_cleaner_friday_check_responses(self):
         """Test recording Friday check responses from cleaners."""
@@ -1401,6 +1525,30 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
             await monday_announcement_job(context)
         self.assertEqual(calls, [-1005555444])
 
+    async def test_manual_announce_command_does_not_repost_group_content(self):
+        """Manual announcement aliases cannot resend the weekly text or images."""
+        from handlers.admin import announce_command
+
+        dorm_id = -1005555445
+        update = MagicMock()
+        update.effective_user.id = 104
+        update.effective_chat.type = "supergroup"
+        update.effective_chat.id = dorm_id
+        update.effective_message.reply_text = AsyncMock()
+        context = MagicMock()
+
+        with (
+            patch("handlers.admin.db.get_dorm", new_callable=AsyncMock, return_value={
+                "admin_id": 104,
+            }),
+            patch("scheduler.send_dorm_announcement", new_callable=AsyncMock) as send_announcement,
+        ):
+            await announce_command(update, context)
+
+        send_announcement.assert_not_awaited()
+        update.effective_message.reply_text.assert_awaited_once()
+        self.assertIn("automatically on Monday", update.effective_message.reply_text.call_args.args[0])
+
     async def test_ai_mention_natural_name(self):
         """Verify that typing '@inspector who is cleaning' triggers AI, while bare mention does not."""
         await db.init_db()
@@ -1640,6 +1788,138 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
             # Invalid code
             res404 = await client.get("/api/dorms/code/NONEXISTENT999")
             self.assertEqual(res404.status_code, 404)
+
+    async def test_telegram_authenticated_dashboard_approval(self):
+        """Only a signed-in approver can approve a pending dashboard photo."""
+        from httpx import ASGITransport, AsyncClient
+        from web import app
+
+        await db.init_db()
+        dorm_id = -1005555444
+        admin_id = 105
+        await db.create_or_update_dorm(
+            dorm_id=dorm_id,
+            admin_id=admin_id,
+            dorm_name="Dashboard Review Dorm",
+            start_date="2026-11-23"
+        )
+        for user_id, name in ((102, "Cleaner A"), (103, "Cleaner B"), (104, "Reviewer"), (admin_id, "Admin")):
+            await db.add_dorm_member(dorm_id, user_id, name, is_admin=1 if user_id == admin_id else 0)
+        await db.set_dorm_pairs(dorm_id, [(102, 103), (104, admin_id)])
+        week = await db.get_or_create_week(
+            "2026-11-23", 1, 102, 103, [104, admin_id], dorm_id=dorm_id
+        )
+        approver_id = week["approver_id"]
+        with patch(
+            "config.get_current_time",
+            return_value=datetime(2026, 11, 24, 10, 0, tzinfo=config.TIMEZONE)
+        ):
+            await db.submit_photo("2026-11-23", "dashboard-review-photo", 102, dorm_id=dorm_id)
+        dorm = await db.get_dorm(dorm_id)
+        prior_bot = getattr(app.state, "telegram_bot", None)
+        app.state.telegram_bot = object()
+
+        bot_token = "test-dashboard-auth-token"
+        login_payload = {
+            "id": approver_id,
+            "first_name": "Reviewer",
+            "auth_date": int(time.time())
+        }
+        check_string = "\n".join(
+            f"{key}={login_payload[key]}" for key in sorted(login_payload)
+        )
+        login_payload["hash"] = hmac.new(
+            hashlib.sha256(bot_token.encode("utf-8")).digest(),
+            check_string.encode("utf-8"),
+            hashlib.sha256
+        ).hexdigest()
+        transport = ASGITransport(app=app)
+        try:
+            with (
+                patch("config.BOT_TOKEN", bot_token),
+                patch("config.get_current_date", return_value=date(2026, 11, 24)),
+                patch("handlers.approval.publish_approved_cleaning", new_callable=AsyncMock) as publish
+            ):
+                async with AsyncClient(transport=transport, base_url="http://test") as proxy_client:
+                    proxy_login = await proxy_client.post(
+                        "/api/auth/telegram",
+                        json=login_payload,
+                        headers={
+                            "Origin": "http://test",
+                            "X-Forwarded-Proto": "https"
+                        }
+                    )
+                    self.assertEqual(proxy_login.status_code, 200)
+                    self.assertIn("; secure", proxy_login.headers["set-cookie"].lower())
+
+                async with AsyncClient(transport=transport, base_url="https://test") as client:
+                    login_response = await client.post(
+                        "/api/auth/telegram",
+                        json=login_payload,
+                        headers={"Origin": "https://test"}
+                    )
+                    self.assertEqual(login_response.status_code, 200)
+                    self.assertTrue(login_response.json()["authenticated"])
+
+                    review_response = await client.get(
+                        f"/api/dorms/code/{dorm['dorm_code']}/review"
+                    )
+                    self.assertEqual(review_response.status_code, 200)
+                    self.assertTrue(review_response.json()["can_approve"])
+
+                    unauthorized_payload = {
+                        "id": 102,
+                        "first_name": "Cleaner",
+                        "auth_date": int(time.time())
+                    }
+                    unauthorized_check = "\n".join(
+                        f"{key}={unauthorized_payload[key]}"
+                        for key in sorted(unauthorized_payload)
+                    )
+                    unauthorized_payload["hash"] = hmac.new(
+                        hashlib.sha256(bot_token.encode("utf-8")).digest(),
+                        unauthorized_check.encode("utf-8"),
+                        hashlib.sha256
+                    ).hexdigest()
+                    await client.post(
+                        "/api/auth/telegram",
+                        json=unauthorized_payload,
+                        headers={"Origin": "https://test"}
+                    )
+                    denied_approval = await client.post(
+                        f"/api/dorms/code/{dorm['dorm_code']}/approve",
+                        json={"week_start": "2026-11-23", "rating": 4},
+                        headers={"Origin": "https://test"}
+                    )
+                    self.assertEqual(denied_approval.status_code, 403)
+
+                    await client.post(
+                        "/api/auth/telegram",
+                        json=login_payload,
+                        headers={"Origin": "https://test"}
+                    )
+                    approval_response = await client.post(
+                        f"/api/dorms/code/{dorm['dorm_code']}/approve",
+                        json={"week_start": "2026-11-23", "rating": 4, "review_text": "Floors are clean."},
+                        headers={"Origin": "https://test"}
+                    )
+                    self.assertEqual(approval_response.status_code, 200)
+                    self.assertEqual(approval_response.json()["tokens_each"], 24)
+                    self.assertEqual((await db.get_week("2026-11-23", dorm_id=dorm_id))["final_status"], "completed")
+                    self.assertEqual(await db.get_tsidat_balance(dorm_id, 102), 24)
+                    self.assertEqual(await db.get_tsidat_balance(dorm_id, 103), 24)
+                    self.assertEqual(await db.get_tsidat_balance(dorm_id, approver_id), 5)
+                    publish.assert_awaited_once()
+
+                    duplicate = await client.post(
+                        f"/api/dorms/code/{dorm['dorm_code']}/approve",
+                        json={"week_start": "2026-11-23", "rating": 4},
+                        headers={"Origin": "https://test"}
+                    )
+                    self.assertEqual(duplicate.status_code, 409)
+                    self.assertEqual(await db.get_tsidat_balance(dorm_id, approver_id), 5)
+        finally:
+            app.state.telegram_bot = prior_bot
 
     async def test_dorm_code_command(self):
         """Verify /code command replies with dorm code and dashboard link."""
@@ -2226,6 +2506,110 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("Floors are clean", reply)
                 mock_openai.assert_called_once()
 
+    async def test_setup_rerun_preserves_roster_settings(self):
+        """Repeating /setup during onboarding must not reset the admin's configuration."""
+        from handlers.setup import set_expected_members_command, setup_command
+
+        await db.init_db()
+        dorm_id = -1005544332211
+        admin_id = 9001
+        await db.create_or_update_dorm(
+            dorm_id=dorm_id, admin_id=admin_id, dorm_name="Stable Setup Dorm", status="setup"
+        )
+        await db.add_dorm_member(dorm_id, admin_id, "Dorm Admin", is_admin=1)
+        await db.update_dorm_settings(
+            dorm_id, fine_amount=200, cleaners_per_week=3
+        )
+        await db.set_dorm_expected_members(dorm_id, 5)
+
+        update = MagicMock()
+        update.effective_user.id = admin_id
+        update.effective_user.first_name = "Dorm Admin"
+        update.effective_user.username = "dorm_admin"
+        update.effective_chat.id = dorm_id
+        update.effective_chat.type = "supergroup"
+        update.effective_chat.title = "Renamed Group"
+        update.effective_message.message_thread_id = None
+        update.effective_message.reply_text = AsyncMock()
+        context = MagicMock()
+        context.bot.get_me = AsyncMock(return_value=MagicMock(username="TestDormBot"))
+        context.bot.send_message = AsyncMock()
+
+        await setup_command(update, context)
+
+        dorm = await db.get_dorm(dorm_id)
+        self.assertEqual(dorm["dorm_name"], "Stable Setup Dorm")
+        self.assertEqual(dorm["fine_amount"], 200)
+        self.assertEqual(dorm["cleaners_per_week"], 3)
+        self.assertEqual(dorm["expected_members"], 5)
+        context.bot.send_message.assert_not_awaited()
+
+        context.args = ["6"]
+        await set_expected_members_command(update, context)
+        self.assertEqual((await db.get_dorm(dorm_id))["expected_members"], 6)
+
+    async def test_setup_launch_waits_for_connected_roster_and_is_idempotent(self):
+        """Launch requires the exact connected roster and repeated taps do not relaunch."""
+        from handlers.setup import setup_launch_callback
+
+        await db.init_db()
+        dorm_id = -1005544332212
+        admin_id = 9101
+        await db.create_or_update_dorm(
+            dorm_id=dorm_id,
+            admin_id=admin_id,
+            dorm_name="Launch Test Dorm",
+            start_date="2026-11-30",
+            status="setup"
+        )
+        await db.update_dorm_settings(dorm_id, cleaners_per_week=2)
+        await db.set_dorm_expected_members(dorm_id, 3)
+        for user_id, name in ((admin_id, "Admin"), (9102, "Roommate B"), (9103, "Roommate C")):
+            await db.add_dorm_member(
+                dorm_id, user_id, name, is_admin=1 if user_id == admin_id else 0
+            )
+        await db.upsert_user(admin_id, "Admin", chat_id=admin_id)
+        await db.upsert_user(9102, "Roommate B", chat_id=9102)
+
+        update = MagicMock()
+        query = update.callback_query
+        query.data = f"setup_launch_{dorm_id}"
+        query.from_user.id = admin_id
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        context = MagicMock()
+        context.bot.send_message = AsyncMock()
+
+        with (
+            patch("handlers.setup.config.get_meme_file", return_value=None),
+            patch("handlers.setup._get_next_or_current_monday", return_value=date(2026, 11, 30)),
+        ):
+            await setup_launch_callback(update, context)
+            self.assertEqual((await db.get_dorm(dorm_id))["status"], "setup")
+            context.bot.send_message.assert_not_awaited()
+            self.assertIn("2/3", query.answer.call_args.args[0])
+
+            await db.upsert_user(9103, "Roommate C", chat_id=9103)
+            query.answer.reset_mock()
+            await setup_launch_callback(update, context)
+            self.assertEqual((await db.get_dorm(dorm_id))["status"], "active")
+            context.bot.send_message.assert_awaited_once()
+
+            query.answer.reset_mock()
+            await setup_launch_callback(update, context)
+            self.assertIn("already launched", query.answer.call_args.args[0])
+            context.bot.send_message.assert_awaited_once()
+
+        pairs = await db.get_dorm_pairs(dorm_id)
+        assigned_ids = [
+            uid
+            for pair in pairs
+            for uid in (pair["cleaner1_id"], pair["cleaner2_id"], pair["cleaner3_id"])
+            if uid
+        ]
+        self.assertEqual(set(assigned_ids), {admin_id, 9102, 9103})
+        self.assertEqual(len(assigned_ids), 3)
+
     async def test_member_name_prompt_upon_joining_and_name_command(self):
         """Verify that when a member or admin joins, the bot asks for their name and /name updates it."""
         from handlers import commands
@@ -2254,6 +2638,13 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         context.bot.send_message = AsyncMock()
 
         await commands.start_command(update, context)
+        group_join_notice_count = context.bot.send_message.await_count
+        await commands.start_command(update, context)
+        self.assertEqual(context.bot.send_message.await_count, group_join_notice_count)
+        self.assertEqual(
+            (await db.get_dorm_member(test_dorm_id, test_member_id))["name"],
+            "UserFirst"
+        )
 
         # Verify bot asked for their name upon joining
         self.assertEqual(context.user_data.get("awaiting_name"), test_dorm_id)
@@ -2340,6 +2731,18 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         pairs_odd3 = await db.auto_generate_dorm_pairs(dorm_odd3_id)
         self.assertEqual(len(pairs_odd3), 1)
         self.assertEqual(pairs_odd3[0], (401, 402, 403))
+
+        # Case 5: 4 members with 3 cleaners/week keeps the final singleton unique.
+        dorm_team3_id = -100333444556
+        await db.create_or_update_dorm(
+            dorm_team3_id, admin_id=1, dorm_name="Three Cleaner Dorm", cleaners_per_week=3
+        )
+        for i in range(1, 5):
+            await db.add_dorm_member(dorm_team3_id, user_id=500 + i, name=f"Team3_{i}")
+        pairs_team3 = await db.auto_generate_dorm_pairs(dorm_team3_id)
+        assigned_team3 = [uid for team in pairs_team3 for uid in team if uid]
+        self.assertEqual(set(assigned_team3), {501, 502, 503, 504})
+        self.assertEqual(len(assigned_team3), 4)
 
     async def test_our_dorm_escapes_name_prompts_and_setup(self):
         """Verify that our pre-configured dorm and its members escape onboarding name prompts and setup resets."""
