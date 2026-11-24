@@ -264,7 +264,7 @@ FINE_EACH = FINE_TOTAL // 2
 DEFAULT_CLEANERS_PER_WEEK = int(os.getenv("CLEANERS_PER_WEEK", "2"))
 
 _raw_dash = os.getenv("DASHBOARD_URL", "https://inspector.app.aletcloud.com").rstrip("/")
-if "dorm-inspector-bot-1.app.aletcloud.com" in _raw_dash or not _raw_dash.startswith("http"):
+if "dorm-inspector-bot" in _raw_dash or not _raw_dash.startswith("http"):
     _raw_dash = "https://inspector.app.aletcloud.com"
 DASHBOARD_URL = _raw_dash
 

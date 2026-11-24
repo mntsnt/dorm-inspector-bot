@@ -222,10 +222,69 @@ async def reset_ai_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await db.clear_ai_chat_history(chat.id)
     await message.reply_text("Chat memory cleared! Clean slate. Don't make me repeat the dorm rules. What do you need?")
 
+async def ai_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Diagnostic command to report AI engine status, provider, and troubleshooting info."""
+    user = update.effective_user
+    chat = update.effective_chat
+    message = update.effective_message
+    if not user or not chat or not message:
+        return
+
+    is_group = chat.type in ("group", "supergroup")
+    dorm_id = chat.id if is_group else None
+    from handlers.commands import _resolve_target_dorm
+    dorm = await _resolve_target_dorm(dorm_id=dorm_id, user_id=user.id)
+    target_dorm_id = dorm["dorm_id"] if dorm else (dorm_id or getattr(config, "DEFAULT_GROUP_ID", -1002378440774))
+    dorm_name = dorm["dorm_name"] if dorm else "Default Dorm"
+
+    from services.ai_service import get_api_key
+    dorm_key = await db.get_dorm_ai_key(target_dorm_id)
+    env_key = get_api_key()
+
+    default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+    is_primary = target_dorm_id in (default_gid, getattr(config, "GROUP_ID", 0), 0)
+
+    active_key = dorm_key or (env_key if is_primary else "")
+    key_source = "Dorm Database (/set_ai_key)" if dorm_key else ("Server Environment (.env)" if (env_key and is_primary) else "None")
+
+    if active_key:
+        provider = "OpenAI (gpt-4o-mini)" if active_key.startswith("sk-") else "Google Gemini (gemini-1.5-flash / gemini-2.0-flash)"
+        masked = f"...{active_key[-4:]}" if len(active_key) >= 4 else "configured"
+        status_line = "🟢 **ONLINE (Conversational AI Active)**"
+        details = (
+            f"• **Dorm:** {dorm_name}\n"
+            f"• **Provider:** {provider}\n"
+            f"• **API Key:** `{masked}` (Source: {key_source})\n"
+            f"• **Conversational Mode:** ChatGPT-style multi-turn memory active\n\n"
+            "I follow your chats, remember conversation history, answer dorm questions, and keep you disciplined!"
+        )
+    else:
+        status_line = "⚠️ **OFFLINE FALLBACK MODE (No API Key)**"
+        details = (
+            f"• **Dorm:** {dorm_name}\n"
+            f"• **Provider:** Built-in Offline Rules Script\n"
+            f"• **API Key:** None configured\n\n"
+            "**Why am I repeating canned responses?**\n"
+            "Without an active Google Gemini key, I cannot generate freeform ChatGPT-style replies. I can only provide fixed offline status answers.\n\n"
+            "**How to activate full ChatGPT-style AI:**\n"
+            "1. Get a free API key at [Google AI Studio](https://aistudio.google.com/)\n"
+            "2. Send `/set_ai_key <your_key>` in this chat or DM\n"
+            "*(Or set `GEMINI_API_KEY` in the server hosting environment)*"
+        )
+
+    await message.reply_text(
+        f"🤖 **Dorm Inspector AI Status**\n\n"
+        f"Status: {status_line}\n\n"
+        f"{details}",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
 def register_ai_handlers(application: Application) -> None:
     """Register AI chat handler for group mentions, commands, and replies."""
     application.add_handler(CommandHandler("inspector", inspector_command))
     application.add_handler(CommandHandler("ask", inspector_command))
+    application.add_handler(CommandHandler("ai_status", ai_status_command))
+    application.add_handler(CommandHandler("ai", ai_status_command))
     application.add_handler(CommandHandler("clear_ai", reset_ai_command))
     application.add_handler(CommandHandler("reset_ai", reset_ai_command))
     application.add_handler(

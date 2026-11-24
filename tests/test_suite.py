@@ -1720,5 +1720,62 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         await ai_chat.send_safe_reply(mock_msg, long_text)
         self.assertEqual(mock_msg.reply_text.call_count, 2)
 
+    async def test_ai_status_command_offline_and_online(self):
+        """Verify /ai_status accurately diagnoses online vs offline state and directs user to set key."""
+        await db.init_db()
+        from handlers import ai_chat
+        test_dorm_id = -100444555666
+        await db.create_or_update_dorm(dorm_id=test_dorm_id, admin_id=999, dorm_name="Status Dorm")
+
+        mock_update = MagicMock()
+        mock_update.effective_user.id = 999
+        mock_update.effective_chat.id = test_dorm_id
+        mock_update.effective_chat.type = "supergroup"
+        mock_update.effective_message.reply_text = AsyncMock()
+        mock_context = MagicMock()
+
+        # 1. No key configured -> Offline fallback diagnostic
+        await ai_chat.ai_status_command(mock_update, mock_context)
+        call_text = mock_update.effective_message.reply_text.call_args[0][0]
+        self.assertIn("OFFLINE FALLBACK MODE", call_text)
+        self.assertIn("/set_ai_key", call_text)
+
+        # 2. Key configured -> Online Gemini status
+        await db.set_dorm_ai_key(test_dorm_id, "AIzaSyTestKey1234")
+        await ai_chat.ai_status_command(mock_update, mock_context)
+        call_text_online = mock_update.effective_message.reply_text.call_args[0][0]
+        self.assertIn("ONLINE", call_text_online)
+        self.assertIn("Google Gemini", call_text_online)
+        self.assertIn("...1234", call_text_online)
+
+    async def test_ai_working_diagnostic_fallback_response(self):
+        """Verify asking if the AI is working returns clear diagnostic instructions instead of repeating greetings."""
+        from services import ai_service
+        context = "Dorm: Test Dorm\nCurrent Duty: Cleaners: Alice & Bob | Approver: Charlie\n"
+        queries = [
+            "the bot says the same thing again and again, is the ai not working",
+            "is the ai working?",
+            "why do you repeat the same thing everytime",
+        ]
+        for q in queries:
+            reply = ai_service.fallback_inspector_reply(q, context, user_name="Mintesnot")
+            self.assertIn("offline fallback mode", reply.lower())
+            self.assertIn("/set_ai_key", reply)
+
+    async def test_dashboard_url_clean_slash_formatting(self):
+        """Verify dashboard URLs are generated cleanly as inspector.app.aletcloud.com/?code=..."""
+        from handlers import commands
+        # With dorm code
+        kb_with_code = commands.get_main_menu_inline_keyboard(is_cleaner=False, dorm_code="DORM-PCJK-LPR7")
+        btn_with_code = kb_with_code.inline_keyboard[-1][-1]
+        self.assertEqual(btn_with_code.text, "🌐 Open Dashboard")
+        self.assertEqual(btn_with_code.url, "https://inspector.app.aletcloud.com/?code=DORM-PCJK-LPR7")
+
+        # Without dorm code
+        kb_no_code = commands.get_main_menu_inline_keyboard(is_cleaner=False, dorm_code=None)
+        btn_no_code = kb_no_code.inline_keyboard[-1][-1]
+        self.assertEqual(btn_no_code.text, "🌐 Open Dashboard")
+        self.assertEqual(btn_no_code.url, "https://inspector.app.aletcloud.com/")
+
 if __name__ == "__main__":
     unittest.main()

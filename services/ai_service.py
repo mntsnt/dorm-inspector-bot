@@ -198,7 +198,8 @@ async def build_dorm_context(dorm_id: int, user_id: Optional[int] = None) -> str
             )
 
     dorm_code = dorm.get("dorm_code") or "DORM-101" if dorm else "DORM-101"
-    dash_url = f"{getattr(config, 'DASHBOARD_URL', 'https://inspector.app.aletcloud.com')}?code={dorm_code}"
+    dash_base = getattr(config, "DASHBOARD_URL", "https://inspector.app.aletcloud.com").rstrip("/")
+    dash_url = f"{dash_base}/?code={dorm_code}"
 
     return (
         f"Dorm: {d_name}\n"
@@ -350,7 +351,8 @@ def fallback_inspector_reply(
     user_role = context_lines.get("Role", "UNKNOWN")
     partner = context_lines.get("Partner", "")
     dorm_code = context_lines.get("Dorm Code", "DORM-101")
-    website = context_lines.get("Website", f"{getattr(config, 'DASHBOARD_URL', 'https://inspector.app.aletcloud.com')}?code={dorm_code}")
+    dash_base = getattr(config, "DASHBOARD_URL", "https://inspector.app.aletcloud.com").rstrip("/")
+    website = context_lines.get("Website", f"{dash_base}/?code={dorm_code}")
 
     # Extract cleaner names from Current Duty line if available
     c1 = "Cleaner 1"
@@ -438,6 +440,14 @@ def fallback_inspector_reply(
     # 9. Question about dorm code / website / dashboard
     if any(k in p_lower for k in ("code", "website", "dashboard", "site", "link", "url", "portal")):
         return f"Dorm code is {dorm_code}. View live status at {website}."
+
+    # 9b. Question about AI status, why repeating, or if AI is working
+    if any(k in p_lower for k in ("is the ai", "is ai", "ai work", "why do you repeat", "saying the same", "same thing", "are you real", "are you a bot", "are you broken", "ai status", "ai broken", "not working")):
+        return (
+            f"Listen up, {user_name}! My live AI brain is currently in offline fallback mode because no Google Gemini key is active for this dorm. "
+            "That is why I can only give you built-in offline responses right now. "
+            "To connect me to Gemini and chat freely like ChatGPT, obtain a free key at https://aistudio.google.com and send /set_ai_key <your_key> here, or type /ai_status to check my connection!"
+        )
 
     # 10. Greetings & Casual Banter (Friendly Roommate Chat)
     if any(w in p_lower for w in ("hello", "hi", "hey", "sup", "yo", "morning", "evening", "what's up", "wassup")):

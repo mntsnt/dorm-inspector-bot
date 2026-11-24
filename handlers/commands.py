@@ -146,8 +146,8 @@ def get_main_menu_inline_keyboard(
     dorm_code: Optional[str] = None
 ) -> InlineKeyboardMarkup:
     """Main menu grid for one-tap navigation. Submit Cleaning only shown if user is cleaner."""
-    dash_base = getattr(config, "DASHBOARD_URL", "https://inspector.app.aletcloud.com")
-    dash_url = f"{dash_base}?code={dorm_code}" if dorm_code else dash_base
+    dash_base = getattr(config, "DASHBOARD_URL", "https://inspector.app.aletcloud.com").rstrip("/")
+    dash_url = f"{dash_base}/?code={dorm_code}" if dorm_code else f"{dash_base}/"
 
     if is_cleaner:
         return InlineKeyboardMarkup([
@@ -300,7 +300,8 @@ def get_main_menu_text(member_name: str, connected_info: Optional[str] = None, d
 # ---------------------------------------------------------------------------
 async def get_status_content(user_id: Optional[int] = None, dorm_id: Optional[int] = None) -> Tuple[str, InlineKeyboardMarkup]:
     """Generate status report text and navigation buttons."""
-    default_dash = getattr(config, "DASHBOARD_URL", "https://inspector.app.aletcloud.com")
+    dash_base = getattr(config, "DASHBOARD_URL", "https://inspector.app.aletcloud.com").rstrip("/")
+    default_dash = f"{dash_base}/"
     fallback_kb = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("Schedule", callback_data="menu_schedule"),
@@ -323,7 +324,7 @@ async def get_status_content(user_id: Optional[int] = None, dorm_id: Optional[in
 
     resolved_id = dorm["dorm_id"]
     dorm_code = dorm.get("dorm_code") or "DORM-101"
-    dash_url = f"{default_dash}?code={dorm_code}"
+    dash_url = f"{dash_base}/?code={dorm_code}"
 
     pairs = await db.get_dorm_pairs(resolved_id)
     members = await db.get_dorm_members(resolved_id)
@@ -427,7 +428,7 @@ async def get_schedule_content(dorm_id: Optional[int] = None, user_id: Optional[
     dorm = await _resolve_target_dorm(dorm_id=dorm_id, user_id=user_id)
     dorm_code = dorm.get("dorm_code") or "DORM-101" if dorm else "DORM-101"
     dash_base = getattr(config, "DASHBOARD_URL", "https://inspector.app.aletcloud.com").rstrip("/")
-    dash_url = f"{dash_base}?code={dorm_code}" if dorm_code else dash_base
+    dash_url = f"{dash_base}/?code={dorm_code}" if dorm_code else f"{dash_base}/"
 
     keyboard = InlineKeyboardMarkup([
         [
@@ -595,7 +596,7 @@ def get_help_content() -> Tuple[str, InlineKeyboardMarkup]:
         "• **Review**: Approver rates 1-5 stars; cleaners earn Tsidat tokens.\n"
         "• **Fri 8 PM**: Check time. Cleaners confirm; uncleaned rooms get fined.\n\n"
         "**Commands:**\n"
-        "/status • /schedule • /fines • /tsidat • /spin <reason> • /swap <name> • /roast"
+        "/status • /schedule • /fines • /tsidat • /spin <reason> • /swap <name> • /inspector • /ai_status"
     )
     return help_text, keyboard
 
@@ -1289,9 +1290,11 @@ async def claim_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     logger.info("User %s (%s) claimed member slot %s", user.first_name, user.id, target_member.name)
 
     target_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+    target_dorm = await _resolve_target_dorm(dorm_id=target_gid, user_id=user.id)
+    target_code = target_dorm.get("dorm_code") if target_dorm else None
     is_cleaner, _, _ = await get_user_week_role(user.id, dorm_id=target_gid)
     reply_kb = get_reply_keyboard(is_cleaner=is_cleaner)
-    inline_kb = get_main_menu_inline_keyboard(is_cleaner=is_cleaner)
+    inline_kb = get_main_menu_inline_keyboard(is_cleaner=is_cleaner, dorm_code=target_code)
 
     try:
         await update.effective_message.reply_text(
@@ -1378,8 +1381,8 @@ async def dorm_code_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
 
     code = dorm.get("dorm_code") or "DORM-101"
-    dash_base = getattr(config, "DASHBOARD_URL", "https://inspector.app.aletcloud.com")
-    web_url = f"{dash_base}?code={code}"
+    dash_base = getattr(config, "DASHBOARD_URL", "https://inspector.app.aletcloud.com").rstrip("/")
+    web_url = f"{dash_base}/?code={code}"
 
     reply_text = (
         f"🔑 **Dorm Code for {dorm['dorm_name']}**\n\n"
@@ -1429,8 +1432,8 @@ async def set_dorm_code_command(update: Update, context: ContextTypes.DEFAULT_TY
         await msg.reply_text(f"⚠️ {result}")
         return
 
-    dash_base = getattr(config, "DASHBOARD_URL", "https://inspector.app.aletcloud.com")
-    web_url = f"{dash_base}?code={result}"
+    dash_base = getattr(config, "DASHBOARD_URL", "https://inspector.app.aletcloud.com").rstrip("/")
+    web_url = f"{dash_base}/?code={result}"
     await msg.reply_text(
         f"✅ **Dorm Code Updated!**\n\n"
         f"New Code: `{result}`\n"
