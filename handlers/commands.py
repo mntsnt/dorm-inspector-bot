@@ -146,7 +146,7 @@ def get_main_menu_inline_keyboard(
     dorm_code: Optional[str] = None
 ) -> InlineKeyboardMarkup:
     """Main menu grid for one-tap navigation. Submit Cleaning only shown if user is cleaner."""
-    dash_base = getattr(config, "DASHBOARD_URL", "https://dorm-inspector-bot-1.app.aletcloud.com")
+    dash_base = getattr(config, "DASHBOARD_URL", "https://inspector.app.aletcloud.com")
     dash_url = f"{dash_base}?code={dorm_code}" if dorm_code else dash_base
 
     if is_cleaner:
@@ -300,7 +300,7 @@ def get_main_menu_text(member_name: str, connected_info: Optional[str] = None, d
 # ---------------------------------------------------------------------------
 async def get_status_content(user_id: Optional[int] = None, dorm_id: Optional[int] = None) -> Tuple[str, InlineKeyboardMarkup]:
     """Generate status report text and navigation buttons."""
-    default_dash = getattr(config, "DASHBOARD_URL", "https://dorm-inspector-bot-1.app.aletcloud.com")
+    default_dash = getattr(config, "DASHBOARD_URL", "https://inspector.app.aletcloud.com")
     fallback_kb = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("Schedule", callback_data="menu_schedule"),
@@ -426,7 +426,7 @@ async def get_schedule_content(dorm_id: Optional[int] = None, user_id: Optional[
     """Generate 4-week schedule text and navigation buttons."""
     dorm = await _resolve_target_dorm(dorm_id=dorm_id, user_id=user_id)
     dorm_code = dorm.get("dorm_code") or "DORM-101" if dorm else "DORM-101"
-    dash_base = getattr(config, "DASHBOARD_URL", "https://dorm-inspector-bot-1.app.aletcloud.com").rstrip("/")
+    dash_base = getattr(config, "DASHBOARD_URL", "https://inspector.app.aletcloud.com").rstrip("/")
     dash_url = f"{dash_base}?code={dorm_code}" if dorm_code else dash_base
 
     keyboard = InlineKeyboardMarkup([
@@ -1378,7 +1378,7 @@ async def dorm_code_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
 
     code = dorm.get("dorm_code") or "DORM-101"
-    dash_base = getattr(config, "DASHBOARD_URL", "https://dorm-inspector-bot-1.app.aletcloud.com")
+    dash_base = getattr(config, "DASHBOARD_URL", "https://inspector.app.aletcloud.com")
     web_url = f"{dash_base}?code={code}"
 
     reply_text = (
@@ -1429,7 +1429,7 @@ async def set_dorm_code_command(update: Update, context: ContextTypes.DEFAULT_TY
         await msg.reply_text(f"⚠️ {result}")
         return
 
-    dash_base = getattr(config, "DASHBOARD_URL", "https://dorm-inspector-bot-1.app.aletcloud.com")
+    dash_base = getattr(config, "DASHBOARD_URL", "https://inspector.app.aletcloud.com")
     web_url = f"{dash_base}?code={result}"
     await msg.reply_text(
         f"✅ **Dorm Code Updated!**\n\n"

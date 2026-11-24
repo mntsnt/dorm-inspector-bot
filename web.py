@@ -495,6 +495,17 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       </div>
     </div>
   </div>
+  <script>
+    (function() {
+      try {
+        var p = new URLSearchParams(window.location.search);
+        if (!p.get('code') && !p.get('dorm')) {
+          var m = document.getElementById('code-portal-modal');
+          if (m) m.classList.remove('hidden');
+        }
+      } catch(e) {}
+    })();
+  </script>
 
   <!-- Minimal Monochrome Top Header Bar -->
   <header class="flex flex-wrap items-center justify-between gap-2.5 px-4 py-2.5 rounded-xl panel mb-3 flex-shrink-0">
@@ -507,7 +518,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <span class="font-extrabold text-sm text-white tracking-tight uppercase">Dorm Inspector</span>
           <span class="px-1.5 py-0.2 rounded text-[9px] font-mono font-bold bg-white/10 text-white border border-white/30 tracking-widest">LIVE</span>
         </div>
-        <p id="header-domain" class="text-[10px] text-white/50 font-mono leading-none">dorm-inspector-bot-1.app.aletcloud.com</p>
+        <p id="header-domain" class="text-[10px] text-white/50 font-mono leading-none">inspector.app.aletcloud.com</p>
       </div>
     </div>
 
@@ -742,7 +753,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <!-- Minimal Monochrome Footer -->
   <footer class="mt-2.5 px-3 py-1.5 rounded-xl panel flex items-center justify-between text-[10px] font-mono text-white/50 flex-shrink-0">
     <div>
-      DORM INSPECTOR • <span id="footer-domain" class="text-white">dorm-inspector-bot-1.app.aletcloud.com</span>
+      DORM INSPECTOR • <span id="footer-domain" class="text-white">inspector.app.aletcloud.com</span>
     </div>
     <div class="flex items-center gap-3">
       <span>AUTO-REFRESH: <strong class="text-white">15s</strong></span>
@@ -801,10 +812,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       const input = document.getElementById('portal-code-input');
       if (modal) {
         modal.classList.remove('hidden');
-        if (currentDormData && closeBtn) closeBtn.classList.remove('hidden');
+        if (currentDormData && closeBtn) {
+          closeBtn.classList.remove('hidden');
+        } else if (closeBtn) {
+          closeBtn.classList.add('hidden');
+        }
         if (input) {
           input.value = currentDormData ? currentDormData.dorm_code : '';
-          setTimeout(() => input.focus(), 100);
+          setTimeout(() => input.focus(), 150);
         }
       }
     }
@@ -1123,22 +1138,23 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           document.getElementById('stat-fines').innerText = `${sys.stats.total_unpaid_fines_etb} ETB`;
         }
 
-        // Determine target dorm code
+        // Determine target dorm code from URL query parameters
         const urlParams = new URLSearchParams(window.location.search);
-        const urlCode = urlParams.get('code') || urlParams.get('dorm');
-        const savedCode = localStorage.getItem('saved_dorm_code');
-        const targetCode = urlCode || savedCode;
+        const urlCode = (urlParams.get('code') || urlParams.get('dorm') || '').trim();
 
-        if (targetCode) {
-          const loaded = await loadDormByCode(targetCode);
-          if (!loaded) {
+        if (urlCode) {
+          // Opened via Telegram bot "Open Dashboard" button: directly load into the dorm's dashboard!
+          const loaded = await loadDormByCode(urlCode);
+          if (loaded) {
+            closePortalModal();
+          } else {
             populateQuickDorms();
             openPortalModal();
-          } else {
-            closePortalModal();
+            showCodeError(`Dorm code '${urlCode}' not found. Please verify with /code in Telegram.`);
           }
         } else {
-          // No code provided in URL or storage: show portal modal
+          // Opened directly without a code (e.g. visiting https://inspector.app.aletcloud.com/):
+          // Always show the first page for dorm mates to insert their dorm code!
           populateQuickDorms();
           openPortalModal();
         }

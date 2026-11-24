@@ -198,7 +198,7 @@ async def build_dorm_context(dorm_id: int, user_id: Optional[int] = None) -> str
             )
 
     dorm_code = dorm.get("dorm_code") or "DORM-101" if dorm else "DORM-101"
-    dash_url = f"{getattr(config, 'DASHBOARD_URL', 'https://dorm-inspector-bot-1.app.aletcloud.com')}?code={dorm_code}"
+    dash_url = f"{getattr(config, 'DASHBOARD_URL', 'https://inspector.app.aletcloud.com')}?code={dorm_code}"
 
     return (
         f"Dorm: {d_name}\n"
@@ -350,7 +350,7 @@ def fallback_inspector_reply(
     user_role = context_lines.get("Role", "UNKNOWN")
     partner = context_lines.get("Partner", "")
     dorm_code = context_lines.get("Dorm Code", "DORM-101")
-    website = context_lines.get("Website", f"{getattr(config, 'DASHBOARD_URL', 'https://dorm-inspector-bot-1.app.aletcloud.com')}?code={dorm_code}")
+    website = context_lines.get("Website", f"{getattr(config, 'DASHBOARD_URL', 'https://inspector.app.aletcloud.com')}?code={dorm_code}")
 
     # Extract cleaner names from Current Duty line if available
     c1 = "Cleaner 1"
