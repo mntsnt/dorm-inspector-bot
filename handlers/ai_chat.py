@@ -263,31 +263,39 @@ async def ai_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     target_dorm_id = dorm["dorm_id"] if dorm else (dorm_id or getattr(config, "DEFAULT_GROUP_ID", -1002378440774))
     dorm_name = dorm["dorm_name"] if dorm else "Default Dorm"
 
-    from services.ai_service import get_api_key
+    from services.ai_service import get_available_ai_providers, get_api_key
     dorm_key = await db.get_dorm_ai_key(target_dorm_id)
-    env_key = get_api_key()
 
     default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
     is_primary = target_dorm_id in (default_gid, getattr(config, "GROUP_ID", 0), 0)
 
-    active_key = dorm_key or (env_key if is_primary else "")
-    key_source = "Dorm Database (/set_ai_key)" if dorm_key else ("Server Environment (.env)" if (env_key and is_primary) else "None")
+    providers = get_available_ai_providers(dorm_key=dorm_key, allow_env_fallback=is_primary)
 
-    if active_key:
-        if active_key.startswith("gsk_"):
-            provider = "Groq Cloud (LLaMA 3.3 70B - Free & Ultra-Fast)"
-        elif active_key.startswith("sk-or-"):
-            provider = "OpenRouter (Free Tier Models)"
-        elif active_key.startswith("sk-"):
-            provider = "OpenAI (gpt-4o-mini)"
+    if providers:
+        active_provider, active_key = providers[0]
+        key_source = "Dorm Database (/set_ai_key)" if dorm_key else ("Server Environment (.env)" if is_primary else "None")
+
+        if active_provider == "groq":
+            provider_desc = "Groq Cloud (LLaMA 3.3 / Qwen - Free & Ultra-Fast)"
+        elif active_provider == "openrouter":
+            provider_desc = "OpenRouter (Free Tier Models)"
+        elif active_provider == "openai":
+            provider_desc = "OpenAI (gpt-4o-mini)"
         else:
-            provider = "Google Gemini (gemini-1.5-flash / gemini-2.0-flash)"
+            provider_desc = "Google Gemini (gemini-flash-lite / gemini-3.1-preview)"
+
+        failover_str = ""
+        if len(providers) > 1:
+            backups = [p[0].capitalize() for p in providers[1:]]
+            failover_str = f"• **Automatic Failover:** {', '.join(backups)} (instant switch if primary rate-limits)\n"
+
         masked = f"...{active_key[-4:]}" if len(active_key) >= 4 else "configured"
         status_line = "🟢 **ONLINE (Conversational AI Active)**"
         details = (
             f"• **Dorm:** {dorm_name}\n"
-            f"• **Provider:** {provider}\n"
+            f"• **Provider:** {provider_desc}\n"
             f"• **API Key:** `{masked}` (Source: {key_source})\n"
+            f"{failover_str}"
             f"• **Conversational Mode:** ChatGPT-style multi-turn memory active\n\n"
             "I follow your chats, remember conversation history, answer dorm questions, and keep you disciplined!"
         )

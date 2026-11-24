@@ -6,13 +6,75 @@ Supports Google Gemini and OpenAI REST APIs with live dorm context.
 import logging
 import os
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import httpx
 
 import config
 import db
 
 logger = logging.getLogger(__name__)
+
+def resolve_provider_from_key(key: str) -> str:
+    """Determine AI provider from key prefix or format."""
+    clean = key.strip().strip('"').strip("'")
+    if clean.startswith("gsk_"):
+        return "groq"
+    elif clean.startswith("sk-or-"):
+        return "openrouter"
+    elif clean.startswith("sk-"):
+        return "openai"
+    return "gemini"
+
+def get_available_ai_providers(dorm_key: Optional[str] = None, allow_env_fallback: bool = True) -> List[Tuple[str, str]]:
+    """
+    Returns an ordered list of (provider, api_key) pairs to try in sequence.
+    If a dorm has its own configured key, that is tried first.
+    If allow_env_fallback is True (for primary dorm), environment keys
+    (GEMINI, GROQ, OPENROUTER, OPENAI) are added in order as automatic failovers
+    so rate limits (429) or high demand (503) never break live chat.
+    """
+    providers: List[Tuple[str, str]] = []
+    seen_keys = set()
+
+    if dorm_key and dorm_key.strip():
+        k = dorm_key.strip().strip('"').strip("'")
+        p = resolve_provider_from_key(k)
+        providers.append((p, k))
+        seen_keys.add(k)
+
+    if allow_env_fallback:
+        # 1. Google Gemini
+        gemini_k = (
+            os.getenv("GEMINI_API_KEY")
+            or os.getenv("GOOGLE_API_KEY")
+            or os.getenv("AI_API_KEY")
+            or os.getenv("GEMINI_KEY")
+            or os.getenv("GOOGLE_GENAI_KEY")
+            or ""
+        ).strip().strip('"').strip("'")
+        if gemini_k and gemini_k not in seen_keys:
+            providers.append(("gemini", gemini_k))
+            seen_keys.add(gemini_k)
+
+        # 2. Groq Cloud (Free tier, ultra-fast LLaMA 3.3 / Qwen)
+        groq_k = (os.getenv("GROQ_API_KEY") or "").strip().strip('"').strip("'")
+        if groq_k and groq_k not in seen_keys:
+            providers.append(("groq", groq_k))
+            seen_keys.add(groq_k)
+
+        # 3. OpenRouter
+        openrouter_k = (os.getenv("OPENROUTER_API_KEY") or "").strip().strip('"').strip("'")
+        if openrouter_k and openrouter_k not in seen_keys:
+            providers.append(("openrouter", openrouter_k))
+            seen_keys.add(openrouter_k)
+
+        # 4. OpenAI
+        openai_k = (os.getenv("OPENAI_API_KEY") or "").strip().strip('"').strip("'")
+        if openai_k and openai_k not in seen_keys:
+            providers.append(("openai", openai_k))
+            seen_keys.add(openai_k)
+
+    return providers
 
 def get_active_provider() -> Optional[str]:
     """Detect whether Gemini or OpenAI is configured."""
@@ -690,22 +752,16 @@ async def query_gemini(
 
     interactions_models = [
         "gemini-flash-lite-latest",
+        "gemini-3.1-flash-lite-preview",
         "gemini-flash-latest",
-        "gemini-1.5-flash",
-        "gemini-2.0-flash",
-        "gemini-3.8-flash",
-        "gemini-3.5-flash",
     ]
 
     generate_models = [
         "gemini-flash-lite-latest",
+        "gemini-3.1-flash-lite-preview",
+        "gemini-3-flash-preview",
         "gemini-flash-latest",
-        "gemini-3.8-flash",
-        "gemini-2.0-flash",
-        "gemini-1.5-flash",
-        "gemini-3.5-flash",
-        "gemini-2.5-flash",
-        "gemini-1.5-pro",
+        "gemini-pro-latest",
     ]
 
     last_resp = None
@@ -731,15 +787,10 @@ async def query_gemini(
                 except Exception:
                     pass
 
-                # If model is deprecated (400) or not found (404), continue to next model
-                if resp.status_code in (400, 404) and any(
-                    k in err_text for k in ("no longer available", "not found", "deprecated", "model", "unsupported")
-                ):
+                # If model is deprecated (400), not found (404), rate-limited (429) or overloaded (503), try next model
+                if resp.status_code in (400, 404, 429, 503):
                     logger.warning("Interactions model %s unavailable (%s: %s). Trying next fallback...", model, resp.status_code, err_text[:100])
                     continue
-                elif resp.status_code == 404:
-                    # Endpoint itself not found on this host, try generateContent endpoint
-                    break
                 else:
                     break
             except Exception as e:
@@ -875,8 +926,8 @@ async def query_openai(
                     choices = data.get("choices", [])
                     if choices and "message" in choices[0]:
                         return choices[0]["message"]["content"].strip()
-                elif resp.status_code in (400, 404):
-                    logger.warning("Model %s unavailable on %s (%s). Trying fallback...", model, url, resp.status_code)
+                elif resp.status_code in (400, 404, 429, 503):
+                    logger.warning("Model %s unavailable or rate limited on %s (%s). Trying fallback...", model, url, resp.status_code)
                     continue
                 else:
                     resp.raise_for_status()
@@ -913,27 +964,26 @@ async def ask_ai(
         logger.warning("Could not retrieve AI chat history: %s", e)
 
     # 2. Fetch this specific dorm's configured API key
-    key = await db.get_dorm_ai_key(dorm_id)
+    dorm_key = await db.get_dorm_ai_key(dorm_id)
 
-    # 3. Only fallback to .env key for the primary/default dorm (protects admin quota)
+    # 3. Only fallback to .env keys for the primary/default dorm (protects admin quota)
     is_primary_dorm = dorm_id in (default_gid, getattr(config, "GROUP_ID", 0), 0)
-    if not key and is_primary_dorm:
-        key = get_api_key()
+    available_providers = get_available_ai_providers(dorm_key=dorm_key, allow_env_fallback=is_primary_dorm)
 
     dorm_context = await build_dorm_context(dorm_id, user_id=user_id)
 
-    # 4. If no key is configured:
+    # 4. If no provider is available:
     # - Secondary dorms are instructed to configure their own key (strict isolation)
     # - Primary dorm falls back to accurate in-character live DB context
-    if not key:
+    if not available_providers:
         if not is_primary_dorm:
             return (
                 "AI is not enabled for this dorm yet.\n\n"
                 "To activate AI in this group:\n"
-                "1. The dorm admin creates a free key at Google AI Studio (https://aistudio.google.com/)\n"
+                "1. The dorm admin creates a free key at Google AI Studio (https://aistudio.google.com/) or Groq (https://console.groq.com/)\n"
                 "2. Send /set_ai_key <your_api_key> in this chat or in private DM with the bot."
             )
-        logger.info("No AI key configured for primary dorm %s, using live context fallback.", dorm_id)
+        logger.info("No AI providers configured for primary dorm %s, using live context fallback.", dorm_id)
         reply = fallback_inspector_reply(user_prompt, dorm_context, user_id=user_id, user_name=user_name, history=history)
         try:
             await db.add_ai_chat_message(dorm_id, target_chat_id, user_id or 0, user_name, "user", user_prompt)
@@ -942,31 +992,30 @@ async def ask_ai(
             pass
         return reply
 
-    if key.startswith("gsk_"):
-        provider = "groq"
-    elif key.startswith("sk-or-"):
-        provider = "openrouter"
-    elif key.startswith("sk-"):
-        provider = "openai"
-    else:
-        provider = "gemini"
-
     final_reply = ""
-    try:
-        if provider == "gemini":
-            raw_result = await query_gemini(key, user_prompt, dorm_context, user_name, history=history)
-        else:
-            raw_result = await query_openai(key, user_prompt, dorm_context, user_name, history=history)
+    last_err: Optional[Exception] = None
+    for provider, prov_key in available_providers:
+        try:
+            if provider == "gemini":
+                raw_result = await query_gemini(prov_key, user_prompt, dorm_context, user_name, history=history)
+            else:
+                raw_result = await query_openai(prov_key, user_prompt, dorm_context, user_name, history=history)
 
-        if raw_result and raw_result.strip():
-            final_reply = sanitize_ai_response(raw_result)
-        else:
-            final_reply = fallback_inspector_reply(user_prompt, dorm_context, user_id=user_id, user_name=user_name, history=history)
-    except httpx.HTTPStatusError as e:
-        logger.warning("AI API HTTP error: %s - %s", e.response.status_code, e.response.text[:200])
-        final_reply = fallback_inspector_reply(user_prompt, dorm_context, user_id=user_id, user_name=user_name, history=history)
-    except Exception as e:
-        logger.warning("AI API call error: %s", e)
+            if raw_result and raw_result.strip():
+                final_reply = sanitize_ai_response(raw_result)
+                logger.info("AI response successfully generated using provider '%s'", provider)
+                break
+            else:
+                logger.warning("Provider '%s' returned empty output, attempting failover...", provider)
+        except httpx.HTTPStatusError as e:
+            last_err = e
+            logger.warning("AI provider '%s' HTTP %s error: %s. Attempting failover...", provider, e.response.status_code, e.response.text[:200])
+        except Exception as e:
+            last_err = e
+            logger.warning("AI provider '%s' failed (%s). Attempting failover...", provider, e)
+
+    if not final_reply:
+        logger.warning("All configured AI providers failed (last error: %s), using in-character fallback reply.", last_err)
         final_reply = fallback_inspector_reply(user_prompt, dorm_context, user_id=user_id, user_name=user_name, history=history)
 
     # Persist interaction into chat history memory for future turns
@@ -981,9 +1030,9 @@ async def ask_ai(
 async def generate_dorm_roast(dorm_id: int) -> str:
     """Generate a witty, harmless, and hilarious university dorm roast & awards ceremony."""
     default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
-    key = await db.get_dorm_ai_key(dorm_id)
-    if not key and (dorm_id in (default_gid, getattr(config, "GROUP_ID", 0), 0)):
-        key = get_api_key()
+    dorm_key = await db.get_dorm_ai_key(dorm_id)
+    is_primary_dorm = dorm_id in (default_gid, getattr(config, "GROUP_ID", 0), 0)
+    providers = get_available_ai_providers(dorm_key=dorm_key, allow_env_fallback=is_primary_dorm)
 
     dorm_context = await build_dorm_context(dorm_id)
     roast_prompt = (
@@ -994,14 +1043,16 @@ async def generate_dorm_roast(dorm_id: int) -> str:
         "Keep it very brief (under 60 words total). At most 1-2 emojis total. No emoji spam or walls of text."
     )
 
-    if key:
+    for provider, prov_key in providers:
         try:
-            if key.startswith("sk-"):
-                return await query_openai(key, roast_prompt, dorm_context, "Dorm Reporter")
+            if provider == "gemini":
+                raw = await query_gemini(prov_key, roast_prompt, dorm_context, "Dorm Reporter")
             else:
-                return await query_gemini(key, roast_prompt, dorm_context, "Dorm Reporter")
+                raw = await query_openai(prov_key, roast_prompt, dorm_context, "Dorm Reporter")
+            if raw and raw.strip():
+                return sanitize_ai_response(raw)
         except Exception as e:
-            logger.warning("AI roast generation failed (%s), falling back to witty template", e)
+            logger.warning("Roast generation on provider '%s' failed (%s). Trying failover...", provider, e)
 
     # Built-in short fallback roast if AI key is offline or unconfigured
     return (

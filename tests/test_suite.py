@@ -1878,6 +1878,59 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
             # Private code guidance prompt is present instead
             self.assertIn("Need your dorm code? Ask in your dorm Telegram group", html)
 
+    async def test_ai_multi_provider_failover(self):
+        """Verify automatic failover from primary provider (Gemini) to secondary (Groq) on 429/503 errors."""
+        from services import ai_service
+        import os
+        from unittest.mock import patch, AsyncMock
+        import httpx
+
+        # 1. Test get_available_ai_providers logic
+        orig_gemini = os.environ.get("GEMINI_API_KEY")
+        orig_groq = os.environ.get("GROQ_API_KEY")
+        try:
+            os.environ["GEMINI_API_KEY"] = "AIzaSyFakeGeminiKey"
+            os.environ["GROQ_API_KEY"] = "gsk_FakeGroqKey"
+
+            # Primary dorm: includes Gemini first, then Groq failover
+            providers = ai_service.get_available_ai_providers(dorm_key=None, allow_env_fallback=True)
+            self.assertEqual(len(providers), 2)
+            self.assertEqual(providers[0], ("gemini", "AIzaSyFakeGeminiKey"))
+            self.assertEqual(providers[1], ("groq", "gsk_FakeGroqKey"))
+
+            # Secondary dorm with no key: empty list (no env fallback)
+            sec_providers = ai_service.get_available_ai_providers(dorm_key=None, allow_env_fallback=False)
+            self.assertEqual(len(sec_providers), 0)
+
+            # Secondary dorm with custom Groq key: returns custom Groq
+            sec_custom = ai_service.get_available_ai_providers(dorm_key="gsk_SecKey", allow_env_fallback=False)
+            self.assertEqual(sec_custom, [("groq", "gsk_SecKey")])
+        finally:
+            if orig_gemini:
+                os.environ["GEMINI_API_KEY"] = orig_gemini
+            elif "GEMINI_API_KEY" in os.environ:
+                os.environ.pop("GEMINI_API_KEY")
+            if orig_groq:
+                os.environ["GROQ_API_KEY"] = orig_groq
+            elif "GROQ_API_KEY" in os.environ:
+                os.environ.pop("GROQ_API_KEY")
+
+        # 2. Test failover execution in ask_ai
+        await db.init_db()
+        test_dorm_id = -1002378440774  # Default/primary dorm
+        fake_response = httpx.Response(status_code=429, request=httpx.Request("POST", "https://api.google.com"))
+
+        with patch("services.ai_service.get_available_ai_providers") as mock_providers:
+            mock_providers.return_value = [("gemini", "AIzaKey"), ("groq", "gsk_Key")]
+
+            with patch("services.ai_service.query_gemini", side_effect=httpx.HTTPStatusError("Rate limit", request=fake_response.request, response=fake_response)), \
+                 patch("services.ai_service.query_openai", new_callable=AsyncMock) as mock_openai:
+                mock_openai.return_value = "Inspector here! Floors are clean."
+
+                reply = await ai_service.ask_ai("Hello inspector", test_dorm_id, user_name="Mintesnot")
+                self.assertIn("Floors are clean", reply)
+                mock_openai.assert_called_once()
+
     async def test_member_name_prompt_upon_joining_and_name_command(self):
         """Verify that when a member or admin joins, the bot asks for their name and /name updates it."""
         from handlers import commands
