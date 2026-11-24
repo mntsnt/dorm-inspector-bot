@@ -2046,5 +2046,70 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(pairs_odd3), 1)
         self.assertEqual(pairs_odd3[0], (401, 402, 403))
 
+    async def test_our_dorm_escapes_name_prompts_and_setup(self):
+        """Verify that our pre-configured dorm and its members escape onboarding name prompts and setup resets."""
+        from handlers import commands, setup
+        from unittest.mock import AsyncMock, MagicMock
+
+        await db.init_db()
+        await db.seed_default_dorm()
+
+        # 1. Existing member of our dorm (e.g. Mintesnot or Nahom) runs /start in DM
+        test_uid = 6163528558  # Mintesnot
+        update = MagicMock()
+        update.effective_user.id = test_uid
+        update.effective_user.first_name = "Mintesnot"
+        update.effective_user.username = "mintesnot"
+        update.effective_chat.id = test_uid
+        update.effective_chat.type = "private"
+        update.effective_message.reply_text = AsyncMock()
+        update.effective_message.reply_photo = AsyncMock()
+
+        context = MagicMock()
+        context.args = []
+        context.user_data = {}
+
+        await commands.start_command(update, context)
+
+        # Must NOT prompt for name or set awaiting_name
+        self.assertNotIn("awaiting_name", context.user_data)
+        all_replies = [call[0][0] for call in update.effective_message.reply_text.call_args_list if call[0]]
+        for reply in all_replies:
+            self.assertNotIn("What is your name?", reply)
+            self.assertNotIn("Currently your name is listed as", reply)
+
+        # 2. Existing member of our dorm sends a regular question in DM
+        chat_update = MagicMock()
+        chat_update.effective_user.id = test_uid
+        chat_update.effective_chat.id = test_uid
+        chat_update.effective_chat.type = "private"
+        chat_update.effective_message.text = "What is the cleaning schedule?"
+        chat_update.effective_message.reply_text = AsyncMock()
+
+        # handle_name_reply should ignore it and not treat it as a name
+        context.user_data["awaiting_name"] = -1002378440774
+        await commands.handle_name_reply(chat_update, context)
+        # Should clear awaiting_name and not rename the user
+        self.assertNotIn("awaiting_name", context.user_data)
+        m = await db.get_dorm_member(-1002378440774, test_uid)
+        self.assertEqual(m["name"], "Mintesnot")
+
+        # 3. Running /setup in our dorm warns that it is already setup and does not reset or prompt admin
+        setup_update = MagicMock()
+        setup_update.effective_user.id = test_uid
+        setup_update.effective_user.first_name = "Mintesnot"
+        setup_update.effective_chat.id = -1002378440774
+        setup_update.effective_chat.type = "supergroup"
+        setup_update.effective_message.reply_text = AsyncMock()
+        setup_update.effective_message.message_thread_id = 2031
+
+        setup_context = MagicMock()
+        setup_context.bot.send_message = AsyncMock()
+
+        await setup.setup_command(setup_update, setup_context)
+        setup_text = setup_update.effective_message.reply_text.call_args[0][0]
+        self.assertIn("already set up and active", setup_text)
+        setup_context.bot.send_message.assert_not_called()
+
 if __name__ == "__main__":
     unittest.main()

@@ -1519,6 +1519,13 @@ def _seed_default_dorm_sync() -> None:
             ON CONFLICT(key) DO UPDATE SET value = '1', updated_at = CURRENT_TIMESTAMP;
         """, (f"all_connected_{group_id}",))
 
+        for m in getattr(config, "MEMBERS", []):
+            conn.execute("""
+                INSERT INTO settings (key, value, updated_at)
+                VALUES (?, '1', CURRENT_TIMESTAMP)
+                ON CONFLICT(key) DO UPDATE SET value = '1', updated_at = CURRENT_TIMESTAMP;
+            """, (f"name_confirmed_{m.user_id}",))
+
         # Enforce exact saved pairs from members.json / config.PAIRS for default dorm:
         # Pair 1: Bilisuma & Nahom
         # Pair 2: Hassan & Mintesnot
@@ -1641,6 +1648,13 @@ def _seed_default_dorm_for_group_sync(group_id: int) -> Dict[str, Any]:
             VALUES (?, '1', CURRENT_TIMESTAMP)
             ON CONFLICT(key) DO UPDATE SET value = '1', updated_at = CURRENT_TIMESTAMP;
         """, (f"all_connected_{group_id}",))
+
+        for m in getattr(config, "MEMBERS", []):
+            conn.execute("""
+                INSERT INTO settings (key, value, updated_at)
+                VALUES (?, '1', CURRENT_TIMESTAMP)
+                ON CONFLICT(key) DO UPDATE SET value = '1', updated_at = CURRENT_TIMESTAMP;
+            """, (f"name_confirmed_{m.user_id}",))
 
         conn.commit()
 

@@ -109,7 +109,7 @@ async def setup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
 
     # The default saved dorm is always active and protected against resetting
-    if dorm_id == default_gid:
+    if dorm_id in (default_gid, getattr(config, "GROUP_ID", 0), 0):
         dorm = await db.seed_default_dorm_for_group(dorm_id)
         pairs = await db.get_dorm_pairs(dorm_id)
         members = await db.get_dorm_members(dorm_id)
@@ -213,21 +213,22 @@ async def setup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     await msg.reply_text(setup_text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
 
-    # Prompt admin in DM to confirm/set their preferred name
-    try:
-        admin_dm = (
-            f"👤 **Dorm Admin Setup: {dorm_name}**\n\n"
-            f"What is your name?\n"
-            f"Currently registered as: **{user.first_name}**\n\n"
-            "Please reply with your real name (or send `/name <your_name>`) so your roommates can recognize you on the chore schedule."
-        )
-        await context.bot.send_message(
-            chat_id=admin_id,
-            text=admin_dm,
-            parse_mode=ParseMode.MARKDOWN
-        )
-    except Exception:
-        pass
+    # Prompt admin in DM to confirm/set their preferred name (only for new dorms)
+    if not (dorm_id in (default_gid, getattr(config, "GROUP_ID", 0), 0) or config.is_member(admin_id)):
+        try:
+            admin_dm = (
+                f"👤 **Dorm Admin Setup: {dorm_name}**\n\n"
+                f"What is your name?\n"
+                f"Currently registered as: **{user.first_name}**\n\n"
+                "Please reply with your real name (or send `/name <your_name>`) so your roommates can recognize you on the chore schedule."
+            )
+            await context.bot.send_message(
+                chat_id=admin_id,
+                text=admin_dm,
+                parse_mode=ParseMode.MARKDOWN
+            )
+        except Exception:
+            pass
 
 # ---------------------------------------------------------------------------
 # Setup Inline Callbacks (Members List, Settings, Launch)

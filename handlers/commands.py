@@ -726,14 +726,29 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 except Exception as e:
                     logger.warning("Could not ping dorm group %s on member join: %s", dorm["dorm_id"], e)
 
-                context.user_data["awaiting_name"] = dorm["dorm_id"]
-                welcome_dm = (
-                    f"🎉 **You successfully joined {dorm['dorm_name']}!**\n\n"
-                    "👤 **What is your name?**\n"
-                    "Please reply with your real name (e.g. *Nahom* or *Bilisuma*) or send `/name <your_name>` "
-                    "so your roommates and the inspector recognize you on the chore schedule and leaderboard.\n\n"
-                    "You will receive duty announcements, reminders, and verification prompts here in DM."
+                default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+                is_our_dorm = (
+                    dorm["dorm_id"] in (default_gid, getattr(config, "GROUP_ID", 0), 0)
+                    or config.is_member(user.id)
                 )
+
+                if is_our_dorm:
+                    context.user_data.pop("awaiting_name", None)
+                    welcome_dm = (
+                        f"🎉 **Welcome to {dorm['dorm_name']}!**\n\n"
+                        "You are registered in the dorm cleaning schedule.\n"
+                        "You will receive duty announcements, reminders, and verification prompts here in DM.\n\n"
+                        "Tap below to see your dorm's status."
+                    )
+                else:
+                    context.user_data["awaiting_name"] = dorm["dorm_id"]
+                    welcome_dm = (
+                        f"🎉 **You successfully joined {dorm['dorm_name']}!**\n\n"
+                        "👤 **What is your name?**\n"
+                        "Please reply with your real name (e.g. *Nahom* or *Bilisuma*) or send `/name <your_name>` "
+                        "so your roommates and the inspector recognize you on the chore schedule and leaderboard.\n\n"
+                        "You will receive duty announcements, reminders, and verification prompts here in DM."
+                    )
                 is_cleaner, _, _ = await get_user_week_role(user.id, dorm_id=dorm["dorm_id"])
                 code = dorm.get("dorm_code") or "DORM-101"
                 await update.effective_message.reply_text(
@@ -862,9 +877,18 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
         await update.effective_message.reply_text(welcome_text, reply_markup=inline_markup, parse_mode=ParseMode.MARKDOWN)
 
+        default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+        is_our_dorm = (
+            target_dorm_id in (default_gid, getattr(config, "GROUP_ID", 0), 0)
+            or config.is_member(user.id)
+        )
+
         name_confirmed = await db.get_setting(f"name_confirmed_{user.id}")
         is_setname_arg = context.args and len(context.args) > 0 and context.args[0].lower() in ("setname", "name")
-        if not name_confirmed or is_setname_arg:
+
+        # Our dorm is already set up and running. Escape our dorm from automatic name prompts.
+        # Only prompt if user explicitly typed /name or /start setname, OR if it is a new unconfigured dorm user without a confirmed name.
+        if is_setname_arg or (not is_our_dorm and not name_confirmed):
             context.user_data["awaiting_name"] = dorm_id
             name_prompt = (
                 f"👤 **What is your name?**\n\n"
@@ -873,6 +897,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 f"so your roommates can easily recognize you on the chore schedule."
             )
             await update.effective_message.reply_text(name_prompt, parse_mode=ParseMode.MARKDOWN)
+        else:
+            context.user_data.pop("awaiting_name", None)
     else:
         # In a group chat
         await update.effective_message.reply_text(
@@ -1526,6 +1552,22 @@ async def handle_name_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
 
     if not context.user_data.get("awaiting_name"):
+        return
+
+    default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+    dorm_id = context.user_data.get("awaiting_name")
+
+    # If the user belongs to our dorm or primary group, escape so their chat messages are never intercepted
+    if config.is_member(user.id) or (dorm_id and dorm_id in (default_gid, getattr(config, "GROUP_ID", 0), 0)):
+        context.user_data.pop("awaiting_name", None)
+        return
+
+    # Do not treat conversational queries, greetings, or sentences as names
+    chat_prefixes = (
+        "what", "who", "why", "how", "when", "where", "can", "is", "are",
+        "do", "does", "hello", "hi", "hey", "sup", "tell", "explain", "please"
+    )
+    if "?" in text or text.lower().startswith(chat_prefixes) or len(text.split()) > 4:
         return
 
     dorm_id = context.user_data.pop("awaiting_name")
