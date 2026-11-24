@@ -611,7 +611,7 @@ def get_help_content() -> Tuple[str, InlineKeyboardMarkup]:
         "• **Review**: Approver rates 1-5 stars; cleaners earn Tsidat tokens.\n"
         "• **Fri 8 PM**: Check time. Cleaners confirm; uncleaned rooms get fined.\n\n"
         "**Commands:**\n"
-        "/status • /schedule • /fines • /tsidat • /spin <reason> • /swap <name> • /inspector • /ai_status"
+        "/status • /schedule • /fines • /tsidat • /approve • /spin <reason> • /swap <name> • /inspector • /ai_status"
     )
     return help_text, keyboard
 

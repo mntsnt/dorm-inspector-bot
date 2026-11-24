@@ -282,22 +282,37 @@ async def handle_cleaner_done(
 # Photo Message Handler
 # ---------------------------------------------------------------------------
 async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle photos submitted by cleaners in private chat."""
+    """Handle photos submitted by cleaners in private chat or in the dorm group/topic."""
     user = update.effective_user
+    chat = update.effective_chat
     if not user or not update.message or not update.message.photo:
         return
 
-    if not await _is_member(user.id):
-        await update.message.reply_text("Sorry, this bot is only for dorm members.")
-        return
+    is_group = bool(chat and chat.type in ("group", "supergroup"))
 
-    resolved = await _resolve_user_active_dorm(user.id)
-    if not resolved:
-        await update.message.reply_text("You are not registered in any active dorm.")
-        return
+    if is_group:
+        dorm_id = chat.id
+        dorm = await db.get_dorm(dorm_id)
+        if not dorm:
+            default_gid = getattr(config, "GROUP_ID", -1002378440774)
+            if dorm_id == default_gid:
+                dorm = await db.get_dorm(default_gid)
+        if not dorm:
+            # Not a recognized dorm group; ignore silently so normal chatting isn't affected
+            return
+    else:
+        if not await _is_member(user.id):
+            await update.message.reply_text("Sorry, this bot is only for dorm members.")
+            return
 
-    dorm, _ = resolved
-    dorm_id = dorm["dorm_id"]
+        resolved = await _resolve_user_active_dorm(user.id)
+        if not resolved:
+            await update.message.reply_text("You are not registered in any active dorm.")
+            return
+
+        dorm, _ = resolved
+        dorm_id = dorm["dorm_id"]
+
     topic_id = dorm.get("topic_id")
 
     pairs = await db.get_dorm_pairs(dorm_id)
@@ -308,7 +323,21 @@ async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
     week_info = get_dorm_week_info(dorm, pairs, members_by_id)
 
     if not week_info or week_info.week_number < 1:
-        await update.message.reply_text("Cleaning duty has not started yet.")
+        if not is_group:
+            await update.message.reply_text("Cleaning duty has not started yet.")
+        return
+
+    caption = (update.message.caption or "").lower()
+    c1_id = week_info.cleaner1_id
+    c2_id = week_info.cleaner2_id
+    c3_id = getattr(week_info, "cleaner3_id", 0)
+    cleaner_uids = [cid for cid in (c1_id, c2_id, c3_id) if cid]
+
+    is_cleaner = user.id in cleaner_uids
+    mentions_clean = any(w in caption for w in ("clean", "done", "duty", "proof", "pic", "photo", "inspection", "room", "floor"))
+
+    if is_group and not is_cleaner and not mentions_clean:
+        # In a group, don't hijack unrelated photos from non-cleaners
         return
 
     week_record = await db.get_week(week_info.week_start, dorm_id=dorm_id)
@@ -330,13 +359,7 @@ async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
             cleaner3_id=week_info.cleaner3_id,
         )
 
-    # Check cleaners
-    c1_id = week_record["cleaner1_id"]
-    c2_id = week_record.get("cleaner2_id", 0)
-    c3_id = week_record.get("cleaner3_id", 0)
-    cleaner_uids = [cid for cid in (c1_id, c2_id, c3_id) if cid]
-
-    if user.id not in cleaner_uids:
+    if not is_cleaner and not is_group:
         disp = week_info.cleaner_display
         await update.message.reply_text(
             f"ℹ️ **You are not on cleaning duty this week!**\n\n"
@@ -346,7 +369,8 @@ async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     if week_record.get("final_status") == "completed" or week_record.get("photo_status") == "approved":
-        await update.message.reply_text("✅ Cleaning for this week is already completed and approved! You are done for the week.")
+        if not is_group:
+            await update.message.reply_text("✅ Cleaning for this week is already completed and approved! You are done for the week.")
         return
 
     # Get the highest resolution photo
@@ -357,37 +381,56 @@ async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
 
     submitter_name = members_by_id.get(user.id, user.first_name)
     c1_name = members_by_id.get(c1_id, f"ID {c1_id}")
-    c2_name = members_by_id.get(c2_id, f"ID {c2_id}")
+    c2_name = members_by_id.get(c2_id, f"ID {c2_id}") if c2_id else ""
+    c_disp = f"{c1_name} & {c2_name}" if c2_name else c1_name
 
     approver_id = week_record.get("approver_id")
     approver_name = members_by_id.get(approver_id, "Approver")
 
-    # Forward/send photo to the dorm group chat
-    group_caption = (
-        f"Cleaned by **{c1_name}** & **{c2_name}** (sent by {submitter_name}).\n"
-        f"Waiting for **{approver_name}** to approve."
-    )
-    try:
-        await context.bot.send_photo(
-            chat_id=dorm_id,
-            message_thread_id=topic_id,
-            photo=photo_file_id,
-            caption=group_caption,
-            parse_mode=ParseMode.MARKDOWN
+    approver_keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("⭐ Approve", callback_data=f"approve_{dorm_id}_{week_info.week_start}"),
+            InlineKeyboardButton("❌ Reject", callback_data=f"reject_{dorm_id}_{week_info.week_start}"),
+        ]
+    ])
+
+    if is_group:
+        # If posted directly in the group, reply with approval buttons for Approver/Admin right in the group!
+        group_caption = (
+            f"📸 **Cleaning Photo Submitted by {submitter_name}!**\n\n"
+            f"Cleaners: **{c_disp}**\n"
+            f"Waiting for **{approver_name}** (or Admin) to review:"
         )
-    except Exception as e:
-        logger.error("Failed to send photo to group %s: %s", dorm_id, e)
+        try:
+            await update.message.reply_text(
+                group_caption,
+                reply_markup=approver_keyboard,
+                parse_mode=ParseMode.MARKDOWN
+            )
+        except Exception as e:
+            logger.error("Failed to post submission acknowledge in group: %s", e)
+    else:
+        # Forward/send photo to the dorm group chat
+        group_caption = (
+            f"Cleaned by **{c_disp}** (sent by {submitter_name}).\n"
+            f"Waiting for **{approver_name}** to approve."
+        )
+        try:
+            await context.bot.send_photo(
+                chat_id=dorm_id,
+                message_thread_id=topic_id,
+                photo=photo_file_id,
+                caption=group_caption,
+                reply_markup=approver_keyboard,
+                parse_mode=ParseMode.MARKDOWN
+            )
+        except Exception as e:
+            logger.error("Failed to send photo to group %s: %s", dorm_id, e)
 
     # Send photo with Approve / Reject buttons in private DM to the Approver
     if approver_id:
-        approver_keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("Approve", callback_data=f"approve_{dorm_id}_{week_info.week_start}"),
-                InlineKeyboardButton("Reject", callback_data=f"reject_{dorm_id}_{week_info.week_start}"),
-            ]
-        ])
         approver_caption = (
-            f"Photo sent by **{c1_name}** & **{c2_name}** ({dorm['dorm_name']}).\n"
+            f"Photo sent by **{c_disp}** ({dorm['dorm_name']}).\n"
             "Please approve or reject:"
         )
         try:
@@ -400,18 +443,20 @@ async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
             )
         except TelegramError as te:
             logger.warning("Could not send review photo to approver %s: %s", approver_id, te)
-            from scheduler import send_dm_with_fallback
-            await send_dm_with_fallback(
-                context, approver_id, approver_name,
-                f"Photo sent by **{c1_name}** & **{c2_name}**. Please check and reply.",
-                reply_markup=approver_keyboard,
-                dorm_id=dorm_id,
-                topic_id=topic_id
-            )
+            if not is_group:
+                from scheduler import send_dm_with_fallback
+                await send_dm_with_fallback(
+                    context, approver_id, approver_name,
+                    f"Photo sent by **{c_disp}**. Please check and reply.",
+                    reply_markup=approver_keyboard,
+                    dorm_id=dorm_id,
+                    topic_id=topic_id
+                )
 
-    # Confirm to cleaner in DM
-    reply_text = f"Photo received! Sent to the group and to **{approver_name}** to review."
-    await update.message.reply_text(reply_text, parse_mode=ParseMode.MARKDOWN)
+    # Confirm to cleaner in DM if triggered in DM
+    if not is_group:
+        reply_text = f"Photo received! Sent to the group and to **{approver_name}** to review."
+        await update.message.reply_text(reply_text, parse_mode=ParseMode.MARKDOWN)
 
 # ---------------------------------------------------------------------------
 # Friday Check Callbacks (Cleaners answering Yes / No)
@@ -546,4 +591,4 @@ def register_cleaning_handlers(application: Application) -> None:
     application.add_handler(CallbackQueryHandler(cleaned_button_callback, pattern=r"^cleaned_"))
     application.add_handler(CallbackQueryHandler(friday_check_yes_callback, pattern=r"^fcheck_yes_"))
     application.add_handler(CallbackQueryHandler(friday_check_no_callback, pattern=r"^fcheck_no_"))
-    application.add_handler(MessageHandler(filters.PHOTO & filters.ChatType.PRIVATE, photo_message_handler))
+    application.add_handler(MessageHandler(filters.PHOTO, photo_message_handler))

@@ -131,6 +131,7 @@ async def post_init(application: Application) -> None:
         group_commands = [
             BotCommand("status", "View current week duty and cleaners"),
             BotCommand("schedule", "View full rotation chore schedule"),
+            BotCommand("approve", "Approve cleaning duty & award tokens (Approver/Admin)"),
             BotCommand("code", "Get your dorm access code and website link"),
             BotCommand("fines", "View unpaid fines summary"),
             BotCommand("members", "View list of registered roommates"),
@@ -147,6 +148,7 @@ async def post_init(application: Application) -> None:
             BotCommand("name", "Set or update your display name"),
             BotCommand("status", "Check your cleaning duty status"),
             BotCommand("schedule", "View upcoming rotation schedule"),
+            BotCommand("approve", "Approve cleaning duty & award tokens (Approver/Admin)"),
             BotCommand("fines", "View your unpaid fines"),
             BotCommand("done", "Submit photo proof (cleaners only)"),
             BotCommand("help", "View commands and guide"),

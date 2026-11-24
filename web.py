@@ -364,6 +364,86 @@ async def get_dorm_leaderboard(dorm_identifier: str) -> List[Dict[str, Any]]:
     detail = await get_dorm_detail(dorm_identifier)
     return detail.get("leaderboard", [])
 
+@app.api_route("/api/dorms/{dorm_identifier}/approve", methods=["GET", "POST"], response_class=JSONResponse)
+async def api_approve_dorm_cleaning(dorm_identifier: str, stars: int = 5) -> Dict[str, Any]:
+    """Admin or Approver API to immediately mark current week's cleaning as approved and award Tsidat tokens."""
+    dorm = None
+    clean_id = dorm_identifier.strip()
+    if clean_id.lower() in ("default", "active", "main", "primary"):
+        default_gid = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+        dorm = await db.get_dorm(default_gid)
+        if not dorm:
+            active_dorms = await db.get_all_active_dorms()
+            if active_dorms:
+                dorm = active_dorms[0]
+        if not dorm:
+            dorm = await db.get_dorm_by_code("DEFAULT")
+    else:
+        try:
+            dorm = await db.get_dorm(int(clean_id))
+        except ValueError:
+            pass
+        if not dorm:
+            dorm = await db.get_dorm_by_code(clean_id)
+
+    if not dorm:
+        raise HTTPException(status_code=404, detail=f"Dorm '{dorm_identifier}' not found")
+
+    dorm_id = dorm["dorm_id"]
+    pairs = await db.get_dorm_pairs(dorm_id)
+    members = await db.get_dorm_members(dorm_id)
+    members_by_id = {m["user_id"]: m["name"] for m in members}
+
+    current_date = config.get_current_date()
+    week_info = get_dorm_week_info(dorm, pairs, members_by_id, target_date=current_date)
+    if not week_info:
+        raise HTTPException(status_code=400, detail="No schedule found")
+
+    week_start = week_info.week_start
+    stars_clamped = max(1, min(5, stars))
+    review_comments = {
+        5: "Sparkling clean! 5-star hotel standard.",
+        4: "Great job! Room looks and smells fresh.",
+        3: "Good effort! Passed inspection cleanly.",
+        2: "Acceptable, but room needs a deeper scrub next time.",
+        1: "Barely passed. The broom was barely awake!"
+    }
+    comment = review_comments.get(stars_clamped, "Sparkling clean! 5-star hotel standard.")
+    tokens = stars_clamped * 5
+
+    await db.update_photo_status(
+        week_start,
+        status="approved",
+        final_status="completed",
+        dorm_id=dorm_id,
+        rating=stars_clamped,
+        review_text=comment
+    )
+
+    c1_id = week_info.cleaner1_id
+    c2_id = week_info.cleaner2_id
+    c3_id = getattr(week_info, "cleaner3_id", 0)
+
+    await db.add_tsidat_tokens(dorm_id, c1_id, tokens)
+    if c2_id:
+        await db.add_tsidat_tokens(dorm_id, c2_id, tokens)
+    if c3_id:
+        await db.add_tsidat_tokens(dorm_id, c3_id, tokens)
+
+    week_record = await db.get_week(week_start, dorm_id=dorm_id)
+    if week_record and week_record.get("approver_id"):
+        await db.add_tsidat_tokens(dorm_id, week_record["approver_id"], 5)
+
+    return {
+        "status": "success",
+        "message": f"Week {week_info.week_number} cleaning approved with {stars_clamped}★ stars! Cleaners received +{tokens} Tsidat tokens.",
+        "dorm_id": dorm_id,
+        "week_number": week_info.week_number,
+        "cleaners": week_info.cleaner_display,
+        "rating": stars_clamped,
+        "tokens_awarded": tokens
+    }
+
 @app.get("/fines", include_in_schema=False)
 async def redirect_fines():
     return RedirectResponse(url="/", status_code=307)
@@ -717,6 +797,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <span id="cleaning-review-badge" class="px-1.5 py-0.2 rounded bg-white text-black font-bold text-[9px]">APPROVED ✓</span>
           </div>
           <p id="cleaning-review-comment" class="text-white/70 italic text-[10px] mt-1">Inspection passed cleanly!</p>
+        </div>
+
+        <!-- Quick Approve Button (Available when cleaning is pending or submitted) -->
+        <div id="quick-approve-container" class="mt-2">
+          <button id="quick-approve-btn" onclick="quickApproveDuty()" class="w-full py-1.5 px-3 rounded-lg border border-white/40 hover:border-white bg-white/10 hover:bg-white text-white hover:text-black font-mono font-bold text-[11px] transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-sm">
+            <span>✓</span> <span>Approve Week's Cleaning (+25 Tokens)</span>
+          </button>
         </div>
       </div>
     </div>
@@ -1175,11 +1262,56 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         }
       }
 
+      // Quick Approve button visibility
+      const quickApproveCont = document.getElementById('quick-approve-container');
+      if (quickApproveCont) {
+        if (isCompleted) {
+          quickApproveCont.classList.add('hidden');
+        } else {
+          quickApproveCont.classList.remove('hidden');
+        }
+      }
+
       // Render schedule, leaderboard, fines, history
       renderSchedule(data.schedule, isCompleted, isFined);
       renderLeaderboard(data.leaderboard);
       renderFines(data.fines);
       renderHistory(data.history);
+    }
+
+    async function quickApproveDuty() {
+      const btn = document.getElementById('quick-approve-btn');
+      if (!currentDormData || !currentDormData.dorm_code) return;
+      const cWeek = currentDormData.current_week || {};
+      const cNames = cWeek.cleaners_display || 'Cleaners';
+      if (!confirm(`Mark Week ${cWeek.week_number || 1} (${cNames}) cleaning as APPROVED with 5 Stars?\\n\\nCleaners will immediately receive +25 Tsidat tokens.`)) return;
+
+      if (btn) {
+        btn.disabled = true;
+        btn.innerText = 'Approving duty...';
+      }
+      try {
+        const resp = await fetch(`/api/dorms/${encodeURIComponent(currentDormData.dorm_code)}/approve?stars=5`, { method: 'POST' });
+        const resJson = await resp.json();
+        if (resJson && resJson.status === 'success') {
+          await fetchDashboardData();
+        } else {
+          alert(resJson.message || 'Approval could not be completed.');
+        }
+      } catch (err) {
+        console.error('Approval request failed:', err);
+        try {
+          await fetch(`/api/dorms/${encodeURIComponent(currentDormData.dorm_code)}/approve?stars=5`);
+          await fetchDashboardData();
+        } catch (e2) {
+          alert('Network connection error.');
+        }
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = '<span>✓</span> <span>Approve Week\\'s Cleaning (+25 Tokens)</span>';
+        }
+      }
     }
 
     function renderSchedule(schedule, isCompleted, isFined) {

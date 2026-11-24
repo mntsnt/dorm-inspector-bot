@@ -12,7 +12,7 @@ from typing import Optional, Tuple
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.error import BadRequest, TelegramError
-from telegram.ext import Application, CallbackQueryHandler, ContextTypes
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
 import config
 import db
@@ -151,9 +151,10 @@ async def approve_photo_callback(update: Update, context: ContextTypes.DEFAULT_T
     approver = await db.get_dorm_member(dorm_id, approver_id)
     approver_name = approver["name"] if approver else f"ID {approver_id}"
 
-    if user.id != approver_id:
+    is_admin = bool(dorm and user.id == dorm.get("admin_id")) or (user.id == getattr(config, "ADMIN_ID", 0))
+    if user.id != approver_id and not is_admin:
         await query.answer(
-            f"Only the assigned approver ({approver_name}) can approve this.",
+            f"Only the assigned approver ({approver_name}) or Admin can approve this.",
             show_alert=True
         )
         return
@@ -253,9 +254,10 @@ async def rate_photo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     approver = await db.get_dorm_member(dorm_id, approver_id)
     approver_name = approver["name"] if approver else f"ID {approver_id}"
 
-    if user.id != approver_id:
+    is_admin = bool(dorm and user.id == dorm.get("admin_id")) or (user.id == getattr(config, "ADMIN_ID", 0))
+    if user.id != approver_id and not is_admin:
         await query.answer(
-            f"Only the assigned approver ({approver_name}) can submit this rating.",
+            f"Only the assigned approver ({approver_name}) or Admin can submit this rating.",
             show_alert=True
         )
         return
@@ -388,9 +390,10 @@ async def reject_photo_callback(update: Update, context: ContextTypes.DEFAULT_TY
     approver = await db.get_dorm_member(dorm_id, approver_id)
     approver_name = approver["name"] if approver else f"ID {approver_id}"
 
-    if user.id != approver_id:
+    is_admin = bool(dorm and user.id == dorm.get("admin_id")) or (user.id == getattr(config, "ADMIN_ID", 0))
+    if user.id != approver_id and not is_admin:
         await query.answer(
-            f"Only the assigned approver ({approver_name}) can reject this.",
+            f"Only the assigned approver ({approver_name}) or Admin can reject this.",
             show_alert=True
         )
         return
@@ -477,9 +480,10 @@ async def confirm_cleaned_callback(update: Update, context: ContextTypes.DEFAULT
     approver = await db.get_dorm_member(dorm_id, approver_id)
     approver_name = approver["name"] if approver else f"ID {approver_id}"
 
-    if user.id != approver_id:
+    is_admin = bool(dorm and user.id == dorm.get("admin_id")) or (user.id == getattr(config, "ADMIN_ID", 0))
+    if user.id != approver_id and not is_admin:
         await query.answer(
-            f"Only the assigned approver ({approver_name}) can confirm this.",
+            f"Only the assigned approver ({approver_name}) or Admin can confirm this.",
             show_alert=True
         )
         return
@@ -600,9 +604,10 @@ async def confirm_not_cleaned_callback(update: Update, context: ContextTypes.DEF
     approver = await db.get_dorm_member(dorm_id, approver_id)
     approver_name = approver["name"] if approver else f"ID {approver_id}"
 
-    if user.id != approver_id:
+    is_admin = bool(dorm and user.id == dorm.get("admin_id")) or (user.id == getattr(config, "ADMIN_ID", 0))
+    if user.id != approver_id and not is_admin:
         await query.answer(
-            f"Only the assigned approver ({approver_name}) can confirm this.",
+            f"Only the assigned approver ({approver_name}) or Admin can confirm this.",
             show_alert=True
         )
         return
@@ -675,8 +680,166 @@ async def confirm_not_cleaned_callback(update: Update, context: ContextTypes.DEF
     await _notify_cleaner(context, week_record["cleaner1_id"], c1_name, dm_text, photo_path=fined_meme, dorm_id=dorm_id, topic_id=topic_id)
     await _notify_cleaner(context, week_record["cleaner2_id"], c2_name, dm_text, photo_path=fined_meme, dorm_id=dorm_id, topic_id=topic_id)
 
+async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Approver or Admin executes /approve [stars] to immediately approve cleaning duty and award Tsidat tokens."""
+    user = update.effective_user
+    msg = update.effective_message
+    if not user or not msg:
+        return
+
+    # Determine dorm_id
+    dorm_id = None
+    if update.effective_chat and update.effective_chat.type in ("group", "supergroup"):
+        dorm_id = update.effective_chat.id
+    if not dorm_id:
+        dorm_id = await db.resolve_dorm_for_user(user.id) or getattr(config, "GROUP_ID", -1002378440774)
+
+    dorm = await db.get_dorm(dorm_id)
+    if not dorm:
+        await msg.reply_text("Dorm configuration not found.")
+        return
+
+    admin_id = dorm.get("admin_id") or getattr(config, "ADMIN_ID", 6163528558)
+    topic_id = dorm.get("topic_id")
+
+    pairs = await db.get_dorm_pairs(dorm_id)
+    members = await db.get_dorm_members(dorm_id)
+    members_by_id = {m["user_id"]: m["name"] for m in members}
+
+    from scheduler import get_dorm_week_info
+    week_info = get_dorm_week_info(dorm, pairs, members_by_id)
+    if not week_info:
+        await msg.reply_text("Cleaning rotation schedule not found.")
+        return
+
+    week_start = week_info.week_start
+    week_record = await db.get_week(week_start, dorm_id=dorm_id)
+    if not week_record:
+        eligible_approver_ids = [m["user_id"] for m in members if m["user_id"] not in week_info.cleaner_ids]
+        if not eligible_approver_ids:
+            eligible_approver_ids = [week_info.cleaner1_id]
+        week_record = await db.get_or_create_week(
+            week_start=week_info.week_start,
+            week_number=week_info.week_number,
+            cleaner1_id=week_info.cleaner1_id,
+            cleaner2_id=week_info.cleaner2_id,
+            eligible_approver_ids=eligible_approver_ids,
+            dorm_id=dorm_id,
+            cleaner3_id=week_info.cleaner3_id,
+        )
+
+    approver_id = week_record["approver_id"]
+    is_approver = (user.id == approver_id)
+    is_admin = (user.id == admin_id or user.id == getattr(config, "ADMIN_ID", 0))
+
+    if not is_approver and not is_admin:
+        approver_name = members_by_id.get(approver_id, f"ID {approver_id}")
+        await msg.reply_text(f"⛔ Only the assigned approver ({approver_name}) or Dorm Admin can approve cleaning.")
+        return
+
+    # Parse optional stars: /approve 5, /approve 4
+    stars = 5
+    if context.args and len(context.args) > 0:
+        try:
+            stars = int(context.args[0])
+            stars = max(1, min(5, stars))
+        except ValueError:
+            stars = 5
+
+    review_comment = RATING_COMMENTS.get(stars, "Sparkling clean! 5-star hotel standard.")
+    stars_display = RATING_STARS_DISPLAY.get(stars, f"{stars} Stars")
+    tokens_earned = stars * 5
+
+    # 1. Update database: mark approved, completed, rating, review_text
+    await db.update_photo_status(
+        week_start,
+        status="approved",
+        final_status="completed",
+        dorm_id=dorm_id,
+        rating=stars,
+        review_text=review_comment
+    )
+
+    # 2. Award Tsidat tokens: cleaners get stars*5, approver gets +5
+    c1_id = week_record["cleaner1_id"]
+    c2_id = week_record.get("cleaner2_id", 0)
+    c3_id = week_record.get("cleaner3_id", 0)
+    await db.add_tsidat_tokens(dorm_id, c1_id, tokens_earned)
+    if c2_id:
+        await db.add_tsidat_tokens(dorm_id, c2_id, tokens_earned)
+    if c3_id:
+        await db.add_tsidat_tokens(dorm_id, c3_id, tokens_earned)
+    await db.add_tsidat_tokens(dorm_id, approver_id, 5)
+
+    c1_name = members_by_id.get(c1_id, f"ID {c1_id}")
+    c2_name = members_by_id.get(c2_id, f"ID {c2_id}") if c2_id else ""
+    c3_name = members_by_id.get(c3_id, f"ID {c3_id}") if c3_id else ""
+    cleaner_names = [n for n in (c1_name, c2_name, c3_name) if n]
+    c_disp = " & ".join(cleaner_names)
+    actor_name = members_by_id.get(user.id, user.first_name)
+
+    # 3. Post celebration in dorm group chat
+    group_msg = (
+        f"🎉 **Well Done! Cleaning Approved**\n\n"
+        f"⭐ **Approved by:** {actor_name} ({'Approver' if is_approver else 'Admin'})\n"
+        f"⭐ **Rating:** {stars_display} — _{review_comment}_\n"
+        f"👏 **Cleaners:** {c_disp} — duty completed for the week!\n"
+        f"🪙 **Reward:** +{tokens_earned} Tsidat tokens awarded to each cleaner."
+    )
+    photo_file_id = week_record.get("photo_file_id")
+    approved_meme = config.get_meme_file("approved")
+    try:
+        if photo_file_id:
+            await context.bot.send_photo(
+                chat_id=dorm_id,
+                message_thread_id=topic_id,
+                photo=photo_file_id,
+                caption=group_msg,
+                parse_mode=ParseMode.MARKDOWN
+            )
+        elif approved_meme and approved_meme.is_file():
+            with open(approved_meme, "rb") as pf:
+                await context.bot.send_photo(
+                    chat_id=dorm_id,
+                    message_thread_id=topic_id,
+                    photo=pf,
+                    caption=group_msg,
+                    parse_mode=ParseMode.MARKDOWN
+                )
+        else:
+            await context.bot.send_message(
+                chat_id=dorm_id,
+                message_thread_id=topic_id,
+                text=group_msg,
+                parse_mode=ParseMode.MARKDOWN
+            )
+    except Exception as ge:
+        logger.warning("Could not send group celebration message: %s", ge)
+
+    # 4. Notify cleaners in DM
+    done_dm_msg = (
+        f"🎉 **Duty Completed & Approved!**\n\n"
+        f"Your cleaning for Week {week_info.week_number} was approved with **{stars_display}**!\n"
+        f"Earned: **+{tokens_earned} Tsidat tokens**.\n\n"
+        f"You are completely done for the week. Enjoy your weekend! 🌟"
+    )
+    await _notify_cleaner(context, c1_id, c1_name, done_dm_msg, dorm_id=dorm_id, topic_id=topic_id)
+    if c2_id:
+        await _notify_cleaner(context, c2_id, c2_name, done_dm_msg, dorm_id=dorm_id, topic_id=topic_id)
+    if c3_id:
+        await _notify_cleaner(context, c3_id, c3_name, done_dm_msg, dorm_id=dorm_id, topic_id=topic_id)
+
+    # Reply to sender
+    target_chat = update.effective_chat
+    if target_chat and target_chat.id != dorm_id:
+        await msg.reply_text(f"✅ Cleaning approved! Awarded +{tokens_earned} Tsidat tokens to {c_disp}.")
+    else:
+        await msg.reply_text(f"✅ Cleaning approved for {c_disp}!")
+
 def register_approval_handlers(application: Application) -> None:
     """Attach approver decision handlers."""
+    application.add_handler(CommandHandler("approve", approve_command))
+    application.add_handler(CommandHandler("approve_clean", approve_command))
     application.add_handler(CallbackQueryHandler(approve_photo_callback, pattern=r"^approve_"))
     application.add_handler(CallbackQueryHandler(rate_photo_callback, pattern=r"^rate_\d+_"))
     application.add_handler(CallbackQueryHandler(reject_photo_callback, pattern=r"^reject_"))
