@@ -316,6 +316,8 @@ async def send_dorm_announcement(
 
     if week_record.get("announced") == 1:
         return False, f"Week {week_info.week_number} has already been announced."
+    if week_record.get("final_status") == "completed" or week_record.get("photo_status") == "approved":
+        return False, f"Week {week_info.week_number} duty is already completed and approved."
     if not await db.claim_week_announcement(week_info.week_start, dorm_id=dorm_id):
         return False, f"Week {week_info.week_number} announcement is already in progress or complete."
 
@@ -386,7 +388,7 @@ async def send_dorm_announcement(
     # 3. Private DM to Approver
     approver_dm_text = (
         f"You are this week's approver.\n"
-        f"Cleaners: **{c1_name}** & **{c2_name}**.\n\n"
+        f"Cleaners: **{cleaner_disp}**.\n\n"
         "Please check their photo when they send it."
     )
     await send_dm_with_fallback(
@@ -627,7 +629,8 @@ async def monitor_and_fallback_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             announce_target = datetime.combine(week_info.monday_date, announce_naive_time).replace(tzinfo=config.TIMEZONE)
 
             if now >= announce_target:
-                if not week_record or week_record.get("announced") != 1:
+                is_done = week_record and (week_record.get("final_status") == "completed" or week_record.get("photo_status") == "approved")
+                if not is_done and (not week_record or week_record.get("announced") != 1):
                     logger.info("Missed Monday announcement detected for dorm %s, week %s. Sending now...", dorm_id, week_info.week_start)
                     await send_dorm_announcement(context, dorm_id)
                     week_record = await db.get_week(week_info.week_start, dorm_id=dorm_id)
