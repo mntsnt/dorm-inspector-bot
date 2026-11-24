@@ -133,11 +133,13 @@ async def get_user_week_role(
         return False, "NOT_STARTED", ""
 
     cleaners_str = week_info.cleaner_display
+    week_record = await db.get_week(week_info.week_start, dorm_id=resolved_id)
 
     if user_id in week_info.cleaner_ids:
+        if week_record and (week_record.get("final_status") == "completed" or week_record.get("photo_status") == "approved"):
+            return False, "CLEANER_DONE", cleaners_str
         return True, "CLEANER", cleaners_str
 
-    week_record = await db.get_week(week_info.week_start, dorm_id=resolved_id)
     if week_record and week_record.get("approver_id") == user_id:
         return False, "APPROVER", cleaners_str
 
@@ -263,10 +265,17 @@ async def get_dorm_main_menu_text(
     else:
         c1 = week_info.cleaner1_name
         c2 = week_info.cleaner2_name
-        action_text = "submit cleaning" if is_cleaner else "check duty, fines, or schedule"
+        week_record = await db.get_week(week_info.week_start, dorm_id=dorm_id)
+        is_completed_duty = bool(week_record and (week_record.get("final_status") == "completed" or week_record.get("photo_status") == "approved"))
+        if is_completed_duty:
+            action_text = "check duty, fines, or schedule"
+            status_note = " (✅ Cleaned & Approved - done for the week!)"
+        else:
+            action_text = "submit cleaning" if is_cleaner else "check duty, fines, or schedule"
+            status_note = ""
         return (
             f"{dorm_prefix}Hi **{member_name}**!\n\n"
-            f"Week {week_info.week_number} cleaners: **{c1} & {c2}**{status_suffix}\n\n"
+            f"Week {week_info.week_number} cleaners: **{c1} & {c2}**{status_note}{status_suffix}\n\n"
             f"Use the buttons below to {action_text}."
         )
 
@@ -335,8 +344,11 @@ async def get_status_content(user_id: Optional[int] = None, dorm_id: Optional[in
     from scheduler import get_dorm_week_info
     week_info = get_dorm_week_info(dorm, pairs, members_by_id)
 
+    week_record = await db.get_week(week_info.week_start, dorm_id=resolved_id) if (week_info and week_info.week_number >= 1) else None
+    is_completed_duty = bool(week_record and (week_record.get("final_status") == "completed" or week_record.get("photo_status") == "approved"))
+
     is_cleaner = False
-    if user_id and week_info and week_info.week_number >= 1:
+    if user_id and week_info and week_info.week_number >= 1 and not is_completed_duty:
         is_cleaner = user_id in week_info.cleaner_ids
 
     if is_cleaner:
@@ -377,7 +389,8 @@ async def get_status_content(user_id: Optional[int] = None, dorm_id: Optional[in
         )
         return msg, keyboard
 
-    week_record = await db.get_week(week_info.week_start, dorm_id=resolved_id)
+    if not week_record:
+        week_record = await db.get_week(week_info.week_start, dorm_id=resolved_id)
     c1_name = week_info.cleaner1_name
     c2_name = week_info.cleaner2_name
 
@@ -399,7 +412,7 @@ async def get_status_content(user_id: Optional[int] = None, dorm_id: Optional[in
         rating_suffix = f" (⭐⭐⭐⭐⭐ 5/5 Stars)" if rating == 5 else (f" ({rating}★ Stars)" if rating else "")
 
         if final_status == "completed":
-            duty_state = f"Cleaned and approved{rating_suffix}. No fines."
+            duty_state = f"Cleaned and approved{rating_suffix}. Done for the week! No fines."
         elif final_status == "fined":
             duty_state = f"Not cleaned. Fined {fine_amount} ETB total."
         elif photo_status == "approved":

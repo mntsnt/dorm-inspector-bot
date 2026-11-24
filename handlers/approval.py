@@ -293,8 +293,13 @@ async def rate_photo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     c1 = await db.get_dorm_member(dorm_id, c1_id)
     c2 = await db.get_dorm_member(dorm_id, c2_id)
+    c3_id = week_record.get("cleaner3_id", 0)
+    c3 = await db.get_dorm_member(dorm_id, c3_id) if c3_id else None
     c1_name = c1["name"] if c1 else f"ID {c1_id}"
-    c2_name = c2["name"] if c2 else f"ID {c2_id}"
+    c2_name = c2["name"] if c2 else (f"ID {c2_id}" if c2_id else "")
+    c3_name = c3["name"] if c3 else (f"ID {c3_id}" if c3_id else "")
+    cleaner_names = [n for n in (c1_name, c2_name, c3_name) if n]
+    c_disp = " & ".join(cleaner_names)
 
     # 3. Update approver's message in DM
     confirmation_text = (
@@ -304,16 +309,26 @@ async def rate_photo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
     await _safe_edit_message(query, confirmation_text)
 
-    # 4. Post in dorm group chat (with approved meme)
+    # 4. Post photo and well-done celebration in dorm group chat
     group_msg = (
-        f"⭐ **Room Inspection Review**\n\n"
-        f"Approver: **{approver_name}**\n"
-        f"Rating: {stars_display} — _{review_comment}_\n"
-        f"Cleaners **{c1_name}** & **{c2_name}** completed duty (+{tokens_earned} Tsidat tokens)."
+        f"🎉 **Well Done! Cleaning Approved**\n\n"
+        f"⭐ **Approver:** {approver_name}\n"
+        f"⭐ **Rating:** {stars_display} — _{review_comment}_\n"
+        f"👏 **Cleaners:** {c_disp} — duty completed for the week!\n"
+        f"🪙 **Reward:** +{tokens_earned} Tsidat tokens awarded to each cleaner."
     )
+    photo_file_id = week_record.get("photo_file_id")
     approved_meme = config.get_meme_file("approved")
     try:
-        if approved_meme:
+        if photo_file_id:
+            await context.bot.send_photo(
+                chat_id=dorm_id,
+                message_thread_id=topic_id,
+                photo=photo_file_id,
+                caption=group_msg,
+                parse_mode=ParseMode.MARKDOWN
+            )
+        elif approved_meme:
             with open(approved_meme, "rb") as photo:
                 await context.bot.send_photo(
                     chat_id=dorm_id,
@@ -330,17 +345,19 @@ async def rate_photo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
                 parse_mode=ParseMode.MARKDOWN
             )
     except Exception as e:
-        logger.error("Failed to send 5-star review to group: %s", e)
+        logger.error("Failed to send approved cleaning photo to group: %s", e)
 
-    # 5. Notify cleaners in private DM
+    # 5. Notify cleaners in private DM (confirming they are done for the week)
     dm_text = (
-        f"⭐ **Inspection Passed**\n\n"
+        f"🎉 **Well Done! Inspection Approved**\n\n"
         f"Approver: **{approver_name}**\n"
         f"Rating: {stars_display} — _{review_comment}_\n"
-        f"Earned: **+{tokens_earned} Tsidat tokens**."
+        f"Earned: **+{tokens_earned} Tsidat tokens**.\n\n"
+        f"✅ You have completed your cleaning duty and are done for the week!"
     )
-    await _notify_cleaner(context, c1_id, c1_name, dm_text, photo_path=approved_meme, dorm_id=dorm_id, topic_id=topic_id)
-    await _notify_cleaner(context, c2_id, c2_name, dm_text, photo_path=approved_meme, dorm_id=dorm_id, topic_id=topic_id)
+    for cid, cname in [(c1_id, c1_name), (c2_id, c2_name), (c3_id, c3_name)]:
+        if cid:
+            await _notify_cleaner(context, cid, cname, dm_text, photo_path=approved_meme, dorm_id=dorm_id, topic_id=topic_id)
 
 async def reject_photo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Approver rejects the cleaning photo."""
@@ -494,22 +511,36 @@ async def confirm_cleaned_callback(update: Update, context: ContextTypes.DEFAULT
 
     c1 = await db.get_dorm_member(dorm_id, c1_id)
     c2 = await db.get_dorm_member(dorm_id, c2_id)
+    c3_id = week_record.get("cleaner3_id", 0)
+    c3 = await db.get_dorm_member(dorm_id, c3_id) if c3_id else None
     c1_name = c1["name"] if c1 else f"ID {c1_id}"
-    c2_name = c2["name"] if c2 else f"ID {c2_id}"
+    c2_name = c2["name"] if c2 else (f"ID {c2_id}" if c2_id else "")
+    c3_name = c3["name"] if c3 else (f"ID {c3_id}" if c3_id else "")
+    cleaner_names = [n for n in (c1_name, c2_name, c3_name) if n]
+    c_disp = " & ".join(cleaner_names)
 
     # Edit approver message
     await _safe_edit_message(query, "You confirmed the dorm was cleaned. Both cleaners earned +25 Tsidat tokens! 🪙")
 
-    # Post in group chat (with approved meme)
+    # Post photo and confirmation in group chat
     group_msg = (
-        f"🌟 **Friday Check Confirmed!**\n\n"
-        f"**{approver_name}** verified that **{c1_name}** & **{c2_name}** cleaned the dorm.\n"
+        f"🎉 **Well Done! Friday Check Approved**\n\n"
+        f"**{approver_name}** verified that **{c_disp}** cleaned the dorm.\n"
         f"⭐ Rating: ⭐⭐⭐⭐⭐ (5/5 Stars)\n"
-        f"🎉 Reward: **+25 Tsidat Tokens** awarded to each cleaner! 🪙 No fines."
+        f"🎉 Reward: **+25 Tsidat Tokens** awarded to each cleaner! 🪙 No fines. Duty done for the week!"
     )
+    photo_file_id = week_record.get("photo_file_id")
     approved_meme = config.get_meme_file("approved")
     try:
-        if approved_meme:
+        if photo_file_id:
+            await context.bot.send_photo(
+                chat_id=dorm_id,
+                message_thread_id=topic_id,
+                photo=photo_file_id,
+                caption=group_msg,
+                parse_mode=ParseMode.MARKDOWN
+            )
+        elif approved_meme:
             with open(approved_meme, "rb") as photo:
                 await context.bot.send_photo(
                     chat_id=dorm_id,
@@ -529,9 +560,14 @@ async def confirm_cleaned_callback(update: Update, context: ContextTypes.DEFAULT
         logger.error("Failed to send confirm cleaned to group: %s", e)
 
     # Notify cleaners
-    dm_text = f"**{approver_name}** confirmed you cleaned the dorm. No fines!"
-    await _notify_cleaner(context, week_record["cleaner1_id"], c1_name, dm_text, photo_path=approved_meme, dorm_id=dorm_id, topic_id=topic_id)
-    await _notify_cleaner(context, week_record["cleaner2_id"], c2_name, dm_text, photo_path=approved_meme, dorm_id=dorm_id, topic_id=topic_id)
+    dm_text = (
+        f"🎉 **Well Done! Cleaning Confirmed**\n\n"
+        f"**{approver_name}** confirmed you cleaned the dorm. No fines!\n"
+        f"✅ You have completed your cleaning duty and are done for the week."
+    )
+    for cid, cname in [(c1_id, c1_name), (c2_id, c2_name), (c3_id, c3_name)]:
+        if cid:
+            await _notify_cleaner(context, cid, cname, dm_text, photo_path=approved_meme, dorm_id=dorm_id, topic_id=topic_id)
 
 async def confirm_not_cleaned_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Approver confirms the final result: Not Cleaned (Fines recorded)."""

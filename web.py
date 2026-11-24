@@ -322,7 +322,11 @@ async def get_dorm_detail(dorm_identifier: str) -> Dict[str, Any]:
             "approver": approver_name,
             "duty_state": duty_state,
             "status_code": status_code,
-            "photo_status": week_record.get("photo_status", "none") if week_record else "none"
+            "photo_status": week_record.get("photo_status", "none") if week_record else "none",
+            "final_status": week_record.get("final_status", "pending") if week_record else "pending",
+            "done_reported": bool(week_record.get("done_reported", 0)) if week_record else False,
+            "rating": week_record.get("rating") if week_record else None,
+            "review_text": week_record.get("review_text") if week_record else None
         },
         "schedule": schedule_preview,
         "leaderboard": leaderboard,
@@ -705,6 +709,15 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <span id="selected-dorm-fine" class="font-bold text-white">100 ETB (50/50)</span>
           </div>
         </div>
+
+        <!-- Inspection Review Banner (Dynamically shown when cleaning reported, submitted, or approved) -->
+        <div id="cleaning-review-banner" class="hidden panel-subtle rounded-lg p-2 text-[10px] font-mono border border-white/20 mt-2">
+          <div class="flex items-center justify-between">
+            <span id="cleaning-review-stars" class="font-bold text-white">⭐⭐⭐⭐⭐</span>
+            <span id="cleaning-review-badge" class="px-1.5 py-0.2 rounded bg-white text-black font-bold text-[9px]">APPROVED ✓</span>
+          </div>
+          <p id="cleaning-review-comment" class="text-white/70 italic text-[10px] mt-1">Inspection passed cleanly!</p>
+        </div>
       </div>
     </div>
 
@@ -1018,18 +1031,44 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       document.getElementById('selected-dorm-fine').innerText = `${fineTotal} ETB (${fineEach} each)`;
       document.getElementById('selected-dorm-approver').innerText = (curWeek && curWeek.approver) ? curWeek.approver : 'Not assigned';
 
+      const isCompleted = curWeek.status_code === 'completed' || curWeek.final_status === 'completed';
+      const isSubmitted = curWeek.status_code === 'submitted' || curWeek.photo_status === 'submitted';
+      const isDoneReported = curWeek.status_code === 'done_reported' || curWeek.done_reported;
+
       // Week header & badge
       document.getElementById('selected-dorm-week-header').innerText = `Week ${curWeek.week_number || 1} Duty • ${curWeek.duty_state || 'In Progress'}`;
 
       const badge = document.getElementById('selected-dorm-status-badge');
       if (badge) {
-        badge.innerText = (curWeek.duty_state || 'IN PROGRESS').toUpperCase();
-        badge.className = 'px-2.5 py-0.5 rounded border border-white text-[10px] font-mono uppercase font-bold text-white';
+        if (isCompleted) {
+          const stars = curWeek.rating ? ` (${curWeek.rating}★)` : '';
+          badge.innerText = `APPROVED${stars} ✓`;
+          badge.className = 'px-2.5 py-0.5 rounded border border-white bg-white text-black text-[10px] font-mono uppercase font-bold';
+        } else if (isSubmitted) {
+          badge.innerText = 'REVIEW PENDING ⏳';
+          badge.className = 'px-2.5 py-0.5 rounded border border-white/60 text-[10px] font-mono uppercase font-bold text-white';
+        } else if (isDoneReported) {
+          badge.innerText = 'CLEANED (AWAITING PHOTO)';
+          badge.className = 'px-2.5 py-0.5 rounded border border-white/40 text-[10px] font-mono uppercase font-bold text-white/80';
+        } else {
+          badge.innerText = (curWeek.duty_state || 'IN PROGRESS').toUpperCase();
+          badge.className = 'px-2.5 py-0.5 rounded border border-white text-[10px] font-mono uppercase font-bold text-white';
+        }
       }
 
       // Card Status & Expiry
       const cardStatus = document.getElementById('card-status-display');
-      if (cardStatus) cardStatus.innerText = (curWeek.duty_state || 'ON DUTY').toUpperCase();
+      if (cardStatus) {
+        if (isCompleted) {
+          cardStatus.innerText = 'CLEANED & APPROVED ✓';
+        } else if (isSubmitted) {
+          cardStatus.innerText = 'REVIEW PENDING';
+        } else if (isDoneReported) {
+          cardStatus.innerText = 'PHOTO AWAITED';
+        } else {
+          cardStatus.innerText = (curWeek.duty_state || 'ON DUTY').toUpperCase();
+        }
+      }
 
       // Cleaners (1, 2, or 3 cleaners)
       const cleaners = (curWeek.cleaners && curWeek.cleaners.length > 0)
@@ -1046,6 +1085,19 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         if (cleaners.length === 0) {
           cleanersEl.innerHTML = `<div class="panel-subtle rounded-lg p-2 text-center text-white/50 text-[10px] font-mono">No cleaners assigned yet</div>`;
         } else {
+          let cleanerTag = 'ON DUTY';
+          let tagClass = 'text-white/80 font-mono font-semibold';
+          if (isCompleted) {
+            cleanerTag = 'CLEANED ✓';
+            tagClass = 'text-white font-mono font-bold bg-white/10 px-1.5 py-0.5 rounded border border-white/40';
+          } else if (isSubmitted) {
+            cleanerTag = 'PHOTO SENT ⏳';
+            tagClass = 'text-white/70 font-mono font-medium';
+          } else if (isDoneReported) {
+            cleanerTag = 'DONE REPORTED';
+            tagClass = 'text-white/70 font-mono font-medium';
+          }
+
           cleanersEl.innerHTML = cleaners.map((cName, idx) => `
             <div class="panel-subtle rounded-lg p-2 flex items-center justify-between">
               <div class="flex items-center gap-2">
@@ -1055,20 +1107,63 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                   <p class="font-bold text-white text-xs">${cName || 'TBD'}</p>
                 </div>
               </div>
-              <span class="text-[10px] text-white/80 font-mono font-semibold">ON DUTY</span>
+              <span class="text-[10px] ${tagClass}">${cleanerTag}</span>
             </div>
           `).join('');
         }
       }
 
+      // Review banner
+      const reviewBanner = document.getElementById('cleaning-review-banner');
+      const reviewStars = document.getElementById('cleaning-review-stars');
+      const reviewBadge = document.getElementById('cleaning-review-badge');
+      const reviewComment = document.getElementById('cleaning-review-comment');
+      if (reviewBanner) {
+        if (isCompleted) {
+          const starsCount = curWeek.rating || 5;
+          const starsStr = '⭐'.repeat(starsCount) + ` (${starsCount}/5 Stars)`;
+          if (reviewStars) reviewStars.innerText = starsStr;
+          if (reviewBadge) {
+            reviewBadge.innerText = 'APPROVED ✓';
+            reviewBadge.className = 'px-1.5 py-0.5 rounded bg-white text-black font-bold text-[9px]';
+          }
+          if (reviewComment) {
+            reviewComment.innerText = curWeek.review_text ? `"${curWeek.review_text}"` : 'Inspection passed cleanly!';
+          }
+          reviewBanner.classList.remove('hidden');
+        } else if (isSubmitted) {
+          if (reviewStars) reviewStars.innerText = '📸 PHOTO SUBMITTED';
+          if (reviewBadge) {
+            reviewBadge.innerText = 'PENDING REVIEW ⏳';
+            reviewBadge.className = 'px-1.5 py-0.5 rounded border border-white/40 text-white font-mono text-[9px]';
+          }
+          if (reviewComment) {
+            reviewComment.innerText = `Cleaners submitted photo proof. Waiting for ${curWeek.approver || 'approver'} to review.`;
+          }
+          reviewBanner.classList.remove('hidden');
+        } else if (isDoneReported) {
+          if (reviewStars) reviewStars.innerText = '🧹 CLEANING REPORTED';
+          if (reviewBadge) {
+            reviewBadge.innerText = 'PHOTO AWAITED 📷';
+            reviewBadge.className = 'px-1.5 py-0.5 rounded border border-white/40 text-white font-mono text-[9px]';
+          }
+          if (reviewComment) {
+            reviewComment.innerText = 'Cleaners marked cleaning done. Uploading proof photo.';
+          }
+          reviewBanner.classList.remove('hidden');
+        } else {
+          reviewBanner.classList.add('hidden');
+        }
+      }
+
       // Render schedule, leaderboard, fines, history
-      renderSchedule(data.schedule);
+      renderSchedule(data.schedule, isCompleted);
       renderLeaderboard(data.leaderboard);
       renderFines(data.fines);
       renderHistory(data.history);
     }
 
-    function renderSchedule(schedule) {
+    function renderSchedule(schedule, isCompleted) {
       const el = document.getElementById('schedule-table');
       if (!schedule || schedule.length === 0) {
         el.innerHTML = `<p class="text-white/40 text-center py-4 text-[10px] font-mono">No upcoming rotation scheduled.</p>`;
@@ -1078,7 +1173,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       el.innerHTML = schedule.map(w => {
         const isCur = w.is_current;
         const border = isCur ? 'border-white bg-white/10 font-bold' : 'panel-subtle';
-        const tag = isCur ? '<span class="text-[9px] font-mono font-bold px-1.5 py-0.2 rounded bg-white text-black">CURRENT</span>' : '';
+        let tag = '';
+        if (isCur) {
+          if (isCompleted) {
+            tag = '<span class="text-[9px] font-mono font-bold px-1.5 py-0.2 rounded bg-white text-black">CLEANED ✓</span>';
+          } else {
+            tag = '<span class="text-[9px] font-mono font-bold px-1.5 py-0.2 rounded bg-white text-black">CURRENT</span>';
+          }
+        }
         const namesDisp = w.cleaners_display || [w.cleaner1, w.cleaner2, w.cleaner3].filter(Boolean).join(' & ');
 
         return `

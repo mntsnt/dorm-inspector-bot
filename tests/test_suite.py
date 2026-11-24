@@ -2111,5 +2111,81 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         self.assertIn("already set up and active", setup_text)
         setup_context.bot.send_message.assert_not_called()
 
+    async def test_approval_sends_photo_and_well_done_to_group_and_stops_cleaner_prompts(self):
+        """Verify that photo approval sends the cleaning photo & well done to group and stops cleaner prompts."""
+        from handlers import approval, commands
+        from services import ai_service
+        from unittest.mock import AsyncMock, MagicMock
+
+        await db.init_db()
+        await db.seed_default_dorm()
+
+        dorm_id = getattr(config, "DEFAULT_GROUP_ID", -1002378440774)
+        pairs = await db.get_dorm_pairs(dorm_id)
+        members = await db.get_dorm_members(dorm_id)
+        m_map = {m["user_id"]: m["name"] for m in members}
+
+        from scheduler import get_dorm_week_info
+        d = await db.get_dorm(dorm_id)
+        week_info = get_dorm_week_info(d, pairs, m_map)
+
+        # 1. Create week and submit photo
+        week_rec = await db.get_or_create_week(
+            week_start=week_info.week_start,
+            week_number=week_info.week_number,
+            cleaner1_id=week_info.cleaner1_id,
+            cleaner2_id=week_info.cleaner2_id,
+            eligible_approver_ids=[m["user_id"] for m in members if m["user_id"] not in week_info.cleaner_ids],
+            dorm_id=dorm_id
+        )
+        test_file_id = "test_photo_clean_room_98765"
+        await db.submit_photo(week_info.week_start, test_file_id, week_info.cleaner1_id, dorm_id=dorm_id)
+
+        # 2. Approver submits 5-star rating via rate_photo_callback
+        update = MagicMock()
+        update.callback_query.data = f"rate_5_{dorm_id}_{week_info.week_start}"
+        update.callback_query.from_user.id = week_rec["approver_id"]
+        update.callback_query.message.photo = None
+        update.callback_query.message.text = "Rating prompt"
+        update.callback_query.answer = AsyncMock()
+        update.callback_query.edit_message_text = AsyncMock()
+
+        context = MagicMock()
+        context.bot.send_photo = AsyncMock()
+        context.bot.send_message = AsyncMock()
+
+        await approval.rate_photo_callback(update, context)
+
+        # 3. Verify photo was sent to the group chat with well-done text
+        send_photo_calls = context.bot.send_photo.call_args_list
+        # At least one send_photo call must be to group with the cleaners' photo_file_id
+        group_photo_call = next((c for c in send_photo_calls if c.kwargs.get("chat_id") == dorm_id), None)
+        self.assertIsNotNone(group_photo_call, "Cleaning photo was not sent to dorm group")
+        self.assertEqual(group_photo_call.kwargs.get("photo"), test_file_id)
+        caption = group_photo_call.kwargs.get("caption", "")
+        self.assertIn("Well Done! Cleaning Approved", caption)
+        self.assertIn("duty completed for the week", caption)
+
+        # 4. Verify cleaner week role: no longer cleaner (now CLEANER_DONE, is_cleaner=False)
+        is_cleaner, role_name, _ = await commands.get_user_week_role(week_info.cleaner1_id, dorm_id=dorm_id)
+        self.assertFalse(is_cleaner, "Cleaner should not have active cleaner flag once approved")
+        self.assertEqual(role_name, "CLEANER_DONE")
+
+        # 5. Verify /status content says done for the week and does not show 'Submit Cleaning' button
+        status_text, status_kb = await commands.get_status_content(user_id=week_info.cleaner1_id, dorm_id=dorm_id)
+        self.assertIn("Done for the week!", status_text)
+        all_btn_texts = [btn.text for row in status_kb.inline_keyboard for btn in row]
+        self.assertNotIn("Submit Cleaning", all_btn_texts)
+
+        # 6. Verify AI service does not prompt cleaner to clean
+        ai_reply = ai_service.fallback_inspector_reply(
+            "Am I on duty?",
+            dorm_context=f"Current Duty: Cleaners: Bilisuma & Nahom | Approver: Mintesnot | Status: Completed & Approved (5★ Stars)\nRole: CLEANER (DUTY COMPLETED & APPROVED)",
+            user_name="Bilisuma"
+        )
+        self.assertIn("already completed your cleaning duty", ai_reply)
+        self.assertIn("done for the week", ai_reply)
+        self.assertNotIn("Submit photo proof before Friday", ai_reply)
+
 if __name__ == "__main__":
     unittest.main()

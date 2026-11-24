@@ -255,9 +255,9 @@ async def handle_cleaner_done(
         )
         return
 
-    # Check if already completed
-    if week_record.get("final_status") == "completed":
-        await msg.reply_text("Cleaning for this week is already done!")
+    # Check if already completed or approved
+    if week_record.get("final_status") == "completed" or week_record.get("photo_status") == "approved":
+        await msg.reply_text("✅ Cleaning for this week is already completed and approved! You are done for the week.")
         return
 
     await db.mark_done_reported(target_week_start, dorm_id=dorm_id)
@@ -345,8 +345,8 @@ async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return
 
-    if week_record.get("final_status") == "completed":
-        await update.message.reply_text("Cleaning for this week is already done!")
+    if week_record.get("final_status") == "completed" or week_record.get("photo_status") == "approved":
+        await update.message.reply_text("✅ Cleaning for this week is already completed and approved! You are done for the week.")
         return
 
     # Get the highest resolution photo

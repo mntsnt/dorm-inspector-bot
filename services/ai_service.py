@@ -219,29 +219,57 @@ async def build_dorm_context(dorm_id: int, user_id: Optional[int] = None) -> str
         if week_info and week_info.week_number >= 1:
             cleaner_ids = week_info.cleaner_ids
             app_id = record.get("approver_id") if record else None
+            is_approved_or_completed = bool(
+                record and (
+                    record.get("final_status") == "completed"
+                    or record.get("photo_status") == "approved"
+                )
+            )
 
             if user_id in cleaner_ids:
                 other_cleaners = [name for uid, name in zip(cleaner_ids, week_info.cleaner_names) if uid != user_id]
                 partner_str = ", ".join(other_cleaners) if other_cleaners else "solo"
-                user_context = (
-                    f"\n=== SPEAKING USER CONTEXT ===\n"
-                    f"User: {user_display} (ID: {user_id})\n"
-                    f"Role: CLEANER ON DUTY\n"
-                    f"Partner: {partner_str}\n"
-                    f"Duty Status: YOU ARE ON CLEANING DUTY THIS WEEK with {partner_str}. Deadline is Friday 8:00 PM. Photo proof required.\n"
-                    f"Admin Status: {'Yes (Dorm Admin)' if is_admin else 'No'}\n"
-                    f"Guideline: If user asks about their cleaning duty or schedule, answer accurately. "
-                    f"If user asks general questions or wants to chat (cooking, study, tech, jokes, campus life), answer helpfully with a wide perspective as a friendly dorm mate.{behavior_notes}"
-                )
+                if is_approved_or_completed:
+                    app_name = members_by_id.get(app_id, "the approver") if app_id else "the approver"
+                    user_context = (
+                        f"\n=== SPEAKING USER CONTEXT ===\n"
+                        f"User: {user_display} (ID: {user_id})\n"
+                        f"Role: CLEANER (DUTY COMPLETED & APPROVED)\n"
+                        f"Partner: {partner_str}\n"
+                        f"Duty Status: COMPLETED & APPROVED! User already cleaned the dorm this week, submitted photo proof, and was APPROVED by {app_name}. They are DONE for the week! No cleaning, reminders, or proof required.\n"
+                        f"Admin Status: {'Yes (Dorm Admin)' if is_admin else 'No'}\n"
+                        f"Guideline: Never tell this user their duty is on or that they need to clean. Confirm they have successfully completed their duty and are done for the week.{behavior_notes}"
+                    )
+                else:
+                    user_context = (
+                        f"\n=== SPEAKING USER CONTEXT ===\n"
+                        f"User: {user_display} (ID: {user_id})\n"
+                        f"Role: CLEANER ON DUTY\n"
+                        f"Partner: {partner_str}\n"
+                        f"Duty Status: YOU ARE ON CLEANING DUTY THIS WEEK with {partner_str}. Deadline is Friday 8:00 PM. Photo proof required.\n"
+                        f"Admin Status: {'Yes (Dorm Admin)' if is_admin else 'No'}\n"
+                        f"Guideline: If user asks about their cleaning duty or schedule, answer accurately. "
+                        f"If user asks general questions or wants to chat (cooking, study, tech, jokes, campus life), answer helpfully with a wide perspective as a friendly dorm mate.{behavior_notes}"
+                    )
             elif app_id and user_id == app_id:
-                user_context = (
-                    f"\n=== SPEAKING USER CONTEXT ===\n"
-                    f"User: {user_display} (ID: {user_id})\n"
-                    f"Role: APPROVER (INSPECTOR)\n"
-                    f"Duty Status: YOU DO NOT CLEAN THE ROOM! You are the designated approver. Your job is to inspect and rate {week_info.cleaner_display}'s cleaning on Friday.\n"
-                    f"Admin Status: {'Yes (Dorm Admin)' if is_admin else 'No'}\n"
-                    f"Guideline: Never tell this user to clean. If they ask general questions, chat warmly with a wide perspective as a friendly mentor.{behavior_notes}"
-                )
+                if is_approved_or_completed:
+                    user_context = (
+                        f"\n=== SPEAKING USER CONTEXT ===\n"
+                        f"User: {user_display} (ID: {user_id})\n"
+                        f"Role: APPROVER (INSPECTOR)\n"
+                        f"Duty Status: YOU ALREADY INSPECTED AND APPROVED THIS WEEK'S CLEANING! Inspection is complete for the week.\n"
+                        f"Admin Status: {'Yes (Dorm Admin)' if is_admin else 'No'}\n"
+                        f"Guideline: Never tell this user to clean. If they ask general questions, chat warmly with a wide perspective as a friendly mentor.{behavior_notes}"
+                    )
+                else:
+                    user_context = (
+                        f"\n=== SPEAKING USER CONTEXT ===\n"
+                        f"User: {user_display} (ID: {user_id})\n"
+                        f"Role: APPROVER (INSPECTOR)\n"
+                        f"Duty Status: YOU DO NOT CLEAN THE ROOM! You are the designated approver. Your job is to inspect and rate {week_info.cleaner_display}'s cleaning on Friday.\n"
+                        f"Admin Status: {'Yes (Dorm Admin)' if is_admin else 'No'}\n"
+                        f"Guideline: Never tell this user to clean. If they ask general questions, chat warmly with a wide perspective as a friendly mentor.{behavior_notes}"
+                    )
             elif user_id in members_by_id or config.is_member(user_id):
                 user_context = (
                     f"\n=== SPEAKING USER CONTEXT ===\n"
@@ -482,16 +510,22 @@ def fallback_inspector_reply(
             if c_tags:
                 return f"{' '.join(c_tags)} Look at the chat! Check your cleaning duty and deadline right now."
 
+    is_duty_done = "completed" in current_duty.lower() or "approved" in current_duty.lower() or "COMPLETED" in user_role
+
     # 1. Question about user's own cleaning duty ("am i cleaning", "is it my turn", "do i have duty", etc.)
     if any(q in p_lower for q in (
         "am i cleaning", "is it my turn", "do i have duty", "my duty", "am i on duty",
         "do i clean", "am i supposed to clean", "is it me", "should i clean", "am i free"
     )):
         name_str = f" {user_name}" if user_name and user_name != "Roommate" else ""
-        if user_role == "CLEANER ON DUTY":
+        if user_role.startswith("CLEANER") and is_duty_done:
+            return f"You have already completed your cleaning duty this week{name_str}, and it was approved! You are done for the week. Great job!"
+        elif user_role == "CLEANER ON DUTY":
             p_text = f" with {partner}" if partner else ""
             return f"Yes{name_str}, you are on cleaning duty{p_text} this week. Submit photo proof before Friday 8:00 PM."
         elif user_role == "APPROVER (INSPECTOR)":
+            if is_duty_done:
+                return f"You are the approver this week{name_str}. You have already inspected and approved this week's cleaning."
             return f"No{name_str}, you are the approver this week, not a cleaner. Your job is to inspect and rate."
         elif user_role == "OFF-DUTY ROOMMATE":
             return f"No{name_str}, you are off duty this week. {cleaners_display} are cleaning."
@@ -522,14 +556,22 @@ def fallback_inspector_reply(
                 f"• *Penalty:* Miss the deadline, and you split a 100 ETB fine.\n\n"
                 f"Stay disciplined and keep the floors spotless."
             )
-        if user_role == "CLEANER ON DUTY":
+        if user_role.startswith("CLEANER") and is_duty_done:
+            return f"This week's cleaning duty has already been completed by {cleaners_display} and approved! You are done for the week."
+        elif user_role == "CLEANER ON DUTY":
             p_text = f"with {partner} " if partner else ""
             return f"You are cleaning {p_text}this week. Submit proof before Friday 8:00 PM."
         elif user_role == "APPROVER (INSPECTOR)":
+            if is_duty_done:
+                return f"This week's cleaning has already been completed by {cleaners_display.replace('&', 'and')} and you approved it!"
             return f"{cleaners_display.replace('&', 'and')} are cleaning this week. You are the approver inspecting their work."
         elif user_role == "OFF-DUTY ROOMMATE":
+            if is_duty_done:
+                return f"This week's cleaning has already been completed by {cleaners_display.replace('&', 'and')} and approved. You are off duty."
             return f"{cleaners_display.replace('&', 'and')} are cleaning this week. You are off duty."
         if current_duty:
+            if is_duty_done:
+                return f"{cleaners_display} completed cleaning for this week (Approved)."
             return f"{cleaners_display} are cleaning this week. Deadline is Friday 8:00 PM."
         return f"{cleaners_display} are cleaning this week. Deadline is Friday 8:00 PM."
 
@@ -592,10 +634,14 @@ def fallback_inspector_reply(
                 "how", "what", "why", "where", "can", "tell", "joke", "food", "cook", "study", "exam", "explain", "help"
             )) and any(p_lower.strip().startswith(g) for g in ("hello", "hi", "hey"))
         ):
-            if user_role == "CLEANER ON DUTY":
+            if user_role.startswith("CLEANER") and is_duty_done:
+                return f"You completed and passed this week's cleaning duty! Well done {user_name}."
+            elif user_role == "CLEANER ON DUTY":
                 p_text = f" with {partner}" if partner else ""
                 return f"You are on duty{p_text} this week. Make sure proof is submitted before Friday 8:00 PM."
             elif user_role == "APPROVER (INSPECTOR)":
+                if is_duty_done:
+                    return "You have already approved this week's cleaning! Inspection is all done."
                 return "You are the approver this week. Submit your rating once the cleaners upload photos."
             elif user_role == "OFF-DUTY ROOMMATE":
                 return f"You are off duty this week. Enjoy your week while {c1} and {c2} handle cleaning."

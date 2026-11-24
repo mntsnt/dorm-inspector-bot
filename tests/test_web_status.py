@@ -186,6 +186,46 @@ class TestWebStatusDashboard(unittest.IsolatedAsyncioTestCase):
         self.assertIn("saved_dorm_code", resp.text)
         self.assertNotIn("if (!p.get('code') && !p.get('dorm'))", resp.text)
 
+    async def test_dashboard_reflects_cleaning_approval_status(self):
+        """Verify dashboard API and HTML reflect completed cleaning status and review."""
+        dorm_id = config.DEFAULT_GROUP_ID
+        active_dorms = await db.get_all_active_dorms()
+        d = active_dorms[0]
+        pairs = await db.get_dorm_pairs(dorm_id)
+        members = await db.get_dorm_members(dorm_id)
+        m_map = {m["user_id"]: m["name"] for m in members}
+
+        from scheduler import get_dorm_week_info
+        week_info = get_dorm_week_info(d, pairs, m_map)
+
+        # Mark week photo submitted and approved
+        await db.submit_photo(week_info.week_start, "photo_xyz123", week_info.cleaner1_id, dorm_id=dorm_id)
+        await db.update_photo_status(
+            week_info.week_start,
+            status="approved",
+            final_status="completed",
+            dorm_id=dorm_id,
+            rating=5,
+            review_text="Sparkling clean! 5-star hotel standard."
+        )
+
+        res = await self.client.get("/api/dorms/default")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        cur = data["current_week"]
+        self.assertEqual(cur["status_code"], "completed")
+        self.assertEqual(cur["final_status"], "completed")
+        self.assertEqual(cur["rating"], 5)
+        self.assertEqual(cur["review_text"], "Sparkling clean! 5-star hotel standard.")
+        self.assertIn("Cleaned & Approved (5★ Stars)", cur["duty_state"])
+
+        # Verify HTML contains review banner and dynamic cleaner status logic
+        html_resp = await self.client.get("/")
+        self.assertEqual(html_resp.status_code, 200)
+        self.assertIn("cleaning-review-banner", html_resp.text)
+        self.assertIn("cleaning-review-stars", html_resp.text)
+        self.assertIn("CLEANED ✓", html_resp.text)
+
     async def test_dorm_detail_not_found(self):
         """GET /api/dorms/{invalid_id} returns 404."""
         response = await self.client.get("/api/dorms/-999999999999")
