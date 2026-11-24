@@ -237,7 +237,7 @@ async def build_dorm_context(dorm_id: int, user_id: Optional[int] = None) -> str
     )
 
 def sanitize_ai_response(text: str) -> str:
-    """Ensure response looks strictly human: strip all emojis, repeated symbols, and markdown noise."""
+    """Ensure response looks strictly human: strip all emojis, and format markdown cleanly for Telegram rendering."""
     if not text:
         return ""
 
@@ -255,24 +255,31 @@ def sanitize_ai_response(text: str) -> str:
     )
     cleaned = emoji_pattern.sub("", text)
 
-    # Remove markdown bold/italic/code clutter and symbols to look natural and human
-    cleaned = cleaned.replace("**", "").replace("__", "").replace("`", "")
-    cleaned = cleaned.replace("~", "").replace("#", "")
+    # Format markdown headers (e.g. '### Step 1' -> '*Step 1*')
+    cleaned = re.sub(r"^\s*#{1,6}\s+(.+)$", r"*\1*", cleaned, flags=re.MULTILINE)
 
-    # Collapse multiple punctuation symbols (e.g. "!!" -> "!", "??" -> "?", "..." -> ".")
+    # Format bullet points (* Item or - Item) into clean bullets: '• Item'
+    cleaned = re.sub(r"^\s*[-*•]\s+", "• ", cleaned, flags=re.MULTILINE)
+
+    # Collapse multiple punctuation symbols
     cleaned = re.sub(r"!{2,}", "!", cleaned)
     cleaned = re.sub(r"\?{2,}", "?", cleaned)
     cleaned = re.sub(r"\.{2,}", ".", cleaned)
     cleaned = re.sub(r"-{2,}", "-", cleaned)
     cleaned = re.sub(r"={2,}", "", cleaned)
-    cleaned = re.sub(r"\*{2,}", "", cleaned)
 
-    # Clean leading bullet symbols to keep sentences flowing naturally
-    cleaned = re.sub(r"^\s*[-*•]\s+", "", cleaned, flags=re.MULTILINE)
+    # Check if this is a long text or structured explanation
+    is_long_or_structured = ("\n" in cleaned.strip() or len(cleaned.strip()) > 90)
 
-    # Collapse extra whitespace
+    if is_long_or_structured:
+        # Convert double asterisks (**bold**) to single asterisks (*bold*) for Telegram Markdown rendering
+        cleaned = re.sub(r"\*\*([^*]+)\*\*", r"*\1*", cleaned)
+    else:
+        # For short single-line casual remarks, strip markdown bold clutter
+        cleaned = cleaned.replace("**", "").replace("__", "")
+
     cleaned = re.sub(r"[ \t]+", " ", cleaned)
-    cleaned = re.sub(r"\n\s*\n+", "\n", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
 
 SYSTEM_PROMPT = (
@@ -284,12 +291,15 @@ SYSTEM_PROMPT = (
     "3. STILL BOSSY, CONFIDENT & IN CHARGE: Keep your signature bossy Inspector attitude! You run this dorm, you command respect, and you hold roommates to high standards. Use sharp, comedic authority ('Listen up', 'Pay attention so I don't repeat myself', 'Rule number one in this dorm', 'Don't test my patience'). You mentor them like a loud, demanding, caring friend who wants them to succeed.\n"
     "4. NO REPETITIVE CANNED FORMULAS: NEVER repeat the same greetings, opening lines, or standard template phrases. Every response must feel fresh, responsive, and unique.\n"
     "5. ONLY MENTION CLEANING WHEN ASKED: You have live dorm facts below for reference. But CRITICAL: DO NOT constantly tell roommates 'you are on duty' or 'you are off duty' unless they explicitly ask about cleaning, who cleans, or the chore schedule! When chatting about other topics, focus 100% on what was asked.\n"
-    "6. HUMAN TEXT, LESS SYMBOLS: Write in clean, natural human sentences. Avoid symbol clutter: no asterisks, no hashtag headers, no markdown bullet lists, no symbol spam, and zero emoji spam. Write smooth, complete human sentences like a real person typing on Telegram.\n"
+    "6. FORMATTING FOR LONG EXPLANATIONS (STRICTLY NO EMOJIS):\n"
+    "   - ZERO EMOJIS: Never use emojis under any circumstances! Keep the text completely emoji-free.\n"
+    "   - BEAUTIFULLY FORMATTED FOR LONG TEXTS & EXPLANATIONS: When explaining a topic, breaking down steps, giving advice, sharing recipes, or answering complex questions, make full use of clean formatting: bold headers and key terms (*Step 1*, *Important*), clean bullet points (•), numbered lists (1., 2.), and paragraph breaks. Make long answers structured, easy to read, and organized like a well-structured guide.\n"
+    "   - For short 1-2 sentence banter, keep it brief and natural without unnecessary bullet points.\n"
     "7. COMPLETE EXPLANATIONS — NEVER CUT OFF SENTENCES: Walk through explanations thoroughly from start to finish. Never leave a sentence half-finished or cut off in the middle. Always end with a complete sentence and proper punctuation.\n"
     "8. FLEXIBLE RESPONSE LENGTH (MATCH THE CHAT & CONTEXT):\n"
     "   - SHORT & PUNCHY (1-2 sentences): When a roommate sends casual banter, short greetings, jokes, quick check-ins, or simple yes/no questions, keep your reply SHORT and punchy! Never write long lectures for short remarks. Example: 'I hear you, Nahom. Keep that kitchen clean and don't slack off.'\n"
     "   - MEDIUM (2-4 sentences): For normal questions, routine advice, sharing opinions, or chore status checks.\n"
-    "   - DETAILED (Longer): ONLY when a roommate explicitly asks you to explain something in-depth, break down a topic, write a recipe, or teach a concept. Never bloat simple chat with unnecessary text.\n"
+    "   - DETAILED & STRUCTURED (Longer): ONLY when a roommate explicitly asks you to explain something in-depth, break down a topic, write a recipe, or teach a concept. Format it with clean bold headings, bullet points, and steps.\n"
     "9. MENTION DORM MATES BY TELEGRAM USERNAME (@username) WHEN HELPFUL:\n"
     "   - Live dorm facts include roommates' names and their Telegram usernames (@username) when known.\n"
     "   - When assigning responsibility, calling someone out for duty, answering who cleans, nudging someone to swap, or joking with someone in the group, feel free to mention their @username naturally (e.g. '@nahom_t grab the mop', 'Ask @bilisuma about that', '@hassan_k is on inspection duty').\n"
@@ -424,7 +434,16 @@ def fallback_inspector_reply(
     # 3. Question about who is cleaning / duty / schedule / rules
     if any(k in p_lower for k in ("clean", "duty", "schedule", "turn", "who is", "who's", "roster")) and "fine" not in p_lower:
         if any(e in p_lower for e in ("explain", "how do", "how to", "what are", "rules", "system")):
-            return f"Here is the cleaning system, {user_name}: duty is announced every Monday at 8:00 AM. Cleaners have until Friday 8:00 PM to deep clean the room and submit photo proof. The designated approver inspects and rates 1-5 stars. Miss the deadline, and you get fined. Simple, disciplined, and spotless."
+            return (
+                f"*Dorm Cleaning System*\n\n"
+                f"Listen up {user_name}, here is how the dorm inspection works:\n"
+                f"• *Announcement:* Every Monday at 8:00 AM duty is assigned.\n"
+                f"• *Execution:* Cleaners deep clean the room and submit photo proof.\n"
+                f"• *Deadline:* Friday 8:00 PM sharp.\n"
+                f"• *Approver Review:* Inspects and awards 1-5 stars (up to +25 Tsidat tokens).\n"
+                f"• *Penalty:* Miss the deadline, and you split a 100 ETB fine.\n\n"
+                f"Stay disciplined and keep the floors spotless."
+            )
         if user_role == "CLEANER ON DUTY":
             p_text = f"with {partner} " if partner else ""
             return f"You are cleaning {p_text}this week. Submit proof before Friday 8:00 PM."
@@ -439,13 +458,27 @@ def fallback_inspector_reply(
     # 4. Question about fines
     if "fine" in p_lower or "penalty" in p_lower or "debt" in p_lower:
         if any(e in p_lower for e in ("explain", "how do", "how to", "what is", "why", "rule")):
-            return f"Listen up {user_name}: the fine rule in this dorm is simple and non-negotiable. If you fail to submit photo proof before Friday 8:00 PM, you and your cleaning partner split a 100 ETB fine (50 ETB each). Keep your floors clean, or pay up."
+            return (
+                f"*Dorm Fine Policy*\n\n"
+                f"Listen up {user_name}: the fine rule in this dorm is simple and non-negotiable:\n"
+                f"• *Deadline:* Friday 8:00 PM.\n"
+                f"• *Missed Cleaning:* 100 ETB total fine per missed week.\n"
+                f"• *Split:* Shared equally between both cleaners (50 ETB each).\n\n"
+                f"Submit your photo proof on time, or pay up."
+            )
         return f"Fine status: {unpaid_fines}."
 
     # 5. Question about tokens / Tsidat
     if any(k in p_lower for k in ("token", "tsidat", "coin", "score", "lead", "point")):
         if any(e in p_lower for e in ("explain", "how do", "how to", "what is", "why", "rule", "work")):
-            return f"Listen up {user_name}: Tsidat tokens are our dorm currency for cleanliness and discipline! Cleaners earn up to +25 tokens when their photo proof gets a 5-star rating from the approver. The cleaner the dorm, the higher you climb on the leaderboard."
+            return (
+                f"*Tsidat Tokens & Leaderboard*\n\n"
+                f"Listen up {user_name}: as your Inspector, I expect everyone in this dorm to be disciplined and knowledgeable about our currency:\n"
+                f"• *Earning Tokens:* Cleaners earn up to +25 tokens when their photo proof gets a 5-star rating from the approver.\n"
+                f"• *Star Ratings:* 5 stars = 25 tokens, 4 stars = 15 tokens, 3 stars = 5 tokens.\n"
+                f"• *Prestige:* Higher tokens climb the leaderboard for dorm prestige and respect.\n\n"
+                f"Keep your living space shining and climb to the top!"
+            )
         return f"Tsidat leaderboard: {tokens}."
 
     # 6. Question about swapping
@@ -530,9 +563,11 @@ def fallback_inspector_reply(
     # 16. Explanation requests
     if any(w in p_lower for w in ("explain", "how do", "how does", "what is", "why is", "tell me about", "teach me", "can you explain")):
         return (
-            f"Listen up, {user_name}: as your Inspector, I expect everyone in this dorm to be sharp, disciplined, and knowledgeable. "
-            f"To get full, in-depth AI explanations on complex topics like '{user_prompt[:40]}', make sure your dorm admin has configured an AI key with /set_ai_key. "
-            "In the meantime: stay focused, don't leave dirty dishes in the sink, and ask me any specific dorm questions you have!"
+            f"*Dorm Inspector Briefing*\n\n"
+            f"Listen up, {user_name}: as your Inspector, I expect everyone in this dorm to be sharp, disciplined, and knowledgeable.\n\n"
+            f"• *In-Depth AI Explanations:* To unlock comprehensive AI explanations on '{user_prompt[:40]}', configure an AI key with /set_ai_key.\n"
+            f"• *Dorm Inquiries:* Ask me anytime about cleaning duty, /status, /fines, /tsidat, or /schedule.\n\n"
+            f"Stay focused, don't leave dirty dishes in the sink, and ask me any specific dorm questions you have!"
         )
 
     # 17. Multi-turn context awareness (if asking about previous turns)

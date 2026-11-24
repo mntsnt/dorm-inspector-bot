@@ -1815,5 +1815,42 @@ class TestDormInspectorBot(unittest.IsolatedAsyncioTestCase):
         short_reply = ai_service.fallback_inspector_reply("sup inspector", context, user_name="Dawit")
         self.assertTrue(len(short_reply.split()) <= 30)
 
+    async def test_long_text_explanation_formatting_and_zero_emojis(self):
+        """Verify long explanations render structured markdown formatting with zero emojis."""
+        from services import ai_service
+        from handlers import ai_chat
+        from telegram.constants import ParseMode
+
+        raw_explanation = (
+            "🚀 **Dorm Cleaning Protocol** 🧹✨\n"
+            "Here is how duty works:\n"
+            "**1. Announcement**\n"
+            "* Every Monday at 8:00 AM.\n"
+            "* Both cleaners must participate.\n\n"
+            "**2. Approver Inspection**\n"
+            "- Photo proof is due before Friday 8:00 PM.\n"
+            "- A 5-star rating earns **+25 tokens**!\n"
+        )
+        formatted = ai_service.sanitize_ai_response(raw_explanation)
+
+        # 1. Zero emojis
+        self.assertNotIn("🚀", formatted)
+        self.assertNotIn("🧹", formatted)
+        self.assertNotIn("✨", formatted)
+
+        # 2. Markdown headers, bolding, and bullet points preserved & formatted for Telegram
+        self.assertIn("*Dorm Cleaning Protocol*", formatted)
+        self.assertIn("*1. Announcement*", formatted)
+        self.assertIn("• Every Monday at 8:00 AM.", formatted)
+        self.assertIn("*+25 tokens*", formatted)
+
+        # 3. send_safe_reply sends with ParseMode.MARKDOWN when formatted
+        mock_msg = MagicMock()
+        mock_msg.reply_text = AsyncMock()
+        await ai_chat.send_safe_reply(mock_msg, formatted)
+        mock_msg.reply_text.assert_called_once()
+        call_kwargs = mock_msg.reply_text.call_args[1]
+        self.assertEqual(call_kwargs.get("parse_mode"), ParseMode.MARKDOWN)
+
 if __name__ == "__main__":
     unittest.main()

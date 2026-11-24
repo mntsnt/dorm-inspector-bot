@@ -15,12 +15,28 @@ from services.ai_service import ask_ai
 
 logger = logging.getLogger(__name__)
 
+def _has_markdown_formatting(text: str) -> bool:
+    """Check if text contains markdown formatting markers (*bold*, `code`, etc.) that need parsing."""
+    return bool(re.search(r"(\*[^*]+\*|`[^`]+`|_([^_]+)_|^•\s+)", text, flags=re.MULTILINE))
+
 async def send_safe_reply(message, text: str, **kwargs) -> None:
-    """Send text reply safely, splitting into complete chunks if exceeding Telegram's 4096 character limit."""
+    """Send text reply safely with Markdown rendering, splitting into complete chunks if exceeding Telegram limit."""
     if not text:
         return
+
+    async def _send_chunk(chunk_text: str, **kw_args) -> None:
+        call_kw = dict(kw_args)
+        if "parse_mode" not in call_kw and _has_markdown_formatting(chunk_text):
+            call_kw["parse_mode"] = ParseMode.MARKDOWN
+        try:
+            await message.reply_text(chunk_text, **call_kw)
+        except Exception as e:
+            logger.warning("Failed to render markdown reply (%s), sending as plain text", e)
+            call_kw.pop("parse_mode", None)
+            await message.reply_text(chunk_text, **call_kw)
+
     if len(text) <= 4000:
-        await message.reply_text(text, **kwargs)
+        await _send_chunk(text, **kwargs)
         return
 
     # Split cleanly on paragraph or sentence boundaries
@@ -40,7 +56,7 @@ async def send_safe_reply(message, text: str, **kwargs) -> None:
         kw = dict(kwargs)
         if idx < len(chunks) - 1:
             kw.pop("reply_markup", None)
-        await message.reply_text(chunk, **kw)
+        await _send_chunk(chunk, **kw)
 
 async def handle_ai_mention(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle @mentions, replies to the bot, or natural inspector references."""
