@@ -14,7 +14,12 @@ import sys
 import threading
 import time
 
-from telegram import Update
+from telegram import (
+    BotCommand,
+    BotCommandScopeAllGroupChats,
+    BotCommandScopeAllPrivateChats,
+    Update,
+)
 from telegram.ext import Application, ApplicationBuilder, ContextTypes
 
 import config
@@ -120,6 +125,36 @@ async def post_init(application: Application) -> None:
         logger.info("• Dorm: '%s' (ID: %s, Admin: %s, Fine: %s ETB, Status: %s)", d["dorm_name"], d["dorm_id"], d["admin_id"], d["fine_amount"], d["status"])
 
     logger.info("Timezone: %s", config.TIMEZONE)
+
+    # Register official Telegram bot commands menu for groups and private chats
+    try:
+        group_commands = [
+            BotCommand("status", "View current week duty and cleaners"),
+            BotCommand("schedule", "View full rotation chore schedule"),
+            BotCommand("code", "Get your dorm access code and website link"),
+            BotCommand("fines", "View unpaid fines summary"),
+            BotCommand("members", "View list of registered roommates"),
+            BotCommand("spin", "Randomly pick a roommate for a chore"),
+            BotCommand("swap", "Request a one-week chore swap"),
+            BotCommand("inspector", "Ask The Inspector AI any question"),
+            BotCommand("setup", "Setup or reconfigure this dorm (Admin)"),
+            BotCommand("help", "View commands and cleaning rules"),
+        ]
+        await application.bot.set_my_commands(group_commands, scope=BotCommandScopeAllGroupChats())
+
+        private_commands = [
+            BotCommand("start", "Open main menu and dashboard"),
+            BotCommand("name", "Set or update your display name"),
+            BotCommand("status", "Check your cleaning duty status"),
+            BotCommand("schedule", "View upcoming rotation schedule"),
+            BotCommand("fines", "View your unpaid fines"),
+            BotCommand("done", "Submit photo proof (cleaners only)"),
+            BotCommand("help", "View commands and guide"),
+        ]
+        await application.bot.set_my_commands(private_commands, scope=BotCommandScopeAllPrivateChats())
+        logger.info("Bot commands registered with Telegram Bot API.")
+    except Exception as e:
+        logger.warning("Could not set bot commands: %s", e)
 
 # ---------------------------------------------------------------------------
 # Main Runner

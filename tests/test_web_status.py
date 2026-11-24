@@ -68,8 +68,14 @@ class TestWebStatusDashboard(unittest.IsolatedAsyncioTestCase):
         self.assertIn("database", data)
 
     async def test_dorms_list_api(self):
-        """GET /api/dorms returns list of active dorms with cleaners and duty status."""
-        response = await self.client.get("/api/dorms")
+        """GET /api/dorms requires admin authorization for privacy, and returns dorms when authorized."""
+        # 1. Unauthenticated request is blocked with 403 Forbidden
+        unauth_resp = await self.client.get("/api/dorms")
+        self.assertEqual(unauth_resp.status_code, 403)
+        self.assertIn("Public dorm listing is disabled", unauth_resp.json()["detail"])
+
+        # 2. Authenticated with admin key returns full list
+        response = await self.client.get("/api/dorms", headers={"x-admin-key": str(config.ADMIN_ID)})
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertIsInstance(data, list)

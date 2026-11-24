@@ -11,7 +11,7 @@ import sys
 import time
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 import uvicorn
@@ -116,8 +116,15 @@ async def get_system_status() -> Dict[str, Any]:
     }
 
 @app.get("/api/dorms", response_class=JSONResponse)
-async def list_active_dorms() -> List[Dict[str, Any]]:
-    """Return summary list of all active dorm rooms."""
+async def list_active_dorms(request: Request) -> Any:
+    """Admin-only endpoint returning summary list of active dorm rooms. Protected for privacy."""
+    admin_key = request.headers.get("x-admin-key") or request.query_params.get("admin_key")
+    expected_admin = str(getattr(config, "ADMIN_ID", 6163528558))
+    if not admin_key or admin_key != expected_admin:
+        raise HTTPException(
+            status_code=403,
+            detail="Public dorm listing is disabled for privacy. Use /api/dorms/code/{dorm_code} with your dorm's code."
+        )
     dorms = await db.get_all_active_dorms()
     results = []
     current_date = config.get_current_date()
