@@ -263,7 +263,10 @@ FINE_EACH = FINE_TOTAL // 2
 
 DEFAULT_CLEANERS_PER_WEEK = int(os.getenv("CLEANERS_PER_WEEK", "2"))
 
-DASHBOARD_URL = os.getenv("DASHBOARD_URL", "https://dorm-inspector-bot-1.app.aletcloud.com").rstrip("/")
+_raw_dash = os.getenv("DASHBOARD_URL", "https://dorm-inspector-bot-1.app.aletcloud.com").rstrip("/")
+if "inspector.app.aletcloud.com" in _raw_dash or not _raw_dash.startswith("http"):
+    _raw_dash = "https://dorm-inspector-bot-1.app.aletcloud.com"
+DASHBOARD_URL = _raw_dash
 
 DB_PATH = BASE_DIR / os.getenv("DB_NAME", "dorm_inspector.db")
 

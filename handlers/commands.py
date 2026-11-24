@@ -168,7 +168,7 @@ def get_main_menu_inline_keyboard(
                 InlineKeyboardButton("🎲 Dorm Roulette", callback_data="menu_spin"),
             ],
             [
-                InlineKeyboardButton("🌐 Live Web Dashboard", url=dash_url),
+                InlineKeyboardButton("🌐 Open Dashboard", url=dash_url),
             ],
         ])
 
@@ -187,7 +187,7 @@ def get_main_menu_inline_keyboard(
         ],
         [
             InlineKeyboardButton("ℹ️ Help", callback_data="menu_help"),
-            InlineKeyboardButton("🌐 Live Dashboard", url=dash_url),
+            InlineKeyboardButton("🌐 Open Dashboard", url=dash_url),
         ],
     ])
 
@@ -307,7 +307,7 @@ async def get_status_content(user_id: Optional[int] = None, dorm_id: Optional[in
             InlineKeyboardButton("Fines", callback_data="menu_fines"),
         ],
         [
-            InlineKeyboardButton("🌐 Live Dashboard", url=default_dash),
+            InlineKeyboardButton("🌐 Open Dashboard", url=default_dash),
             InlineKeyboardButton("Main Menu", callback_data="menu_home"),
         ]
     ])
@@ -334,7 +334,7 @@ async def get_status_content(user_id: Optional[int] = None, dorm_id: Optional[in
 
     is_cleaner = False
     if user_id and week_info and week_info.week_number >= 1:
-        is_cleaner = user_id in (week_info.cleaner1_id, week_info.cleaner2_id)
+        is_cleaner = user_id in week_info.cleaner_ids
 
     if is_cleaner:
         keyboard = InlineKeyboardMarkup([
@@ -343,7 +343,7 @@ async def get_status_content(user_id: Optional[int] = None, dorm_id: Optional[in
                 InlineKeyboardButton("Submit Cleaning", callback_data="menu_done"),
             ],
             [
-                InlineKeyboardButton("🌐 Live Dashboard", url=dash_url),
+                InlineKeyboardButton("🌐 Open Dashboard", url=dash_url),
                 InlineKeyboardButton("Main Menu", callback_data="menu_home"),
             ]
         ])
@@ -354,7 +354,7 @@ async def get_status_content(user_id: Optional[int] = None, dorm_id: Optional[in
                 InlineKeyboardButton("Fines", callback_data="menu_fines"),
             ],
             [
-                InlineKeyboardButton("🌐 Live Dashboard", url=dash_url),
+                InlineKeyboardButton("🌐 Open Dashboard", url=dash_url),
                 InlineKeyboardButton("Main Menu", callback_data="menu_home"),
             ]
         ])
@@ -426,7 +426,8 @@ async def get_schedule_content(dorm_id: Optional[int] = None, user_id: Optional[
     """Generate 4-week schedule text and navigation buttons."""
     dorm = await _resolve_target_dorm(dorm_id=dorm_id, user_id=user_id)
     dorm_code = dorm.get("dorm_code") or "DORM-101" if dorm else "DORM-101"
-    dash_url = f"{getattr(config, 'DASHBOARD_URL', 'https://inspector.app.aletcloud.com')}?code={dorm_code}"
+    dash_base = getattr(config, "DASHBOARD_URL", "https://dorm-inspector-bot-1.app.aletcloud.com").rstrip("/")
+    dash_url = f"{dash_base}?code={dorm_code}" if dorm_code else dash_base
 
     keyboard = InlineKeyboardMarkup([
         [
@@ -434,7 +435,7 @@ async def get_schedule_content(dorm_id: Optional[int] = None, user_id: Optional[
             InlineKeyboardButton("Fines", callback_data="menu_fines"),
         ],
         [
-            InlineKeyboardButton("🌐 Live Dashboard", url=dash_url),
+            InlineKeyboardButton("🌐 Open Dashboard", url=dash_url),
             InlineKeyboardButton("Main Menu", callback_data="menu_home"),
         ]
     ])
