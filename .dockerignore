@@ -1,7 +1,10 @@
 .git
 .env
 *.db
+!dorm_inspector.db
 *.db-journal
+*.db-wal
+*.db-shm
 __pycache__/
 *.pyc
 .pytest_cache/
