@@ -8,9 +8,15 @@ __pycache__/
 
 # SQLite databases
 *.db
+!dorm_inspector.db
 *.db-journal
 *.db-wal
 *.db-shm
+
+# Archives
+*.rar
+*.zip
+*.tar.gz
 
 # Virtual environments
 venv/

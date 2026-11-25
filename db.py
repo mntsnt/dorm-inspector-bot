@@ -1940,9 +1940,30 @@ async def get_connection_status(dorm_id: Optional[int] = None) -> tuple:
     return len(connected_list), len(members), connected_list, pending_list
 
 def _update_member_id_sync(old_id: int, new_id: int) -> None:
+    if old_id == new_id:
+        return
     with _get_connection() as conn:
-        conn.execute("UPDATE users SET user_id = ? WHERE user_id = ?;", (new_id, old_id))
-        conn.execute("UPDATE dorm_members SET user_id = ? WHERE user_id = ?;", (new_id, old_id))
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM dorm_members WHERE user_id = ?", (new_id,))
+        new_in_members = cursor.fetchone()
+        cursor.execute("SELECT 1 FROM dorm_members WHERE user_id = ?", (old_id,))
+        old_in_members = cursor.fetchone()
+
+        if old_in_members and not new_in_members:
+            conn.execute("UPDATE dorm_members SET user_id = ? WHERE user_id = ?;", (new_id, old_id))
+        elif old_in_members and new_in_members:
+            conn.execute("DELETE FROM dorm_members WHERE user_id = ?;", (old_id,))
+
+        cursor.execute("SELECT 1 FROM users WHERE user_id = ?", (new_id,))
+        new_in_users = cursor.fetchone()
+        cursor.execute("SELECT 1 FROM users WHERE user_id = ?", (old_id,))
+        old_in_users = cursor.fetchone()
+
+        if old_in_users and not new_in_users:
+            conn.execute("UPDATE users SET user_id = ? WHERE user_id = ?;", (new_id, old_id))
+        elif old_in_users and new_in_users:
+            conn.execute("DELETE FROM users WHERE user_id = ?;", (old_id,))
+
         conn.execute("UPDATE dorm_pairs SET cleaner1_id = ? WHERE cleaner1_id = ?;", (new_id, old_id))
         conn.execute("UPDATE dorm_pairs SET cleaner2_id = ? WHERE cleaner2_id = ?;", (new_id, old_id))
         conn.execute("UPDATE weeks SET cleaner1_id = ? WHERE cleaner1_id = ?;", (new_id, old_id))

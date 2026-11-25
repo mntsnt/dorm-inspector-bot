@@ -136,11 +136,12 @@ async def send_dm_with_fallback(
     photo_path: Optional[Path] = None,
     dorm_id: Optional[int] = None,
     topic_id: Optional[int] = None,
+    allow_group_fallback: bool = True,
 ) -> bool:
     """
     Attempt to send a private DM to the member (with optional photo).
     If it fails (e.g. user hasn't clicked /start or blocked the bot),
-    fall back to mentioning them in their dorm's group chat.
+    fall back to mentioning them in their dorm's group chat if allow_group_fallback is True.
     """
     try:
         if photo_path and photo_path.is_file():
@@ -162,6 +163,8 @@ async def send_dm_with_fallback(
         return True
     except TelegramError as te:
         logger.warning("Could not send private DM to %s (%s): %s", member_name, user_id, te)
+        if not allow_group_fallback:
+            return False
         target_group = dorm_id if dorm_id is not None else getattr(config, "GROUP_ID", 0)
         target_topic = topic_id if topic_id is not None else getattr(config, "TOPIC_ID", None)
 
@@ -392,6 +395,7 @@ async def send_dorm_announcement(
             reply_markup=cleaner_btn,
             dorm_id=dorm_id,
             topic_id=topic_id,
+            allow_group_fallback=not success,
         )
 
     # 3. Private DM to Approver
@@ -407,6 +411,7 @@ async def send_dorm_announcement(
         text=approver_dm_text,
         dorm_id=dorm_id,
         topic_id=topic_id,
+        allow_group_fallback=not success,
     )
 
     logger.info("Monday announcement completed for dorm %s, week %s (%s)", dorm_id, week_info.week_start, detail)
@@ -503,7 +508,8 @@ async def send_dorm_cleaner_reminder(
             continue
         await send_dm_with_fallback(
             context, c_id, c_name, reminder_text,
-            reply_markup=cleaner_btn, photo_path=reminder_meme, dorm_id=dorm_id, topic_id=topic_id
+            reply_markup=cleaner_btn, photo_path=reminder_meme, dorm_id=dorm_id, topic_id=topic_id,
+            allow_group_fallback=False
         )
 
     logger.info("Six-hour cleaner reminder sent for dorm %s, week %s", dorm_id, week_info.week_start)
@@ -729,6 +735,8 @@ async def monitor_and_fallback_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                 continue
 
             week_record = await db.get_week(week_info.week_start, dorm_id=dorm_id)
+            if week_record and (week_record.get("final_status") == "completed" or week_record.get("photo_status") == "approved"):
+                continue
 
             # 1. Catch missed Monday announcement
             announce_naive_time = config.ANNOUNCE_TIME.replace(tzinfo=None)
@@ -741,7 +749,7 @@ async def monitor_and_fallback_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                     await send_dorm_announcement(context, dorm_id)
                     week_record = await db.get_week(week_info.week_start, dorm_id=dorm_id)
 
-            if not week_record:
+            if not week_record or week_record.get("final_status") == "completed" or week_record.get("photo_status") == "approved":
                 continue
 
             # 2. Send reminders every six hours during daytime until a photo is submitted.
@@ -749,12 +757,16 @@ async def monitor_and_fallback_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                 await send_dorm_cleaner_reminder(context, dorm_id, today, now)
                 week_record = await db.get_week(week_info.week_start, dorm_id=dorm_id)
 
+            if not week_record or week_record.get("final_status") == "completed" or week_record.get("photo_status") == "approved":
+                continue
+
             # 3. Auto-approve proof after its 24-hour review window.
             if week_record.get("final_status") == "pending" and week_record.get("photo_status") == "submitted":
                 await auto_approve_stale_submission(context, dorm_id, week_record, now)
                 week_record = await db.get_week(week_info.week_start, dorm_id=dorm_id)
-                if not week_record:
-                    continue
+
+            if not week_record or week_record.get("final_status") == "completed" or week_record.get("photo_status") == "approved":
+                continue
 
             # 4. Close missed cleaning at Friday 8 PM; submitted proof gets a review prompt.
             check_naive_time = config.CHECK_TIME.replace(tzinfo=None)

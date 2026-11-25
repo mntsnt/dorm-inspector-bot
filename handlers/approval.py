@@ -47,8 +47,9 @@ async def _notify_cleaner(
     photo_path: Optional[Path] = None,
     dorm_id: Optional[int] = None,
     topic_id: Optional[int] = None,
+    allow_group_fallback: bool = False,
 ) -> None:
-    """Send private DM to cleaner, falling back to group message if DM fails."""
+    """Send private DM to cleaner. Does not spam group if allow_group_fallback is False."""
     try:
         if photo_path and photo_path.is_file():
             with open(photo_path, "rb") as photo:
@@ -66,6 +67,8 @@ async def _notify_cleaner(
             )
     except TelegramError as te:
         logger.warning("Could not DM cleaner %s (%s): %s", cleaner_id, cleaner_name, te)
+        if not allow_group_fallback:
+            return
         target_group = dorm_id if dorm_id is not None else getattr(config, "GROUP_ID", 0)
         target_topic = topic_id if topic_id is not None else getattr(config, "TOPIC_ID", None)
         if not target_group:
